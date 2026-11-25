@@ -11,7 +11,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use dfy_proto::consts::{
+    INPUT_KIND_KEY, INPUT_KIND_MOUSE_BTN, INPUT_KIND_MOUSE_MOVE, INPUT_KIND_WHEEL,
+    INPUT_STATE_DOWN, INPUT_STATE_UP,
+};
 use dfy_proto::envelope;
+use dfy_proto::msg::InputEvent as ProtoInputEvent;
 use dfy_relay::Role;
 use dfy_session::{
     serve_agent, start_capture_loop, AgentConfig, CaptureLoop, CaptureLoopConfig, Decoder as _,
@@ -21,6 +26,7 @@ use dfy_transport::{
     agent_endpoint_on_socket, bind_agent, client_handshake, client_tls, connect, connect_on_socket,
     parse_fingerprint_hex, send_input_move, ClientSession, ServerAuth, TlsIdentity,
 };
+use dfy_ui::{spawn_viewer, ViewerConfig, ViewerEvent};
 
 use crate::relay_bridge::RelayOptions;
 use tokio::time::Instant;
@@ -76,6 +82,10 @@ pub struct ViewOptions {
     pub save_first_frame: Option<PathBuf>,
     /// 是否采集本地鼠标/键盘并发给 Agent（`--control` 开启；仅 Windows）。
     pub control: bool,
+    /// 打开图形窗口显示远端画面（`--ui`；Windows/Linux 需要图形环境）。
+    pub ui: bool,
+    /// UI 窗口启动即全屏（`--fullscreen`，只在 `--ui` 时生效）。
+    pub fullscreen: bool,
     /// 是否与 Agent 双向同步剪贴板（`--clipboard` 开启）。
     pub clipboard: bool,
     /// 要发送给 Agent 的本地文件/目录（空 = 不发送）。
@@ -498,8 +508,31 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
     }
     let mut next_file_tick = Instant::now() + Duration::from_millis(100);
 
+    // 图形窗口上屏（--ui）：解码线程把 BGRA 帧推给 UI 线程；窗口键盘/鼠标事件转成输入事件。
+    let mut ui = if opts.ui {
+        let config = ViewerConfig::new("大肥鱼远程")
+            .with_stats(true)
+            .with_fullscreen(opts.fullscreen);
+        match spawn_viewer(config) {
+            Ok(handle) => {
+                println!(
+                    "[view] UI 窗口已启动（F11 全屏，Esc 关闭，Ctrl+Alt+Shift+Q 切换远控输入）"
+                );
+                Some(handle)
+            }
+            Err(err) => {
+                println!("[view] UI 窗口不可用：{err:#}；继续只打印统计");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // UI 窗口自己产生键盘/鼠标事件，因此 --ui 时不再装本地低级钩子。
+    let mut ui_send_input = true;
+
     // 控制输入采集（仅 Windows 有实现；不可用时降级为「只收视频」）。
-    let mut capture = if opts.control {
+    let mut capture = if opts.control && ui.is_none() {
         match InputCapture::start() {
             Ok(capture) => {
                 println!("[view] 控制输入已启用（鼠标移动 10ms 合并；Ctrl+Alt+Shift+Q 停止）");
@@ -513,6 +546,9 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
     } else {
         InputCapture::disabled()
     };
+    if ui.is_some() && opts.control {
+        println!("[view] --ui 与 --control 同时给出：键盘/鼠标由 UI 窗口转发，本地低级钩子不启用");
+    }
 
     loop {
         if Instant::now() >= deadline {
@@ -573,6 +609,13 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
                                         match decoder.decode(&frame.data, frame.ts_us as u64) {
                                             Ok(Some(decoded)) => {
                                                 stats.decoded += 1;
+                                                if let Some(handle) = ui.as_ref() {
+                                                    handle.present.present(
+                                                        decoded.width,
+                                                        decoded.height,
+                                                        decoded.data.clone(),
+                                                    );
+                                                }
                                                 if !saved {
                                                     if let Some(path) = &opts.save_first_frame {
                                                         let mut buf = Vec::with_capacity(decoded.data.len());
@@ -628,6 +671,75 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
                 }
             }
 
+            ui_event = async {
+                match ui.as_mut() {
+                    Some(handle) => handle.event_rx.recv().await,
+                    None => std::future::pending::<Option<ViewerEvent>>().await,
+                }
+            } => {
+                match ui_event {
+                    Some(ViewerEvent::Key {
+                        usage,
+                        down,
+                        modifiers,
+                    }) => {
+                        if ui_send_input {
+                            let env = input_key_envelope(usage, down, modifiers);
+                            if tx.send_ctrl(&env).await.is_ok() {
+                                stats.input_events += 1;
+                            }
+                        }
+                    }
+                    Some(ViewerEvent::Mouse {
+                        x,
+                        y,
+                        width,
+                        height,
+                        button,
+                        down,
+                    }) => {
+                        if !ui_send_input {
+                            continue;
+                        }
+                        if let Some(button) = button {
+                            let env = input_button_envelope(button, down);
+                            if tx.send_ctrl(&env).await.is_ok() {
+                                stats.input_events += 1;
+                            }
+                        } else if let Some(ev) = frame_point_to_move(x, y, width, height) {
+                            match send_input_move(&conn, &ev) {
+                                Ok(()) => stats.input_moves += 1,
+                                Err(err) => debug!(error = %err, "发送鼠标移动 DATAGRAM 失败"),
+                            }
+                        }
+                    }
+                    Some(ViewerEvent::Wheel { dx, dy }) => {
+                        if ui_send_input {
+                            let env = input_wheel_envelope(dx, dy);
+                            if tx.send_ctrl(&env).await.is_ok() {
+                                stats.input_events += 1;
+                            }
+                        }
+                    }
+                    Some(ViewerEvent::Closed) => {
+                        stats.end_reason = "ui_closed";
+                        break;
+                    }
+                    Some(ViewerEvent::ToggleControl) => {
+                        ui_send_input = !ui_send_input;
+                        println!(
+                            "[view] 远控输入：{}",
+                            if ui_send_input { "开启" } else { "暂停" }
+                        );
+                    }
+                    Some(ViewerEvent::ToggleFullscreen) => {}
+                    None => {
+                        stats.end_reason = "ui_closed";
+                        break;
+                    }
+                }
+            }
+
             _ = tokio::time::sleep_until(next_clipboard_poll) => {
                 next_clipboard_poll = Instant::now() + crate::clipboard_bridge::CLIPBOARD_POLL;
                 if let Some(sync) = clipboard.as_mut() {
@@ -670,6 +782,10 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
         .await;
     let _ = tx.finish();
     conn.close(0u32.into(), b"view done");
+    if let Some(handle) = ui.take() {
+        handle.close();
+    }
+
     endpoint.close(0u32.into(), b"view done");
     drop(relay_socket);
     println!("[view] ---- 统计（{}s）----", opts.seconds.max(1));
@@ -762,6 +878,95 @@ pub fn blank_frame(width: u32, height: u32) -> RawFrame {
 /// 解析指纹文本的小工具（供 main.rs 复用）。
 pub fn parse_fingerprint_arg(text: &str) -> Result<[u8; 32]> {
     parse_fingerprint_hex(text).context("解析证书指纹失败（需要 64 位 hex）")
+}
+
+/// 构造一条键盘输入事件（HID Usage + 修饰键位图）。
+fn input_key_envelope(usage: u16, down: bool, modifiers: u8) -> dfy_proto::Envelope {
+    input_envelope(
+        INPUT_KIND_KEY,
+        u32::from(usage),
+        u32::from(modifiers),
+        if down {
+            INPUT_STATE_DOWN
+        } else {
+            INPUT_STATE_UP
+        },
+        0,
+        0,
+    )
+}
+
+/// 构造一条鼠标按键输入事件（1=左、2=右、3=中、4=后退、5=前进）。
+fn input_button_envelope(button: u8, down: bool) -> dfy_proto::Envelope {
+    input_envelope(
+        INPUT_KIND_MOUSE_BTN,
+        u32::from(button),
+        0,
+        if down {
+            INPUT_STATE_DOWN
+        } else {
+            INPUT_STATE_UP
+        },
+        0,
+        0,
+    )
+}
+
+/// 构造一条滚轮输入事件（单位：WHEEL_DELTA=120）。
+fn input_wheel_envelope(dx: i16, dy: i16) -> dfy_proto::Envelope {
+    input_envelope(
+        INPUT_KIND_WHEEL,
+        0,
+        0,
+        INPUT_STATE_DOWN,
+        i32::from(dx),
+        i32::from(dy),
+    )
+}
+
+fn input_envelope(
+    kind: u32,
+    hid_usage: u32,
+    mods: u32,
+    state: u32,
+    dx: i32,
+    dy: i32,
+) -> dfy_proto::Envelope {
+    dfy_proto::Envelope {
+        body: Some(envelope::Body::InputEvent(ProtoInputEvent {
+            kind,
+            hid_usage,
+            mods,
+            state,
+            x: 0,
+            y: 0,
+            dx,
+            dy,
+            unicode: 0,
+            ts_us: dfy_transport::now_us(),
+        })),
+    }
+}
+
+/// 窗口内画面坐标 → 0..65535 归一化绝对坐标（协议 absolute move 用 65536 虚拟尺寸）。
+fn frame_point_to_move(x: u32, y: u32, width: u32, height: u32) -> Option<ProtoInputEvent> {
+    if width < 2 || height < 2 {
+        return None;
+    }
+    let nx = (u64::from(x.min(width - 1)) * 65_535 / (u64::from(width) - 1)) as u32;
+    let ny = (u64::from(y.min(height - 1)) * 65_535 / (u64::from(height) - 1)) as u32;
+    Some(ProtoInputEvent {
+        kind: INPUT_KIND_MOUSE_MOVE,
+        hid_usage: 0,
+        mods: 0,
+        state: INPUT_STATE_DOWN,
+        x: nx,
+        y: ny,
+        dx: 0,
+        dy: 0,
+        unicode: 0,
+        ts_us: dfy_transport::now_us(),
+    })
 }
 
 #[cfg(test)]

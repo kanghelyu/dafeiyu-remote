@@ -564,6 +564,7 @@ dependencies = [
  "dfy-relay",
  "dfy-session",
  "dfy-transport",
+ "dfy-ui",
  "ed25519-dalek",
  "hex",
  "quinn",

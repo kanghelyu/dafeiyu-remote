@@ -151,15 +151,16 @@ cargo run -p dfy-cli -- view --addr 127.0.0.1:21116 --control --clipboard --seco
 | 零知识中继（UDP tag 配对 / TCP 降级 / metrics） | ✅ 实机验证（视频 + 24.55 KiB 剪贴板） |
 | 一键部署脚本 + Docker Compose | ✅ |
 | P2P 打洞（STUN/ICE-lite） | 🚧 已接通 CLI（回环打洞 + QUIC 握手实测通过；视频端到端待真实桌面复核） |
-| 上屏 UI（winit 窗口） | 🚧 crate 已落盘，待验收与接入 |
+| 上屏 UI（winit 窗口） | 🚧 已接入 `view --ui`（帧渲染/键鼠/剪贴板并行）；窗口呈现 bug 修复中 |
 | 跨平台软件编码（MJPEG 兜底） | ✅ 纯 Rust，编解码往返单测通过 |
 | Linux 采集（X11 GetImage + RandR 枚举） | 🚧 交叉编译通过，未实机验证 |
-| 文件传输 | 🚧 开发中（协议消息已落地） |
+| 文件传输（控制端 → Agent） | ✅ 实机 3 MiB SHA-256 一致；目录/续传/策略已实现 |
 | 虚拟屏（IddCx 驱动骨架 + 用户态 IOCTL） | 🚧 骨架完成，待 WDK 编译与签名 |
 | macOS / Android | 🚧 逆向已完成，待实现 |
 | Flutter 四端 UI | ⏳ 规划中 |
 
 - 2026-11-25：文件传输接入 CLI（`--recv-dir` / `--send-file`），实机 3 MiB 校验通过；采集线程跨连接复用（重连/迁移不重建采集器）。
+- 2026-11-25：上屏 UI 接入 CLI（`view --ui [--fullscreen]`）：远端帧渲染、键盘/鼠标/滚轮回传、与本地捕获互斥；当前客户区呈现仍为空白，修复中。
 
 ## 路线图
 

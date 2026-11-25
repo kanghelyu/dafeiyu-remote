@@ -334,6 +334,22 @@ dfy-cli view::run_view
   另需保留 `--seconds/--max-frames` 超时退出（现有逻辑）；
 - `Ctrl+Alt+Del`：见 §9，CLI 需要一个显式入口（如 `Ctrl+Alt+End` 或菜单）而不是依赖本地捕获。
 
+### 7.1 接入状态（2026-11，已实现）
+
+`crates/dfy-cli/src/real.rs` 已按本节方案接入（`view --ui [--fullscreen]`）：
+
+- 解码循环里 `handle.present.present(decoded.width, decoded.height, decoded.data.clone())`（注意 `ViewerHandle.present` 是**字段**，不是方法）；
+- `tokio::select!` 增加 `ui_event` 分支：`Key` → proto `InputEvent{kind=INPUT_KIND_KEY, hid_usage, state, mods}`；`Mouse` 无按键 → `frame_point_to_move`（窗口坐标 → 远端像素 → 0..65535 归一化）后 `send_input_move`，有按键 → `INPUT_KIND_MOUSE_BTN`；`Wheel` → `INPUT_KIND_WHEEL`；`Closed` → `end_reason = "ui_closed"`；`ToggleControl` 翻转 `ui_send_input`；
+- `--ui` 与 `--control`（本地捕获）互斥：有 UI 时不再启动本地低级钩子；
+- 窗口标题随帧统计更新（`大肥鱼远程 — 2800×1840 · 8.8 fps · 22.7 ms`），可据此判断帧在流动。
+
+**已知问题（待修）**：窗口能创建、render 循环在跑、标题 fps 在更新，但客户区**透明/空白**——
+屏幕上看得到窗口后的桌面，`PrintWindow` 抓到的是窗口区域之后的屏幕内容而不是窗口像素；
+同一 agent 的 `--save-first` 帧数据经 PIL 转 PNG 确认是正确远端画面，说明问题在 softbuffer 呈现路径而非数据面。
+`dfy-ui-fix` 子代理正在排查（怀疑 softbuffer surface/present、窗口透明属性、或惰性 resize 未真正执行）。
+
+待完善：UI 事件节流的鼠标移动（当前每个事件一条 DATAGRAM）、Ctrl+Alt+End 映射 SAS、缩放/平移、硬解上屏（wgpu）。
+
 ## 8. 无头可测的部分（feature 隔离）
 
 `Cargo.toml`：
@@ -386,13 +402,27 @@ window = ["dep:softbuffer"]     # winit 保持非 optional（KeyCode/MouseScroll
 
 ```powershell
 $env:Path = "$env:USERPROFILE\.cargo\bin;<mingw64>\bin;$env:Path"
-cargo test -p dfy-ui --all-targets
+cargo test -p dfy-ui --all-targets            # 56 lib + 2 example 单测
+cargo test -p dfy-ui --doc                    # 3 个文档示例（含 run_viewer/spawn_viewer 用法）
 cargo clippy -p dfy-ui --all-targets -- -D warnings
 cargo fmt -p dfy-ui -- --check
-cargo test -p dfy-ui --no-default-features --all-targets   # 证明无窗口 feature 可编译可测
+cargo test -p dfy-ui --no-default-features --all-targets   # 51 个纯逻辑单测，证明无窗口 feature 可编译可测
 cargo run -p dfy-ui --example viewer_demo -- --smoke       # 有图形会话时：真实建窗冒烟
+cargo run -p dfy-ui --example viewer_demo                  # 常驻模式：30fps 推 90 帧
+cargo run -p dfy-ui --example viewer_demo -- --run         # 阻塞模式：演示 run_viewer_with + FrameSource
 ```
 
-覆盖矩阵（本次实现后的测试数量见 crate 报告）：帧校验/字节序/缩放/letterbox/光标反解、HID 与修饰键、
+本次实现后的实测结果（Windows 11 / rustc 1.100.0 gnu target）：
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo test -p dfy-ui --all-targets` | 56 passed（lib）+ 2 passed（example），0 failed |
+| `cargo test -p dfy-ui --doc` | 3 passed |
+| `cargo test -p dfy-ui --no-default-features --all-targets` | 51 passed（example 因 `required-features` 跳过） |
+| `cargo clippy -p dfy-ui --all-targets -- -D warnings` | 干净（默认 + `--no-default-features` 两种配置） |
+| `cargo fmt -p dfy-ui -- --check` | 干净 |
+| `viewer_demo -- --smoke` / `--fullscreen --smoke` / 默认 / `--run` | 均 exit 0（真实建窗、90 帧上屏、阻塞模式帧来源结束后自动关窗） |
+
+覆盖矩阵：帧校验/字节序/缩放/letterbox/光标反解、HID 与修饰键、
 滚轮符号/累加/饱和、统计窗口与标题节流、帧来源 channel/节流/停止/关闭、mailbox 并发/最新帧、
 配置夹取、示例帧生成器。

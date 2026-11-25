@@ -153,6 +153,12 @@ enum Command {
         /// 启用控制输入采集（Windows 低级钩子；Ctrl+Alt+Shift+Q 停止）
         #[arg(long, default_value_t = false)]
         control: bool,
+        /// 打开图形窗口显示远端画面（需要图形环境）
+        #[arg(long, default_value_t = false)]
+        ui: bool,
+        /// UI 窗口启动即全屏（配合 --ui）
+        #[arg(long, default_value_t = false)]
+        fullscreen: bool,
         /// 启用剪贴板同步（与本机剪贴板双向同步）
         #[arg(long, default_value_t = false)]
         clipboard: bool,
@@ -254,6 +260,8 @@ async fn main() -> Result<()> {
             seconds,
             save_first,
             control,
+            ui,
+            fullscreen,
             clipboard,
             relay,
             relay_tag,
@@ -282,6 +290,8 @@ async fn main() -> Result<()> {
                 seconds,
                 save_first_frame: save_first,
                 control,
+                ui,
+                fullscreen,
                 clipboard,
                 relay: relay_options,
                 p2p: p2p_options,

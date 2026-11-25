@@ -284,7 +284,7 @@ impl std::fmt::Debug for LinuxCapturer {
 /// 纯 Wayland 会话（无 XWayland）没有 `DISPLAY`，这里返回
 /// [`CaptureError::Unsupported`]，方便上层决定是否切到 Wayland 后端。
 fn connect_display() -> anyhow::Result<(RustConnection, usize)> {
-    if std::env::var_os("DISPLAY").map_or(true, |value| value.is_empty()) {
+    if std::env::var_os("DISPLAY").is_none_or(|value| value.is_empty()) {
         return Err(CaptureError::Unsupported(
             "X11 不可用：环境变量 DISPLAY 未设置（Wayland 会话可能没有 XWayland）",
         )
@@ -515,6 +515,7 @@ fn randr12_geometries(
 /// CRTC 几何 → [`MonitorGeometry`]（0 尺寸视为未启用，返回 `None`）。
 ///
 /// 旋转过的 CRTC 由服务器直接给出旋转后的宽高，这里无需再换算。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn crtc_monitor_geometry(
     x: i16,
     y: i16,
@@ -711,7 +712,7 @@ pub(crate) struct PixelLayout {
 impl PixelLayout {
     /// 每像素占用的整字节数（向上取整）。
     pub(crate) fn bytes_per_pixel(&self) -> usize {
-        (usize::from(self.bits_per_pixel) + 7) / 8
+        usize::from(self.bits_per_pixel).div_ceil(8)
     }
 
     /// 一行最少需要多少字节（不考虑扫描线对齐）。
@@ -719,7 +720,7 @@ impl PixelLayout {
         let bits = usize::try_from(width)
             .ok()?
             .checked_mul(usize::from(self.bits_per_pixel))?;
-        Some((bits + 7) / 8)
+        Some(bits.div_ceil(8))
     }
 
     /// 一行按服务器 `scanline_pad` 对齐后的字节数（ZPixmap 的实际行跨距）。
@@ -868,7 +869,7 @@ pub(crate) fn pick_stride(
     if preferred.checked_mul(rows)? == data_len {
         return Some(preferred);
     }
-    if data_len % rows == 0 {
+    if data_len.is_multiple_of(rows) {
         let server_stride = data_len / rows;
         if server_stride >= min_row {
             return Some(server_stride);
