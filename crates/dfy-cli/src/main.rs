@@ -6,6 +6,9 @@
 // 局部放开（Win32 钩子 API 必须 unsafe）。这里用 `deny` 而非 `forbid`，否则无法覆盖。
 #![deny(unsafe_code)]
 
+// macOS 等平台的采集/注入后端尚未实现（M3），相应辅助类型暂不参与调用路径。
+#![cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code, unused_variables))]
+
 mod adapters;
 mod clipboard_bridge;
 mod demo;

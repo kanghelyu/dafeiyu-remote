@@ -633,6 +633,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dfy-path"
+version = "0.1.0"
+
+[[package]]
 name = "dfy-proto"
 version = "0.1.0"
 dependencies = [
