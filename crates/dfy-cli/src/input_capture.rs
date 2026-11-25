@@ -25,7 +25,6 @@
 
 // Windows 低级钩子实现；其它平台调用点被 cfg 掉，保留类型避免 public API 抖动。
 #![cfg_attr(not(windows), allow(dead_code))]
-
 #![allow(unsafe_code)]
 
 use anyhow::Result;

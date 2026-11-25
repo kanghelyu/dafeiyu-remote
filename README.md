@@ -139,6 +139,20 @@ cargo run -p dfy-cli -- view --addr 127.0.0.1:21116 --control --clipboard --seco
 
 输入与剪贴板链路（本机 8 秒实测）：合成 16 次鼠标移动 → agent 注入 16/16（忽略 0、失败 0），view 侧 `控制输入：鼠标移动 DATAGRAM = 16`；剪贴板文本双向闭环各 1 次（清单 / 拉取 / 分块 / 确认）。agent 侧默认开启剪贴板（`--no-clipboard` 关闭），view 侧用 `--clipboard` 开启。详见 [design/021-clipboard-sync.md](design/021-clipboard-sync.md)、[design/022-relay-client.md](design/022-relay-client.md)。
 
+### 查看器窗口（`--ui`）
+
+```bash
+# 被控端（另一台机器 / 另一块屏）
+cargo run --release -p dfy-cli -- agent --port 21116 --fps 60 --bitrate 12000
+
+# 主控端：开窗口看画面，鼠标键盘直接回传
+cargo run --release -p dfy-cli -- view --addr 127.0.0.1:21116 --ui --seconds 60
+```
+
+窗口内 F11 全屏、Esc 关闭、`Ctrl+Alt+Shift+Q` 切换是否把输入发给远端。
+同一台机器上自测时，窗口里会看到「窗口套窗口」——这是自捕获递归（远端画面本身就包含这个窗口），
+不是渲染缺陷；要看真实效果请用两台机器，或把查看器窗口最小化后看 `--save-first` 落盘的帧。
+
 ## 项目状态（2026-11）
 
 | 能力 | 状态 |
@@ -152,7 +166,7 @@ cargo run -p dfy-cli -- view --addr 127.0.0.1:21116 --control --clipboard --seco
 | 一键部署脚本 + Docker Compose | ✅ |
 | P2P 打洞（STUN/ICE-lite） | 🚧 已接通 CLI（回环打洞 + QUIC 握手实测通过；视频端到端待真实桌面复核） |
 | 会话恢复（重连/路径迁移续帧） | 🚧 `SessionResume/ResumeOk` + 采集线程常驻，e2e 重连测试通过 |
-| 上屏 UI（winit 窗口） | 🚧 已接入 `view --ui`（帧渲染/键鼠/剪贴板并行）；窗口呈现 bug 修复中 |
+| 上屏 UI（winit 窗口） | ✅ `view --ui [--fullscreen]`：帧渲染、键鼠/滚轮回传、与本地捕获互斥（同机自测会看到 Droste 递归假象，见 design/026 §7.2） |
 | 跨平台软件编码（MJPEG 兜底） | ✅ 纯 Rust，编解码往返单测通过 |
 | Linux 采集（X11 GetImage + RandR 枚举） | 🚧 交叉编译通过，未实机验证 |
 | 文件传输（控制端 → Agent） | ✅ 实机 3 MiB SHA-256 一致；目录/续传/策略已实现 |
@@ -162,7 +176,7 @@ cargo run -p dfy-cli -- view --addr 127.0.0.1:21116 --control --clipboard --seco
 
 - 2026-11-25：文件传输接入 CLI（`--recv-dir` / `--send-file`），实机 3 MiB 校验通过；采集线程跨连接复用（重连/迁移不重建采集器）。
 - 2026-11-25：会话恢复 v0.1（协议 tag 22/23 + agent 常驻采集线程 + 客户端确认后收帧），e2e 重连续帧测试通过（design/027）。
-- 2026-11-25：上屏 UI 接入 CLI（`view --ui [--fullscreen]`）：远端帧渲染、键盘/鼠标/滚轮回传、与本地捕获互斥；当前客户区呈现仍为空白，修复中。
+- 2026-11-25：上屏 UI 接入 CLI（`view --ui [--fullscreen]`）：远端帧渲染、键盘/鼠标/滚轮回传、与本地捕获互斥。同机自测时窗口里会出现「窗口套窗口」，已确认为自捕获递归（agent 采集含 view 窗口的整块桌面），非渲染缺陷；合成帧对照与像素级单测见 `design/026` §7.2。
 
 ## 路线图
 

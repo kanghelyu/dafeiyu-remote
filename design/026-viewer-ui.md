@@ -343,10 +343,27 @@ dfy-cli view::run_view
 - `--ui` 与 `--control`（本地捕获）互斥：有 UI 时不再启动本地低级钩子；
 - 窗口标题随帧统计更新（`大肥鱼远程 — 2800×1840 · 8.8 fps · 22.7 ms`），可据此判断帧在流动。
 
-**已知问题（待修）**：窗口能创建、render 循环在跑、标题 fps 在更新，但客户区**透明/空白**——
-屏幕上看得到窗口后的桌面，`PrintWindow` 抓到的是窗口区域之后的屏幕内容而不是窗口像素；
-同一 agent 的 `--save-first` 帧数据经 PIL 转 PNG 确认是正确远端画面，说明问题在 softbuffer 呈现路径而非数据面。
-`dfy-ui-fix` 子代理正在排查（怀疑 softbuffer surface/present、窗口透明属性、或惰性 resize 未真正执行）。
+### 7.2 「窗口透明」结论：是自捕获递归，不是渲染 bug（2026-11 已定论）
+
+第一次 live 联调时，窗口看起来「透明、能透出后面桌面，甚至窗口里套窗口」，一度怀疑
+softbuffer 没把像素 present 到窗口。**已用对照实验推翻该怀疑**：
+
+- **合成帧对照**：`cargo run -p dfy-ui --example viewer_demo -- --run`（frame source 不是屏幕采集）
+  用 `PrintWindow(flag=2)` 抓窗口客户区，得到的是 demo 自己画的棋盘/色相渐变（1280×720 等比缩放、
+  上下黑边），而不是桌面透出 → resize → `buffer_mut` → `render_frame` → `present` 链路正常。
+  证据：`.tmp/ui-synthetic-printwindow.png`、`.tmp/ui-synthetic-screen.png`。
+- **递归成因**：agent 采集的是**整块桌面**，而 view 窗口就在这块桌面上，于是每一帧里都包含
+  view 窗口自己（上一帧内容），窗口显示该帧时就会出现「窗口套窗口 / 看到桌面」的 Droste 镜中镜效应。
+  透明窗口不可能显示自己的嵌套副本——这本身就是「确实在呈现所收帧」的证据
+  （`.tmp/real-print2.png` 里客户区出现嵌套的 `大肥鱼远程 · viewer demo`）。
+- **同一台机器自测的规避**：把 view 窗口最小化后再抓 PrintWindow、把 view 挪到另一块屏、
+  或让 agent 只采集不含 view 的那块屏；也可以直接看 `--save-first` 落盘的帧。
+
+**真 bug（已修）**：首次建 surface 时 `surface_size` 被预填成窗口尺寸，导致 `surface.resize` 被跳过，
+首帧 `buffer_mut()` panic（`Must set size of surface before calling buffer_mut()`）。
+现改为新建 surface 与每次 `Resized` 都把 `surface_size` 标脏 `(0,0)`，由 render 惰性 resize
+（`src/app.rs` 的 `surface_target`/`surface_needs_resize`），并补了像素级单测：
+2800×1840 → 640×360 信件框布局与采样色断言、信件框每像素清零。
 
 待完善：UI 事件节流的鼠标移动（当前每个事件一条 DATAGRAM）、Ctrl+Alt+End 映射 SAS、缩放/平移、硬解上屏（wgpu）。
 
@@ -373,8 +390,7 @@ window = ["dep:softbuffer"]     # winit 保持非 optional（KeyCode/MouseScroll
 
 **高优先级**
 
-1. **CLI 集成**：`dfy-cli` 加 `dfy-ui` 依赖；`view` 子命令用 bounded mpsc + `run_viewer_with` 接解码帧；
-   实现 `ViewerEvent → InputEvent` 翻译层（§7），保留 `--seconds/--max-frames` 超时退出；
+1. ~~**CLI 集成**~~：已完成（`view --ui [--fullscreen]`，见 §7.1）；
 2. **Ctrl+Alt+Del 转发**（`design/011` 验收项）：Windows 本地 `Ctrl+Alt+Del` 是 SAS，普通进程
    **永远收不到**（winit 也收不到），不能靠本地捕获。方案：a) 采用 RDP 惯例 `Ctrl+Alt+End`
    映射为远端的 `Ctrl+Alt+Del`（HID 顺序：LCtrl 0xE0 down、LAlt 0xE2 down、Delete 0x4C down/up、
