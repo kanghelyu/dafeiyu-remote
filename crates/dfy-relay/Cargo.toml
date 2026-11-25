@@ -23,3 +23,8 @@ tokio = { workspace = true, features = ["io-util"] }
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+
+# 集成测试用：QUIC over relay 端到端验证（仅测试目标，不进生产依赖）。
+[dev-dependencies]
+dfy-transport.workspace = true
+quinn.workspace = true

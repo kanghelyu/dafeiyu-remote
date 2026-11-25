@@ -1,0 +1,21 @@
+[package]
+name = "dfy-vdisplay"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform virtual display control plane (Windows IddCx driver user-mode half) for the Dafeiyu remote-desktop project"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Threading",
+] }

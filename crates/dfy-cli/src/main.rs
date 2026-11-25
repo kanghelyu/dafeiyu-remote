@@ -1,12 +1,16 @@
-//! `dfy` 命令行入口：genkey / demo-agent / demo-client / selftest。
+//! `dfy` 命令行入口：genkey / demo-agent / demo-client / selftest / agent / view。
 //!
 //! 所有子命令都是 **demo / 诊断**用途，不是产品形态的客户端或 Agent。
 
-#![forbid(unsafe_code)]
+// 除 Windows 输入采集模块外不允许 unsafe；`input_capture` 用 `#![allow(unsafe_code)]`
+// 局部放开（Win32 钩子 API 必须 unsafe）。这里用 `deny` 而非 `forbid`，否则无法覆盖。
+#![deny(unsafe_code)]
 
 mod adapters;
 mod demo;
 mod genkey;
+mod input_bridge;
+mod input_capture;
 mod real;
 
 use std::net::SocketAddr;
@@ -88,6 +92,9 @@ enum Command {
         /// 目标码率（kbps）
         #[arg(long, default_value_t = 8000)]
         bitrate: u32,
+        /// 禁用输入注入（默认允许：把控制端发来的鼠标/键盘注入本机）
+        #[arg(long, default_value_t = false)]
+        no_input: bool,
     },
     /// 真实主控端：连接 Agent、解码 H.264、统计并可保存首帧
     View {
@@ -106,6 +113,9 @@ enum Command {
         /// 把第一帧解码结果存成裸 BGRA 文件
         #[arg(long, value_name = "FILE")]
         save_first: Option<PathBuf>,
+        /// 启用控制输入采集（Windows 低级钩子；Ctrl+Alt+Shift+Q 停止）
+        #[arg(long, default_value_t = false)]
+        control: bool,
     },
 }
 
@@ -133,6 +143,7 @@ async fn main() -> Result<()> {
             monitor,
             fps,
             bitrate,
+            no_input,
         } => {
             let addr: SocketAddr = format!("{host}:{port}")
                 .parse()
@@ -144,6 +155,7 @@ async fn main() -> Result<()> {
                 fps,
                 bitrate_kbps: bitrate,
                 max_frames: None,
+                allow_input: !no_input,
             })
             .await
         }
@@ -153,6 +165,7 @@ async fn main() -> Result<()> {
             expect_fingerprint,
             seconds,
             save_first,
+            control,
         } => {
             let addr: SocketAddr = addr
                 .parse()
@@ -167,6 +180,7 @@ async fn main() -> Result<()> {
                 expect_fingerprint: expect,
                 seconds,
                 save_first_frame: save_first,
+                control,
             })
             .await
             .map(|_| ())

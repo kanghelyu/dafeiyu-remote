@@ -14,16 +14,18 @@ use anyhow::{Context, Result};
 use dfy_proto::envelope;
 use dfy_session::{
     serve_agent, start_capture_loop, AgentConfig, CaptureLoopConfig, Decoder as _, FrameAssembler,
-    IgnoreHandler, RawFrame,
+    RawFrame,
 };
 use dfy_transport::{
-    bind_agent, client_handshake, client_tls, connect, parse_fingerprint_hex, ClientSession,
-    ServerAuth,
+    bind_agent, client_handshake, client_tls, connect, parse_fingerprint_hex, send_input_move,
+    ClientSession, ServerAuth,
 };
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use crate::adapters::{MftDecoderAdapter, MftEncoderAdapter};
+use crate::input_bridge::InjectHandler;
+use crate::input_capture::{CtrlMsg, InputCapture};
 
 /// 被控端（Agent）参数。
 #[derive(Debug, Clone)]
@@ -40,6 +42,8 @@ pub struct AgentOptions {
     pub bitrate_kbps: u32,
     /// 送满多少帧后结束一个会话（`None` = 一直跑）。
     pub max_frames: Option<u64>,
+    /// 是否把控制端发来的输入注入本机（`--no-input` 关闭）。
+    pub allow_input: bool,
 }
 
 /// 主控端（View）参数。
@@ -55,6 +59,8 @@ pub struct ViewOptions {
     pub seconds: u64,
     /// 保存第一帧解码结果为裸 BGRA（便于人工核对）。
     pub save_first_frame: Option<PathBuf>,
+    /// 是否采集本地鼠标/键盘并发给 Agent（`--control` 开启；仅 Windows）。
+    pub control: bool,
 }
 
 /// 启动真实 Agent：监听、握手、采集+编码、推流，直到 Ctrl+C。
@@ -181,13 +187,43 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
                 idle_timeout: Duration::from_secs(3600),
                 drain_delay: Duration::from_millis(100),
             };
-            match serve_agent(conn, welcome, chan, capture, IgnoreHandler, agent_cfg).await {
+
+            // 每个连接独立的注入处理器：注入失败（无桌面/被拒）只降级为「只串流」，不中断会话。
+            let handler = if opts.allow_input {
+                match InjectHandler::new() {
+                    Ok(handler) => handler,
+                    Err(err) => {
+                        warn!(error = %err, "输入注入后端不可用，本次会话只串流");
+                        InjectHandler::disabled()
+                    }
+                }
+            } else {
+                InjectHandler::disabled()
+            };
+            println!(
+                "[agent] 输入注入{}",
+                if handler.is_enabled() {
+                    "已启用"
+                } else {
+                    "未启用（只串流；--no-input 或后端不可用）"
+                }
+            );
+
+            let result =
+                serve_agent(conn, welcome, chan, capture, handler.clone(), agent_cfg).await;
+            // 防卡键：会话结束（正常/异常）立刻释放本机可能仍按下的键。
+            handler.release();
+            let injected = handler.stats();
+            match result {
                 Ok(stats) => println!(
-                    "[agent] 会话结束：帧 {}，{}，RTT {:?} ms，原因 {}",
+                    "[agent] 会话结束：帧 {}，{}，RTT {:?} ms，原因 {}；输入注入 {} 条（忽略 {}，失败 {}）",
                     stats.frames_sent,
                     dfy_transport::human_bytes(stats.bytes_sent),
                     stats.rtt_ms,
-                    stats.end_reason
+                    stats.end_reason,
+                    injected.injected,
+                    injected.ignored,
+                    injected.failed
                 ),
                 Err(err) => warn!(error = %err, "会话异常结束"),
             }
@@ -216,6 +252,10 @@ pub struct ViewStats {
     pub malformed: u64,
     /// 心跳 RTT（毫秒）。
     pub rtt_ms: Option<f64>,
+    /// 发出的鼠标移动 DATAGRAM 数（仅 --control）。
+    pub input_moves: u64,
+    /// 发出的其它输入事件数（键/按键/滚轮，仅 --control）。
+    pub input_events: u64,
     /// 结束原因。
     pub end_reason: &'static str,
 }
@@ -257,6 +297,22 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
     let deadline = Instant::now() + Duration::from_secs(opts.seconds.max(1));
     let mut saved = false;
     let mut next_ping = Instant::now();
+
+    // 控制输入采集（仅 Windows 有实现；不可用时降级为「只收视频」）。
+    let mut capture = if opts.control {
+        match InputCapture::start() {
+            Ok(capture) => {
+                println!("[view] 控制输入已启用（鼠标移动 10ms 合并；Ctrl+Alt+Shift+Q 停止）");
+                capture
+            }
+            Err(err) => {
+                println!("[view] 控制输入不可用：{err:#}；继续只收视频");
+                InputCapture::disabled()
+            }
+        }
+    } else {
+        InputCapture::disabled()
+    };
 
     loop {
         if Instant::now() >= deadline {
@@ -337,6 +393,28 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
                 }
             }
 
+            msg = capture.recv() => {
+                match msg {
+                    Some(CtrlMsg::Move(ev)) => match send_input_move(&conn, &ev) {
+                        Ok(()) => stats.input_moves += 1,
+                        Err(err) => debug!(error = %err, "发送鼠标移动 DATAGRAM 失败"),
+                    },
+                    Some(CtrlMsg::Event(env)) => {
+                        if tx.send_ctrl(&env).await.is_ok() {
+                            stats.input_events += 1;
+                        }
+                    }
+                    Some(CtrlMsg::Stopped) => {
+                        println!("[view] 收到 Ctrl+Alt+Shift+Q：停止采集控制输入（继续收视频）");
+                        capture.stop();
+                    }
+                    None => {
+                        debug!("控制输入采集已结束");
+                        capture.stop();
+                    }
+                }
+            }
+
             _ = tokio::time::sleep_until(next_ping) => {
                 let ts = dfy_transport::now_us();
                 if tx.send_ctrl(&dfy_proto::Envelope::ping(ts)).await.is_ok() {
@@ -351,6 +429,7 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
         }
     }
 
+    capture.stop();
     stats.rtt_ms = hb.rtt_ms();
     let _ = tx
         .send_ctrl(&dfy_proto::Envelope::bye(dfy_proto::BYE_NORMAL))
@@ -372,6 +451,12 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
         "[view] RTT = {:?} ms，结束原因 = {}",
         stats.rtt_ms, stats.end_reason
     );
+    if opts.control {
+        println!(
+            "[view] 控制输入：鼠标移动 DATAGRAM = {}，其它事件 = {}",
+            stats.input_moves, stats.input_events
+        );
+    }
     info!(
         datagrams = stats.datagrams,
         frames = stats.frames,

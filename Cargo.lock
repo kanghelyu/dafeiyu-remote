@@ -320,6 +320,7 @@ dependencies = [
  "clap",
  "dfy-capture",
  "dfy-codec",
+ "dfy-input",
  "dfy-proto",
  "dfy-session",
  "dfy-transport",
@@ -330,6 +331,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows",
 ]
 
 [[package]]
@@ -339,7 +341,9 @@ dependencies = [
  "anyhow",
  "blake3",
  "dfy-proto",
+ "dfy-transport",
  "png",
+ "tokio",
  "tracing",
  "windows",
 ]
@@ -377,8 +381,10 @@ dependencies = [
  "anyhow",
  "base64",
  "clap",
+ "dfy-transport",
  "hex",
  "hmac",
+ "quinn",
  "rand 0.8.8",
  "serde",
  "sha2",
@@ -418,6 +424,14 @@ dependencies = [
  "sha2",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "dfy-vdisplay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "windows",
 ]
 
 [[package]]

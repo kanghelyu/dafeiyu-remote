@@ -19,6 +19,10 @@ dfy-proto = { path = "../dfy-proto" }
 png = "0.18"
 tracing = "0.1"
 
+[dev-dependencies]
+dfy-transport = { path = "../dfy-transport" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
