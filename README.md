@@ -181,16 +181,20 @@ cargo run --release -p dfy-cli -- view --addr 127.0.0.1:21116 --ui --seconds 60
 ## 路线图
 
 - **M0** 协议规范 v1 + Rust 骨架 + QUIC 端到端自测 ✅
-- **M1** Windows↔Windows MVP：采集 → H.264 → 串流 → 解码；键鼠注入；剪贴板；文件传输（进行中；串流/输入/剪贴板已可用）
-- **M2** NAT 打洞 + relay + 配对 + 安全加固（relay 路径已可用，P2P 打洞进行中）
-- **M3** macOS / Linux 被控；Android 主控（逆向完成）
-- **M4** 虚拟屏（IddCx / CGVirtualDisplay / evdi）、音频、多屏、性能打磨
+- **M1** Windows↔Windows MVP：采集 → H.264 → 串流 → 解码；键鼠注入；剪贴板；文件传输；查看器窗口 ✅（v0.1.0）
+- **M2** NAT 打洞 + relay + 配对 + 安全加固：relay/一键部署/打洞 CLI 已可用；路径质量切换与会话迁移 v0.2 进行中 🚧
+- **M3** macOS / Linux 被控；Android 主控（逆向完成，待实现）🚧
+- **M4** 虚拟屏（IddCx / CGVirtualDisplay / evdi）、音频、多屏、性能打磨 🚧
 - **M5** 公测发布、签名与公证、文档与协议 v1 定稿
 
 ## 许可证
 
 - 代码：**AGPL-3.0-or-later**（见 `LICENSE`）
 - 协议规范文本：Apache-2.0 / CC-BY-4.0（见 `spec/`）
+
+## 更新日志
+
+见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 参与
 
