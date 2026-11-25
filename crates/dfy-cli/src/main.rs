@@ -4,8 +4,10 @@
 
 #![forbid(unsafe_code)]
 
+mod adapters;
 mod demo;
 mod genkey;
+mod real;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -64,7 +66,47 @@ enum Command {
         seconds: u64,
     },
     /// 端到端自测：进程内 agent + client，跑 1 秒，断言握手与 ≥10 个视频 DATAGRAM
+    /// 端到端自测：进程内 agent + client，跑 1 秒，断言握手与 ≥10 个视频 DATAGRAM
     Selftest,
+    /// 真实被控端：采集屏幕 + H.264 编码 → QUIC 推流（Ctrl+C 退出）
+    Agent {
+        /// 监听地址（IP）
+        #[arg(long, default_value = "0.0.0.0")]
+        host: String,
+        /// 监听 UDP 端口
+        #[arg(long, default_value_t = 21116)]
+        port: u16,
+        /// 连接口令
+        #[arg(long, default_value = "test")]
+        password: String,
+        /// 采集哪个显示器（DXGI 枚举索引）
+        #[arg(long, default_value_t = 0)]
+        monitor: u32,
+        /// 目标帧率
+        #[arg(long, default_value_t = 60)]
+        fps: u32,
+        /// 目标码率（kbps）
+        #[arg(long, default_value_t = 8000)]
+        bitrate: u32,
+    },
+    /// 真实主控端：连接 Agent、解码 H.264、统计并可保存首帧
+    View {
+        /// Agent 地址，例如 127.0.0.1:21116
+        #[arg(long, default_value = "127.0.0.1:21116")]
+        addr: String,
+        /// 连接口令
+        #[arg(long, default_value = "test")]
+        password: String,
+        /// 严格校验 Agent 证书 SPKI 指纹（64 位 hex）
+        #[arg(long, value_name = "HEX")]
+        expect_fingerprint: Option<String>,
+        /// 观察时长（秒）
+        #[arg(long, default_value_t = 10)]
+        seconds: u64,
+        /// 把第一帧解码结果存成裸 BGRA 文件
+        #[arg(long, value_name = "FILE")]
+        save_first: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -84,6 +126,51 @@ async fn main() -> Result<()> {
             seconds,
         } => run_demo_client(&addr, password, expect_fingerprint, seconds).await,
         Command::Selftest => demo::selftest().await,
+        Command::Agent {
+            host,
+            port,
+            password,
+            monitor,
+            fps,
+            bitrate,
+        } => {
+            let addr: SocketAddr = format!("{host}:{port}")
+                .parse()
+                .with_context(|| format!("无法解析监听地址 {host}:{port}"))?;
+            real::run_agent(real::AgentOptions {
+                addr,
+                password,
+                monitor,
+                fps,
+                bitrate_kbps: bitrate,
+                max_frames: None,
+            })
+            .await
+        }
+        Command::View {
+            addr,
+            password,
+            expect_fingerprint,
+            seconds,
+            save_first,
+        } => {
+            let addr: SocketAddr = addr
+                .parse()
+                .with_context(|| format!("无法解析 Agent 地址 {addr}（示例：127.0.0.1:21116）"))?;
+            let expect = match expect_fingerprint {
+                Some(text) => Some(real::parse_fingerprint_arg(&text)?),
+                None => None,
+            };
+            real::run_view(real::ViewOptions {
+                addr,
+                password,
+                expect_fingerprint: expect,
+                seconds,
+                save_first_frame: save_first,
+            })
+            .await
+            .map(|_| ())
+        }
     }
 }
 

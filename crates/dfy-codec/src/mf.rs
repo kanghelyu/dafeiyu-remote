@@ -84,6 +84,19 @@ impl MfSession {
     }
 }
 
+impl Clone for MfSession {
+    /// 克隆等于再持有一份引用（对应一次 `MFStartup` 的引用计数）。
+    fn clone(&self) -> MfSession {
+        if self.active {
+            let mut g = mf_global().lock().unwrap_or_else(|e| e.into_inner());
+            g.refcount += 1;
+        }
+        MfSession {
+            active: self.active,
+        }
+    }
+}
+
 impl Drop for MfSession {
     fn drop(&mut self) {
         if !self.active {
@@ -1121,8 +1134,22 @@ impl MfDecoder {
         if candidates.is_empty() {
             bail!("dfy-codec: 系统里没有注册 H.264 解码 MFT");
         }
+        let only = std::env::var("DFY_CODEC_DEC_NAME").ok();
+        for (idx, c) in candidates.iter().enumerate() {
+            if debug_enabled() {
+                eprintln!(
+                    "dfy-codec[debug]: 解码候选 #{idx}「{}」硬件={}",
+                    c.name, c.hardware
+                );
+            }
+        }
         let mut errors = Vec::new();
         for cand in candidates {
+            if let Some(ref only) = only {
+                if !cand.name.contains(only.as_str()) {
+                    continue;
+                }
+            }
             // 同编码器：激活前先允许异步 MFT（QSV/DXVA 解码器通常是异步的）。
             unsafe {
                 let _ = cand.activate.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
@@ -1138,22 +1165,19 @@ impl MfDecoder {
                 unsafe {
                     let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
                 }
-            }
-            // 先设输入类型（H.264）。优先用 MFT 自己声明的输入类型。
-            let in_type = match pick_decoder_input_type(&transform) {
-                Ok(t) => t,
-                Err(e) => {
-                    errors.push(format!("{}: 取输入类型失败 {e}", cand.name));
-                    continue;
+                if debug_enabled() {
+                    let async_ = unsafe { attrs.GetUINT32(&MF_TRANSFORM_ASYNC) }.unwrap_or(0);
+                    let d3d = unsafe { attrs.GetUINT32(&MF_SA_D3D11_AWARE) }.unwrap_or(0);
+                    eprintln!(
+                        "dfy-codec[debug]: 解码 MFT「{}」MF_TRANSFORM_ASYNC={async_} D3D11_AWARE={d3d}",
+                        cand.name
+                    );
                 }
-            };
-            if let Err(e) = unsafe { transform.SetInputType(0, &in_type, 0) } {
-                errors.push(format!("{}: SetInputType(H264) 失败 {e}", cand.name));
-                continue;
-            }
-            unsafe {
-                let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
-                let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+            } else if debug_enabled() {
+                eprintln!(
+                    "dfy-codec[debug]: 解码 MFT「{}」不暴露 IMFAttributes",
+                    cand.name
+                );
             }
             let info =
                 unsafe { transform.GetOutputStreamInfo(0) }.unwrap_or(MFT_OUTPUT_STREAM_INFO {
@@ -1163,9 +1187,9 @@ impl MfDecoder {
                 });
             let provides_samples = info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0;
             let mut dec = MfDecoder {
-                _session: session,
+                _session: session.clone(),
                 transform,
-                input_type_set: true,
+                input_type_set: false,
                 output_configured: false,
                 provides_samples,
                 out_capacity: info.cbSize.max(2 * 1024 * 1024),
@@ -1176,8 +1200,75 @@ impl MfDecoder {
                 frame_duration_100ns: 10_000_000 / 30,
                 stream_change_count: 0,
             };
-            // 先尝试用解码器声明的 NV12 输出类型（部分解码器要求先设输出类型）。
-            let _ = dec.configure_output_type();
+            // 解码器对「先设输入还是先设输出」的要求不一：先试先设输出类型。
+            let out_first = dec.configure_output_type();
+            if out_first.is_err() {
+                // 退回到先设输入类型，再设输出类型。
+                let in_type = match pick_decoder_input_type(&dec.transform) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        errors.push(format!("{}: 取输入类型失败 {e}", cand.name));
+                        continue;
+                    }
+                };
+                if let Err(e) = unsafe { dec.transform.SetInputType(0, &in_type, 0) } {
+                    errors.push(format!("{}: SetInputType(H264) 失败 {e}", cand.name));
+                    continue;
+                }
+                dec.input_type_set = true;
+                let _ = dec.configure_output_type();
+            } else {
+                // 先设输出类型成功后，再设输入类型。
+                let in_type = match pick_decoder_input_type(&dec.transform) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        errors.push(format!("{}: 取输入类型失败 {e}", cand.name));
+                        continue;
+                    }
+                };
+                if let Err(e) = unsafe { dec.transform.SetInputType(0, &in_type, 0) } {
+                    // 输出先设不行就退回输入先设。
+                    errors.push(format!("{}: 先输出后输入的顺序失败 {e}", cand.name));
+                    continue;
+                }
+                dec.input_type_set = true;
+            }
+            if debug_enabled() {
+                eprintln!(
+                    "dfy-codec[debug]: 解码输出类型 NV12 状态={} width={} height={} stride={} provides_samples={}，输入类型已设={}",
+                    if dec.output_configured { "已设置" } else { "未设置" },
+                    dec.width,
+                    dec.height,
+                    dec.stride,
+                    dec.provides_samples,
+                    dec.input_type_set
+                );
+                let cur_in = unsafe { dec.transform.GetInputCurrentType(0) };
+                match cur_in {
+                    Ok(t) => match media_attrs(&t) {
+                        Ok(a) => {
+                            let sub = unsafe { a.GetGUID(&MF_MT_SUBTYPE) }
+                                .map(|g| format!("{{{:08X}-{:04X}-{:04X}}}", g.data1, g.data2, g.data3))
+                                .unwrap_or_else(|e| format!("<读取失败 {e}>"));
+                            let major = unsafe { a.GetGUID(&MF_MT_MAJOR_TYPE) }
+                                .map(|g| format!("{{{:08X}-{:04X}-{:04X}}}", g.data1, g.data2, g.data3))
+                                .unwrap_or_else(|e| format!("<读取失败 {e}>"));
+                            eprintln!("dfy-codec[debug]: 解码当前输入类型 major={major} subtype={sub}");
+                        }
+                        Err(e) => eprintln!("dfy-codec[debug]: 读输入类型属性失败：{e}"),
+                    },
+                    Err(e) => eprintln!("dfy-codec[debug]: GetInputCurrentType 失败：{e}"),
+                }
+            }
+            // 类型都设好之后再通知开始流处理（顺序对部分 MFT 很关键）。
+            unsafe {
+                let _ = dec
+                    .transform
+                    .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
+                let _ = dec
+                    .transform
+                    .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+            }
             return Ok(dec);
         }
         bail!(
@@ -1311,6 +1402,12 @@ impl MfDecoder {
                     }
                 }
                 Err(e) => {
+                    if debug_enabled() {
+                        eprintln!(
+                            "dfy-codec[debug]: 解码 ProcessOutput hresult=0x{:08x} status={status}",
+                            e.code().0 as u32
+                        );
+                    }
                     if is_need_more_input(&e) {
                         break;
                     }
@@ -1343,13 +1440,29 @@ impl VideoDecoder for MfDecoder {
         };
         // MF 解码 MFT 要求一次喂一个访问单元，整条码流进来时按 AUD 切开。
         let units = nal::annexb_access_units(&annexb);
+        if debug_enabled() {
+            eprintln!(
+                "dfy-codec[debug]: 解码输入 {} 字节（Annex-B {} 字节），切出 {} 个访问单元",
+                data.len(),
+                annexb.len(),
+                units.len()
+            );
+        }
         let mut frames = Vec::new();
         for (start, end) in units {
             let unit = &annexb[start..end];
             if unit.is_empty() {
                 continue;
             }
-            frames.extend(self.decode_access_unit(unit)?);
+            let got = self.decode_access_unit(unit)?;
+            if debug_enabled() {
+                eprintln!(
+                    "dfy-codec[debug]: 访问单元 {start}..{end}（{} 字节）→ {} 帧",
+                    unit.len(),
+                    got.len()
+                );
+            }
+            frames.extend(got);
         }
         Ok(frames)
     }
@@ -1400,6 +1513,14 @@ impl MfDecoder {
             }
             let (drained, changed) = self.drain_outputs()?;
             frames.extend(drained);
+            if debug_enabled() && attempts <= 2 {
+                let in_status = unsafe { self.transform.GetInputStatus(0) };
+                let out_status = unsafe { self.transform.GetOutputStatus() };
+                eprintln!(
+                    "dfy-codec[debug]: 解码状态 in={in_status:?} out={out_status:?} 本单元已出 {} 帧",
+                    frames.len()
+                );
+            }
             if changed {
                 self.stream_change_count += 1;
                 if self.stream_change_count > 8 {

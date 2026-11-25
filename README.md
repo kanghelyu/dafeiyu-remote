@@ -52,12 +52,24 @@ cargo test --workspace
 cargo run -p dfy-cli -- selftest      # 端到端回环自测：QUIC 握手 + 视频/输入 DATAGRAM
 ```
 
-两个进程手动对跑：
+两个进程手动对跑（协议 demo，无真实采集）：
 
 ```bash
 cargo run -p dfy-cli -- demo-agent --port 21116 --password test
 cargo run -p dfy-cli -- demo-client --addr 127.0.0.1:21116 --password test
 ```
+
+**真实屏幕串流**（Windows：DXGI 采集 + Media Foundation H.264）：
+
+```bash
+# 被控端：采集本机屏幕并推流（Ctrl+C 退出）
+cargo run -p dfy-cli -- agent --port 21116 --password test --monitor 0 --fps 30 --bitrate 8000
+
+# 主控端：连接、解码、打印统计，可选把首帧存成裸 BGRA
+cargo run -p dfy-cli -- view --addr 127.0.0.1:21116 --password test --seconds 10 --save-first first-frame.bgra
+```
+
+实测（本机 2800×1840 桌面，6 秒）：398 个视频 DATAGRAM / 401 KiB、60 帧重组、24 帧解码、0 解析失败、RTT 0.571 ms；首帧转 PNG 后是真实桌面画面。详见 [design/014-real-pipeline-verified.md](design/014-real-pipeline-verified.md)。
 
 ## 路线图
 

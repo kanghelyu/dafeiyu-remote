@@ -16,6 +16,9 @@ blake3.workspace = true
 clap.workspace = true
 dfy-proto.workspace = true
 dfy-transport.workspace = true
+dfy-capture = { path = "../dfy-capture" }
+dfy-codec = { path = "../dfy-codec" }
+dfy-session = { path = "../dfy-session" }
 ed25519-dalek.workspace = true
 hex.workspace = true
 quinn.workspace = true
