@@ -62,8 +62,8 @@ use std::mem;
 use crate::config::PathConfig;
 use crate::sample::{PathSample, SampleWindow, WindowStats};
 use crate::state::{
-    Action, Baseline, DegradeReason, PathEvent, PathKind, PathState, PathStats, PendingSwitch, Phase,
-    SwitchDirection,
+    Action, Baseline, DegradeReason, PathEvent, PathKind, PathState, PathStats, PendingSwitch,
+    Phase, SwitchDirection,
 };
 
 /// 事件缓冲区上限；调用方长期不 `drain` 时丢弃最旧事件，避免无界增长。
@@ -101,11 +101,7 @@ impl Streak {
     /// 记录一个观察期内的坏采样：只统计落在同一 `span_ms` 时间窗内的连续坏采样。
     /// 距首个坏采样超过 `span_ms` 时，以当前采样重新开窗。
     fn record_within(&mut self, at_ms: u64, span_ms: u64) -> u32 {
-        if self.count == 0 {
-            self.count = 1;
-            self.first_at_ms = at_ms;
-            self.last_at_ms = at_ms;
-        } else if at_ms.saturating_sub(self.first_at_ms) > span_ms {
+        if self.count == 0 || at_ms.saturating_sub(self.first_at_ms) > span_ms {
             self.count = 1;
             self.first_at_ms = at_ms;
             self.last_at_ms = at_ms;
@@ -444,10 +440,7 @@ impl PathMonitor {
         if !sample.has_rtt() {
             return None;
         }
-        let baseline = match self.state.baseline {
-            Some(baseline) => baseline,
-            None => return None,
-        };
+        let baseline = self.state.baseline?;
         let reference = baseline.rtt_ms.max(cfg.baseline_rtt_floor_ms);
         if sample.rtt_ms > reference * cfg.degrade_rtt_factor {
             return Some(DegradeReason::Rtt {
@@ -822,7 +815,9 @@ mod tests {
         let mut monitor = new_monitor();
         warmup(&mut monitor);
         // 每 100ms 一个坏采样：间隔 <500ms 的不计数，需要 ~1s 才凑够 3 个。
-        for at in [2_100u64, 2_200, 2_300, 2_400, 2_500, 2_600, 2_700, 2_800, 2_900, 3_000] {
+        for at in [
+            2_100u64, 2_200, 2_300, 2_400, 2_500, 2_600, 2_700, 2_800, 2_900, 3_000,
+        ] {
             assert_eq!(monitor.on_sample(sample(at, 60.0, 0, 0)), Action::None);
         }
         assert_eq!(
@@ -997,7 +992,8 @@ mod tests {
         let mut switched = false;
         for i in 0..6u64 {
             let at = 34_000 + i * 1_000;
-            if monitor.on_sample_for(PathKind::Direct, good(at)) == Action::SwitchTo(PathKind::Direct)
+            if monitor.on_sample_for(PathKind::Direct, good(at))
+                == Action::SwitchTo(PathKind::Direct)
             {
                 switched = true;
                 assert!(matches!(
@@ -1021,7 +1017,10 @@ mod tests {
     fn bad_probe_resets_recover_streak() {
         let mut monitor = relay_observing_monitor();
         let base = 34_000;
-        assert_eq!(monitor.on_sample_for(PathKind::Direct, good(base)), Action::None);
+        assert_eq!(
+            monitor.on_sample_for(PathKind::Direct, good(base)),
+            Action::None
+        );
         assert_eq!(
             monitor.on_sample_for(PathKind::Direct, good(base + 1_000)),
             Action::None
@@ -1125,9 +1124,7 @@ mod tests {
         );
         assert!(matches!(
             monitor.state().phase,
-            Phase::Probing {
-                since_ms: 34_000
-            }
+            Phase::Probing { since_ms: 34_000 }
         ));
         // 探测间隔 1s 内不重复请求。
         assert_eq!(
@@ -1213,9 +1210,7 @@ mod tests {
         let first = run();
         let second = run();
         assert_eq!(first, second);
-        assert!(first
-            .0
-            .contains(&Action::SwitchTo(PathKind::Relay)));
+        assert!(first.0.contains(&Action::SwitchTo(PathKind::Relay)));
         assert_eq!(first.2.switches, 0);
     }
 

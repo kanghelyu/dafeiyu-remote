@@ -216,7 +216,11 @@ impl SampleWindow {
         let recv_bps = (recv_sum / u128::from(n)).min(u128::from(u64::MAX)) as u64;
         Some(WindowStats {
             samples: self.len,
-            smoothed_rtt_ms: if self.has_ewma { self.ewma_rtt } else { f32::NAN },
+            smoothed_rtt_ms: if self.has_ewma {
+                self.ewma_rtt
+            } else {
+                f32::NAN
+            },
             mean_rtt_ms,
             loss_ppm,
             recv_bps,
