@@ -131,6 +131,7 @@ fn real_encode_then_decode_1280x720() {
     let mut max_latency_ms = 0.0f64;
     let start = Instant::now();
 
+    let mut pts_list: Vec<u64> = Vec::new();
     for i in 0..FRAMES {
         let (bgra, stride) = synth_bgra(W, H, i);
         // 顺便验证 CPU 转换路径：BGRA → NV12 再直接喂编码器。
@@ -148,10 +149,33 @@ fn real_encode_then_decode_1280x720() {
                 first_extra = Some(f.extra.clone());
             }
             assert!(!f.data.is_empty(), "编码帧不能为空");
-            assert_eq!(f.pts_us, i as u64 * frame_dur_us, "pts 应原样回传");
+            // 编码 MFT 有前瞻缓冲，输出帧的 pts 对应更早喂入的帧，但必须单调递增且不超前。
+            assert!(
+                f.pts_us <= i as u64 * frame_dur_us,
+                "输出 pts 超前于当前输入：{} > {}",
+                f.pts_us,
+                i as u64 * frame_dur_us
+            );
+            pts_list.push(f.pts_us);
             stream.extend_from_slice(&f.data);
         }
     }
+    let flush_out = enc.flush().expect("冲刷编码器失败");
+    if !flush_out.is_empty() {
+        println!("冲刷出缓冲帧：{} 帧", flush_out.len());
+    }
+    for f in flush_out {
+        encoded += 1;
+        if f.is_keyframe {
+            keyframes += 1;
+        }
+        if f.extra.sps.is_some() && f.extra.pps.is_some() {
+            first_extra = Some(f.extra.clone());
+        }
+        pts_list.push(f.pts_us);
+        stream.extend_from_slice(&f.data);
+    }
+
     let encode_ms = start.elapsed().as_secs_f64() * 1000.0;
 
     println!(
@@ -163,6 +187,11 @@ fn real_encode_then_decode_1280x720() {
     assert!(
         encoded >= FRAMES as usize - 2,
         "编码器丢帧过多：{encoded}/{FRAMES}"
+    );
+    assert_eq!(pts_list.first().copied(), Some(0), "首帧 pts 应为 0");
+    assert!(
+        pts_list.windows(2).all(|w| w[0] < w[1]),
+        "pts 应严格递增：{pts_list:?}"
     );
     assert!(keyframes >= 1, "30 帧里没有任何关键帧");
     assert!(
@@ -195,6 +224,14 @@ fn real_encode_then_decode_1280x720() {
     match dec.decode(&stream) {
         Ok(frames) => decoded.extend(frames),
         Err(e) => panic!("解码失败：{e:#}"),
+    }
+    // 微软 H.264 解码 MFT 会攒十几帧才吐输出，必须冲刷才会全部出来。
+    match dec.flush() {
+        Ok(frames) => {
+            println!("解码冲刷出 {} 帧", frames.len());
+            decoded.extend(frames);
+        }
+        Err(e) => panic!("冲刷解码器失败：{e:#}"),
     }
     let decode_ms = start.elapsed().as_secs_f64() * 1000.0;
 
@@ -264,16 +301,21 @@ fn request_keyframe_and_bitrate() {
 
     enc.request_keyframe();
     let (bgra, _) = synth_bgra(W, H, 5);
-    let out = enc.encode(&bgra, stride, 5 * 33_333).expect("编码失败");
+    let mut out = enc.encode(&bgra, stride, 5 * 33_333).expect("编码失败");
+    // 编码 MFT 有前瞻缓冲，请求的关键帧可能还在缓冲里，冲刷出来才能看到。
+    match enc.flush() {
+        Ok(mut flushed) => out.append(&mut flushed),
+        Err(e) => eprintln!("冲刷编码器失败（不影响关键帧判断）：{e:#}"),
+    }
     let force_ok = out.iter().any(|f| f.is_keyframe);
-    println!("request_keyframe 后下一帧是否关键帧：{force_ok}");
+    println!("request_keyframe 后是否出现关键帧：{force_ok}");
 
     // set_bitrate：部分 MFT 不支持 Codec API，失败是可接受的，但要打印原因。
     match enc.set_bitrate(3000) {
         Ok(()) => println!("set_bitrate(3000) 成功"),
         Err(e) => println!("set_bitrate(3000) 不受支持：{e:#}"),
     }
-    assert!(force_ok, "request_keyframe 之后下一帧应是关键帧");
+    assert!(force_ok, "request_keyframe 之后冲刷出的帧里应有关键帧");
 }
 
 /// CPU 转换冒烟：BGRA→NV12 尺寸与亮度范围。

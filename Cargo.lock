@@ -337,6 +337,8 @@ name = "dfy-clipboard"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
+ "dfy-proto",
  "png",
  "tracing",
  "windows",

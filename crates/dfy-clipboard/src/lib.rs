@@ -36,6 +36,7 @@ mod format;
 #[cfg(windows)]
 mod hdrop;
 mod html;
+mod sync;
 #[cfg(windows)]
 mod r#win;
 
@@ -49,6 +50,10 @@ pub use hdrop::{encode_file_list, parse_file_list};
 pub use html::{extract_html_fragment, parse_html_offsets, HtmlOffsets, HTML_FORMAT_NAME};
 #[cfg(windows)]
 pub use r#win::{read_all, watch, ClipboardWatcher};
+pub use sync::{
+    hash_bytes, kind_from_name, message_from_envelope, message_from_proto_list,
+    message_to_envelope, ClipFormatItem, ClipboardSync, SyncMessage, CHUNK_BYTES, MAX_SYNC_BYTES,
+};
 
 /// 一次拉取请求返回的数据块。
 #[derive(Debug, Clone, PartialEq, Eq)]

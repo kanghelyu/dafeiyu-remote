@@ -26,8 +26,12 @@ fn main() -> Result<()> {
         );
     }
     let mut dec = create_decoder(Codec::H264, false).context("创建解码器失败")?;
-    let frames = dec.decode(&data).context("解码失败")?;
-    println!("解出帧数：{}", frames.len());
+    let mut frames = dec.decode(&data).context("解码失败")?;
+    println!("送入全部数据后解出帧数：{}", frames.len());
+    let tail = dec.flush().context("冲刷解码器失败")?;
+    println!("冲刷出帧数：{}", tail.len());
+    frames.extend(tail);
+    println!("合计解出帧数：{}", frames.len());
     if let Some(f) = frames.first() {
         let luma = f
             .data

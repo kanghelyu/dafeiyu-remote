@@ -7,13 +7,14 @@
 /// tag 分配（DFYP/1，自研定义）：
 /// 1 Hello / 2 Challenge / 3 Auth / 4 Welcome / 5 CapabilityAck /
 /// 6 Ping / 7 Pong / 8 VideoConfig / 9 MonitorList / 10 InputEvent /
-/// 11 Bye / 12 Reject
+/// 11 Bye / 12 Reject / 13 ClipboardFormatList / 14 ClipboardPull /
+/// 15 ClipboardDataChunk / 16 ClipboardApplied
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Envelope {
     /// 消息体；空 Envelope 视为协议错误。
     #[prost(
         oneof = "envelope::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16"
     )]
     pub body: Option<envelope::Body>,
 }
@@ -59,6 +60,18 @@ pub mod envelope {
         /// 握手拒绝 + 错误码。
         #[prost(message, tag = "12")]
         Reject(super::Reject),
+        /// 剪贴板格式清单（拉模式：只报描述符，不推数据）。
+        #[prost(message, tag = "13")]
+        ClipboardFormatList(super::ClipboardFormatList),
+        /// 请求拉取某个格式的数据（按 32B hash 定位）。
+        #[prost(message, tag = "14")]
+        ClipboardPull(super::ClipboardPull),
+        /// 格式数据分块（128KiB 默认块）。
+        #[prost(message, tag = "15")]
+        ClipboardDataChunk(super::ClipboardDataChunk),
+        /// 已写入确认（防环：来源端忽略自己 hash 的事件）。
+        #[prost(message, tag = "16")]
+        ClipboardApplied(super::ClipboardApplied),
     }
 }
 
@@ -217,6 +230,67 @@ pub struct InputEvent {
     pub ts_us: u64,
 }
 
+/// 剪贴板格式描述（清单项）。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClipboardFormat {
+    /// 平台格式 ID（Windows CF_* 或自定义注册格式）。
+    #[prost(uint32, tag = "1")]
+    pub id: u32,
+    /// 内容 BLAKE3（32B），跨端去重与拉取定位用。
+    #[prost(bytes = "vec", tag = "2")]
+    pub hash: Vec<u8>,
+    /// 大小提示（字节，0=未知）。
+    #[prost(uint32, tag = "3")]
+    pub size_hint: u32,
+    /// 格式名（Windows 注册格式名或 "text/plain" 等 MIME）。
+    #[prost(string, tag = "4")]
+    pub name: String,
+}
+
+/// 剪贴板格式清单。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClipboardFormatList {
+    /// 来源端单调序号；用于丢弃过期清单。
+    #[prost(uint64, tag = "1")]
+    pub seq: u64,
+    /// 清单项（通常文本+HTML+图片+文件列表）。
+    #[prost(message, repeated, tag = "2")]
+    pub items: Vec<ClipboardFormat>,
+}
+
+/// 拉取请求。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClipboardPull {
+    /// 目标格式 hash（32B）。
+    #[prost(bytes = "vec", tag = "1")]
+    pub hash: Vec<u8>,
+}
+
+/// 格式数据分块。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClipboardDataChunk {
+    /// 目标格式 hash（32B）。
+    #[prost(bytes = "vec", tag = "1")]
+    pub hash: Vec<u8>,
+    /// 本块起始偏移。
+    #[prost(uint32, tag = "2")]
+    pub offset: u32,
+    /// 本块数据（≤128KiB）。
+    #[prost(bytes = "vec", tag = "3")]
+    pub data: Vec<u8>,
+    /// 是否最后一块（true 时 `offset+data.len()` 为总长）。
+    #[prost(bool, tag = "4")]
+    pub last: bool,
+}
+
+/// 已写入确认。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClipboardApplied {
+    /// 已写入的格式 hash（32B）。
+    #[prost(bytes = "vec", tag = "1")]
+    pub hash: Vec<u8>,
+}
+
 /// `Bye`：结束会话。
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Bye {
@@ -329,6 +403,42 @@ impl Envelope {
         }
     }
 
+    /// 构造 `ClipboardFormatList` 信封。
+    pub fn clipboard_format_list(seq: u64, items: Vec<ClipboardFormat>) -> Self {
+        Self {
+            body: Some(envelope::Body::ClipboardFormatList(ClipboardFormatList {
+                seq,
+                items,
+            })),
+        }
+    }
+
+    /// 构造 `ClipboardPull` 信封。
+    pub fn clipboard_pull(hash: Vec<u8>) -> Self {
+        Self {
+            body: Some(envelope::Body::ClipboardPull(ClipboardPull { hash })),
+        }
+    }
+
+    /// 构造 `ClipboardDataChunk` 信封。
+    pub fn clipboard_data_chunk(hash: Vec<u8>, offset: u32, data: Vec<u8>, last: bool) -> Self {
+        Self {
+            body: Some(envelope::Body::ClipboardDataChunk(ClipboardDataChunk {
+                hash,
+                offset,
+                data,
+                last,
+            })),
+        }
+    }
+
+    /// 构造 `ClipboardApplied` 信封。
+    pub fn clipboard_applied(hash: Vec<u8>) -> Self {
+        Self {
+            body: Some(envelope::Body::ClipboardApplied(ClipboardApplied { hash })),
+        }
+    }
+
     /// 消息短名（日志用）。
     pub fn kind_name(&self) -> &'static str {
         match &self.body {
@@ -344,6 +454,10 @@ impl Envelope {
             Some(envelope::Body::InputEvent(_)) => "InputEvent",
             Some(envelope::Body::Bye(_)) => "Bye",
             Some(envelope::Body::Reject(_)) => "Reject",
+            Some(envelope::Body::ClipboardFormatList(_)) => "ClipboardFormatList",
+            Some(envelope::Body::ClipboardPull(_)) => "ClipboardPull",
+            Some(envelope::Body::ClipboardDataChunk(_)) => "ClipboardDataChunk",
+            Some(envelope::Body::ClipboardApplied(_)) => "ClipboardApplied",
             None => "<empty>",
         }
     }

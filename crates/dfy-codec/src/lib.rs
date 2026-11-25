@@ -236,6 +236,14 @@ pub trait VideoDecoder: Send {
     ///
     /// 解码器有内部重排序/延迟，第一帧可能返回空 `Vec`；调用方应持续送入。
     fn decode(&mut self, data: &[u8]) -> anyhow::Result<Vec<DecodedFrame>>;
+
+    /// 冲刷解码器内部缓冲，返回所有剩余的待输出帧。
+    ///
+    /// 解码 MFT 有重排序缓冲（部分实现甚至要攒够十几帧才吐第一帧），
+    /// 停止播放/文件解码结束前应调用一次。默认实现返回空（无缓冲）。
+    fn flush(&mut self) -> anyhow::Result<Vec<DecodedFrame>> {
+        Ok(Vec::new())
+    }
 }
 
 /// 系统里探测到的一个编码器 MFT。

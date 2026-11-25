@@ -19,6 +19,8 @@ pub const CHAN_INPUT_MOVE: u8 = 0;
 pub const CHAN_VIDEO: u8 = 1;
 /// 音频 DATAGRAM 通道（v1 未实现）。
 pub const CHAN_AUDIO: u8 = 2;
+/// 剪贴板数据通道（DATAGRAM 预留；v1 走 control 流，见 DFYP §8）。
+pub const CHAN_CLIPBOARD: u8 = 4;
 
 /// 视频 DATAGRAM 头长度（字节）。
 pub const VIDEO_HEADER_LEN: usize = 16;

@@ -1114,6 +1114,8 @@ pub(crate) struct MfDecoder {
     pts_counter_us: u64,
     frame_duration_100ns: i64,
     stream_change_count: u32,
+    /// 是否已经把 SPS/PPS 作为 `MF_MT_MPEG_SEQUENCE_HEADER` 写进输入类型。
+    seq_header_set: bool,
 }
 
 // SAFETY: 同 MfEncoder——对象只在 MTA 上使用，且结构体独占所有权。
@@ -1199,6 +1201,7 @@ impl MfDecoder {
                 pts_counter_us: 0,
                 frame_duration_100ns: 10_000_000 / 30,
                 stream_change_count: 0,
+                seq_header_set: false,
             };
             // 解码器对「先设输入还是先设输出」的要求不一：先试先设输出类型。
             let out_first = dec.configure_output_type();
@@ -1248,12 +1251,18 @@ impl MfDecoder {
                     Ok(t) => match media_attrs(&t) {
                         Ok(a) => {
                             let sub = unsafe { a.GetGUID(&MF_MT_SUBTYPE) }
-                                .map(|g| format!("{{{:08X}-{:04X}-{:04X}}}", g.data1, g.data2, g.data3))
+                                .map(|g| {
+                                    format!("{{{:08X}-{:04X}-{:04X}}}", g.data1, g.data2, g.data3)
+                                })
                                 .unwrap_or_else(|e| format!("<读取失败 {e}>"));
                             let major = unsafe { a.GetGUID(&MF_MT_MAJOR_TYPE) }
-                                .map(|g| format!("{{{:08X}-{:04X}-{:04X}}}", g.data1, g.data2, g.data3))
+                                .map(|g| {
+                                    format!("{{{:08X}-{:04X}-{:04X}}}", g.data1, g.data2, g.data3)
+                                })
                                 .unwrap_or_else(|e| format!("<读取失败 {e}>"));
-                            eprintln!("dfy-codec[debug]: 解码当前输入类型 major={major} subtype={sub}");
+                            eprintln!(
+                                "dfy-codec[debug]: 解码当前输入类型 major={major} subtype={sub}"
+                            );
                         }
                         Err(e) => eprintln!("dfy-codec[debug]: 读输入类型属性失败：{e}"),
                     },
@@ -1438,6 +1447,50 @@ impl VideoDecoder for MfDecoder {
                 None => data.to_vec(),
             }
         };
+        // 部分解码 MFT 只认输入类型里的 `MF_MT_MPEG_SEQUENCE_HEADER`（avcC），
+        // 拿到首个 SPS/PPS 后补上，再重设一次输入类型。
+        if !self.seq_header_set {
+            let (sps, pps) = nal::extract_sps_pps(&annexb);
+            if let (Some(sps), Some(pps)) = (sps, pps) {
+                let cfg_bytes = nal::build_avcc_config(&sps, &pps);
+                if let Ok(t) = unsafe { self.transform.GetInputCurrentType(0) } {
+                    if let Ok(attrs) = t.cast::<IMFAttributes>() {
+                        unsafe {
+                            let _ = attrs.SetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &cfg_bytes);
+                        }
+                        match unsafe { self.transform.SetInputType(0, &t, 0) } {
+                            Ok(()) => {
+                                self.seq_header_set = true;
+                                // 重设输入类型会把输出类型清掉，需要重新设置。
+                                self.output_configured = false;
+                                let _ = self.configure_output_type();
+                                unsafe {
+                                    let _ = self
+                                        .transform
+                                        .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
+                                    let _ = self
+                                        .transform
+                                        .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+                                }
+                                if debug_enabled() {
+                                    eprintln!(
+                                        "dfy-codec[debug]: 已写入序列头 avcC（{} 字节）并重设输入/输出类型",
+                                        cfg_bytes.len()
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                if debug_enabled() {
+                                    eprintln!(
+                                        "dfy-codec[debug]: 写入序列头后 SetInputType 失败：{e}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // MF 解码 MFT 要求一次喂一个访问单元，整条码流进来时按 AUD 切开。
         let units = nal::annexb_access_units(&annexb);
         if debug_enabled() {
@@ -1463,6 +1516,43 @@ impl VideoDecoder for MfDecoder {
                 );
             }
             frames.extend(got);
+        }
+        Ok(frames)
+    }
+
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        // 微软 H.264 解码 MFT 会攒十几帧甚至二十几帧才吐第一帧（重排序/前瞻缓冲），
+        // 只有 COMMAND_DRAIN 会把它内部缓冲全部冲刷出来。
+        unsafe { self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0) }
+            .context("解码器发送 COMMAND_DRAIN 失败")?;
+        let mut frames = Vec::new();
+        loop {
+            let (drained, changed) = self.drain_outputs()?;
+            let n = drained.len();
+            frames.extend(drained);
+            if changed {
+                self.output_configured = false;
+                self.configure_output_type()?;
+                continue;
+            }
+            if n == 0 {
+                break;
+            }
+        }
+        unsafe {
+            let _ = self
+                .transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+            // 冲刷后若还要继续解码，需要重新开始流。
+            let _ = self
+                .transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
+            let _ = self
+                .transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+        }
+        if debug_enabled() {
+            eprintln!("dfy-codec[debug]: 解码冲刷出 {} 帧", frames.len());
         }
         Ok(frames)
     }
@@ -1520,6 +1610,26 @@ impl MfDecoder {
                     "dfy-codec[debug]: 解码状态 in={in_status:?} out={out_status:?} 本单元已出 {} 帧",
                     frames.len()
                 );
+            }
+            if debug_enabled() && frames.is_empty() && attempts <= 2 {
+                if let Ok(gen) = self.transform.cast::<IMFMediaEventGenerator>() {
+                    for _ in 0..4 {
+                        match unsafe { gen.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
+                            Ok(ev) => {
+                                let ty = unsafe { ev.GetType() }.unwrap_or(0);
+                                eprintln!(
+                                    "dfy-codec[debug]: 解码事件 type=0x{ty:08x}（METransformNeedInput=0x{need:08x} METransformHaveOutput=0x{have:08x}）",
+                                    need = METransformNeedInput.0,
+                                    have = METransformHaveOutput.0
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!("dfy-codec[debug]: 解码事件队列空（{e}）");
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             if changed {
                 self.stream_change_count += 1;
