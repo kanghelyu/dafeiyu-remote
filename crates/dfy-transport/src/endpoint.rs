@@ -52,6 +52,57 @@ pub fn bind_agent_random() -> Result<(Endpoint, TlsIdentity, SocketAddr)> {
     Ok((endpoint, identity, addr))
 }
 
+/// 中继模式：用调用方提供的 UDP socket（已完成 tag 配对）承载 QUIC 服务端。
+///
+/// 中继按 tag 成对转发字节，QUIC 端点看到的对端始终是中继地址，因此 TLS/连接语义不变。
+/// `identity` 由调用方生成（与 `bind_agent` 等价），跨会话保持不变才能让客户端校验指纹。
+pub fn agent_endpoint_on_socket(
+    socket: std::net::UdpSocket,
+    identity: TlsIdentity,
+) -> Result<Endpoint> {
+    let server_cfg = tls::server_config(&identity)?;
+    let endpoint = Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(server_cfg),
+        socket,
+        Arc::new(quinn::TokioRuntime),
+    )
+    .context("用中继 socket 创建 Agent QUIC 端点失败")?;
+    info!(
+        fingerprint = %identity.fingerprint_hex(),
+        "Agent QUIC 端点已就绪（经中继）"
+    );
+    Ok(endpoint)
+}
+
+/// 中继模式：用调用方提供的 UDP socket 拨号到 `peer`（= 中继地址）。
+pub async fn connect_on_socket(
+    socket: std::net::UdpSocket,
+    tls: ClientTls,
+    peer: SocketAddr,
+) -> Result<(Endpoint, Connection)> {
+    let mut endpoint = Endpoint::new(
+        quinn::EndpointConfig::default(),
+        None,
+        socket,
+        Arc::new(quinn::TokioRuntime),
+    )
+    .context("用中继 socket 创建客户端 QUIC 端点失败")?;
+    endpoint.set_default_client_config(tls.config.clone());
+    debug!(%peer, "经中继拨号");
+    let connecting = endpoint
+        .connect(peer, SERVER_NAME)
+        .with_context(|| format!("经中继发起 QUIC 连接失败（{peer}）"))?;
+    let conn = connecting
+        .await
+        .with_context(|| format!("经中继 QUIC/TLS 连接失败（{peer}）"))?;
+    let observed = tls
+        .observed_hex()
+        .unwrap_or_else(|| "<unknown>".to_string());
+    info!(%peer, fingerprint = %observed, "经中继的 QUIC 连接已建立");
+    Ok((endpoint, conn))
+}
+
 /// 共享的 `Arc<Endpoint>`（预留给后续多连接/重连场景）。
 pub fn shared(endpoint: Endpoint) -> Arc<Endpoint> {
     Arc::new(endpoint)

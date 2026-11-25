@@ -12,14 +12,17 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use dfy_proto::envelope;
+use dfy_relay::Role;
 use dfy_session::{
     serve_agent, start_capture_loop, AgentConfig, CaptureLoopConfig, Decoder as _, FrameAssembler,
     RawFrame,
 };
 use dfy_transport::{
-    bind_agent, client_handshake, client_tls, connect, parse_fingerprint_hex, send_input_move,
-    ClientSession, ServerAuth,
+    agent_endpoint_on_socket, bind_agent, client_handshake, client_tls, connect, connect_on_socket,
+    parse_fingerprint_hex, send_input_move, ClientSession, ServerAuth, TlsIdentity,
 };
+
+use crate::relay_bridge::RelayOptions;
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
@@ -46,6 +49,8 @@ pub struct AgentOptions {
     pub allow_input: bool,
     /// 是否与客户端双向同步剪贴板（`--no-clipboard` 关闭）。
     pub allow_clipboard: bool,
+    /// 经中继接入（`None` = 直连/公网打洞）。
+    pub relay: Option<RelayOptions>,
 }
 
 /// 主控端（View）参数。
@@ -65,6 +70,8 @@ pub struct ViewOptions {
     pub control: bool,
     /// 是否与 Agent 双向同步剪贴板（`--clipboard` 开启）。
     pub clipboard: bool,
+    /// 经中继接入（`None` = 直连）。
+    pub relay: Option<RelayOptions>,
 }
 
 /// 启动真实 Agent：监听、握手、采集+编码、推流，直到 Ctrl+C。
@@ -115,8 +122,27 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
         // 先创建再丢弃一次编码器：尽早暴露「没有 H.264 MFT」这类环境问题。
         drop(MftEncoderAdapter::new(&enc_cfg).context("创建 H.264 编码器失败")?);
 
-        let (endpoint, identity) = bind_agent(opts.addr)
-            .with_context(|| format!("在 {} 上监听失败（UDP 端口被占用？）", opts.addr))?;
+        // 中继模式下：先与中继完成 tag 配对，再把配对后的 socket 交给 quinn；
+        // 端点看到的对端是中继地址，TLS/会话语义完全不变。keepalive 由 RelaySocket 自带任务维持，
+        // 因此这里要把 socket 句柄持有到函数结束。
+        let mut relay_socket = None;
+        let (endpoint, identity) = if let Some(relay) = opts.relay.as_ref() {
+            let socket = relay.bind(Role::Agent).await.context("连接中继失败")?;
+            println!(
+                "[agent] 已与中继 {} 配对（tag {}）",
+                relay.addr,
+                crate::relay_bridge::tag_hex(&relay.tag)
+            );
+            let identity = TlsIdentity::generate("dfy-agent").context("生成 Agent TLS 身份失败")?;
+            let copy = socket.try_clone_socket().context("复制中继 socket 失败")?;
+            let endpoint = agent_endpoint_on_socket(copy, identity.clone())
+                .context("用中继 socket 创建 Agent QUIC 端点失败")?;
+            relay_socket = Some(socket);
+            (endpoint, identity)
+        } else {
+            bind_agent(opts.addr)
+                .with_context(|| format!("在 {} 上监听失败（UDP 端口被占用？）", opts.addr))?
+        };
         let local = endpoint.local_addr().context("读取监听地址失败")?;
         println!("[agent] 监听 {local}（UDP/QUIC，ALPN = dfyp/1）");
         println!("[agent] 证书 SPKI-SHA256 = {}", identity.fingerprint_hex());
@@ -244,6 +270,7 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
         }
 
         endpoint.close(0u32.into(), b"agent shutdown");
+        drop(relay_socket);
         println!("[agent] 已退出");
         Ok(())
     }
@@ -277,10 +304,33 @@ pub struct ViewStats {
 /// 连接 Agent，收流并解码 N 秒，打印统计。
 pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
     let tls = client_tls(opts.expect_fingerprint).context("构造客户端 TLS 失败")?;
-    let (endpoint, conn) = connect(opts.addr, tls.clone())
-        .await
-        .with_context(|| format!("连接 {} 失败（agent 是否已启动/UDP 被拦？）", opts.addr))?;
-    println!("[view] 已连接 {}", opts.addr);
+    let mut relay_socket = None;
+    let (endpoint, conn) = if let Some(relay) = opts.relay.as_ref() {
+        let socket = relay.bind(Role::Client).await.context("连接中继失败")?;
+        println!(
+            "[view] 已与中继 {} 配对（tag {}）",
+            relay.addr,
+            crate::relay_bridge::tag_hex(&relay.tag)
+        );
+        let copy = socket.try_clone_socket().context("复制中继 socket 失败")?;
+        let pair = connect_on_socket(copy, tls.clone(), relay.addr)
+            .await
+            .with_context(|| format!("经中继连接 {} 失败（agent 是否已上线？）", relay.addr))?;
+        relay_socket = Some(socket);
+        pair
+    } else {
+        connect(opts.addr, tls.clone())
+            .await
+            .with_context(|| format!("连接 {} 失败（agent 是否已启动/UDP 被拦？）", opts.addr))?
+    };
+    println!(
+        "[view] 已连接 {}",
+        if opts.relay.is_some() {
+            "（经中继）"
+        } else {
+            "（直连）"
+        }
+    );
     if let Some(observed) = tls.observed_hex() {
         println!("[view] Agent 证书 SPKI-SHA256 = {observed}");
     }
@@ -478,6 +528,7 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
     let _ = tx.finish();
     conn.close(0u32.into(), b"view done");
     endpoint.close(0u32.into(), b"view done");
+    drop(relay_socket);
     println!("[view] ---- 统计（{}s）----", opts.seconds.max(1));
     println!(
         "[view] DATAGRAM = {}（{}），重组帧 = {}，解码帧 = {}，关键帧 = {}，解析失败 = {}",

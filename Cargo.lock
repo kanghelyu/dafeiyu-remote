@@ -323,6 +323,7 @@ dependencies = [
  "dfy-codec",
  "dfy-input",
  "dfy-proto",
+ "dfy-relay",
  "dfy-session",
  "dfy-transport",
  "ed25519-dalek",

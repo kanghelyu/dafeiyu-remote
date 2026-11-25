@@ -42,6 +42,29 @@
 | `apps/` | 四端 UI（Flutter，脚手架规划中） |
 | `research/` | 逆向/调研笔记（**仅本地保留，不随仓库发布**） |
 
+## 经中继连接（防火墙友好的兜底路径）
+
+当两端都在 NAT 后面、UDP 打洞不可行时，用一台有公网 IP 的机器做中继。
+中继是**零知识**的：它只按 tag 把两个 UDP 端点的包互相转发，不解析 QUIC、不终结 TLS，
+因此端到端加密不受影响。
+
+```powershell
+# 1) 在中继机生成配置并启动（Linux/Windows 均可）
+dfy-relay config init --out relay.toml
+dfy-relay serve --config relay.toml
+
+# 2) 被控端：指定中继地址与 relay_key（tag 自动按口令派生）
+dfy agent --relay relay.example.com:21117 --relay-key 'base64:<relay_key>'
+
+# 3) 主控端：同样的中继参数
+dfy view --relay relay.example.com:21117 --relay-key 'base64:<relay_key>' --clipboard
+```
+
+两端口令一致时 tag 自动相同；如需固定 tag，用 `--relay-tag <32-hex>`。
+
+实测（本机回环中继、6 秒）：视频 DATAGRAM 359、重组帧 60、关键帧 1、解析失败 0、
+RTT 0.41 ms；剪贴板 24.55 KiB 分块闭环。设计细节见 `design/022-relay-client.md`。
+
 ## 构建与自测
 
 前置：Rust stable（Windows 建议 `x86_64-pc-windows-gnu` + mingw-w64，或 msvc + VS Build Tools）。

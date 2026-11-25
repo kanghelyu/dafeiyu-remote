@@ -17,6 +17,7 @@ clap.workspace = true
 dfy-proto.workspace = true
 dfy-transport.workspace = true
 dfy-capture = { path = "../dfy-capture" }
+dfy-relay = { path = "../dfy-relay" }
 dfy-clipboard = { path = "../dfy-clipboard" }
 dfy-codec = { path = "../dfy-codec" }
 dfy-input = { path = "../dfy-input" }

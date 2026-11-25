@@ -37,7 +37,9 @@ use std::time::Duration;
 
 pub use ctrl::{CtrlChannel, CtrlReceiver, CtrlSender};
 pub use datagram::{send_input_move, send_video_frame, VideoReceiver, VideoSendStats};
-pub use endpoint::{bind_agent, bind_agent_random, connect};
+pub use endpoint::{
+    agent_endpoint_on_socket, bind_agent, bind_agent_random, connect, connect_on_socket,
+};
 pub use handshake::{client_handshake, initial_config_frames, server_handshake, ServerAuth};
 pub use session::{AgentSession, ClientSession, Heartbeat, PING_INTERVAL, PING_TIMEOUT};
 pub use tls::{client_tls, fingerprint_of_cert, server_config, ClientTls, TlsIdentity};

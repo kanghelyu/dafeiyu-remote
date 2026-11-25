@@ -13,6 +13,7 @@ mod genkey;
 mod input_bridge;
 mod input_capture;
 mod real;
+mod relay_bridge;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -99,6 +100,15 @@ enum Command {
         /// 禁用剪贴板同步（默认允许：与本机剪贴板双向同步）
         #[arg(long, default_value_t = false)]
         no_clipboard: bool,
+        /// 经中继接入（UDP 地址，例如 relay.example.com:21117）
+        #[arg(long, value_name = "ADDR")]
+        relay: Option<String>,
+        /// 会合 tag（32 位 hex；省略时按口令派生）
+        #[arg(long, value_name = "HEX")]
+        relay_tag: Option<String>,
+        /// 中继 relay_key（hex:…/base64:…/裸 hex）
+        #[arg(long, value_name = "KEY")]
+        relay_key: Option<String>,
     },
     /// 真实主控端：连接 Agent、解码 H.264、统计并可保存首帧
     View {
@@ -123,6 +133,15 @@ enum Command {
         /// 启用剪贴板同步（与本机剪贴板双向同步）
         #[arg(long, default_value_t = false)]
         clipboard: bool,
+        /// 经中继接入（UDP 地址，例如 relay.example.com:21117）
+        #[arg(long, value_name = "ADDR")]
+        relay: Option<String>,
+        /// 会合 tag（32 位 hex；省略时按口令派生）
+        #[arg(long, value_name = "HEX")]
+        relay_tag: Option<String>,
+        /// 中继 relay_key（hex:…/base64:…/裸 hex）
+        #[arg(long, value_name = "KEY")]
+        relay_key: Option<String>,
     },
 }
 
@@ -152,7 +171,11 @@ async fn main() -> Result<()> {
             bitrate,
             no_input,
             no_clipboard,
+            relay,
+            relay_tag,
+            relay_key,
         } => {
+            let relay_options = build_relay(relay, relay_tag, relay_key, &password)?;
             let addr: SocketAddr = format!("{host}:{port}")
                 .parse()
                 .with_context(|| format!("无法解析监听地址 {host}:{port}"))?;
@@ -165,6 +188,7 @@ async fn main() -> Result<()> {
                 max_frames: None,
                 allow_input: !no_input,
                 allow_clipboard: !no_clipboard,
+                relay: relay_options,
             })
             .await
         }
@@ -176,7 +200,11 @@ async fn main() -> Result<()> {
             save_first,
             control,
             clipboard,
+            relay,
+            relay_tag,
+            relay_key,
         } => {
+            let relay_options = build_relay(relay, relay_tag, relay_key, &password)?;
             let addr: SocketAddr = addr
                 .parse()
                 .with_context(|| format!("无法解析 Agent 地址 {addr}（示例：127.0.0.1:21116）"))?;
@@ -192,6 +220,7 @@ async fn main() -> Result<()> {
                 save_first_frame: save_first,
                 control,
                 clipboard,
+                relay: relay_options,
             })
             .await
             .map(|_| ())
@@ -208,6 +237,35 @@ fn init_tracing() {
         .with_target(false)
         .compact()
         .try_init();
+}
+
+/// 解析中继参数：三者必须同时给出（relay 地址 + key），tag 可省略。
+fn build_relay(
+    relay: Option<String>,
+    relay_tag: Option<String>,
+    relay_key: Option<String>,
+    password: &str,
+) -> Result<Option<relay_bridge::RelayOptions>> {
+    let Some(addr_text) = relay else {
+        anyhow::ensure!(
+            relay_tag.is_none() && relay_key.is_none(),
+            "--relay-tag/--relay-key 需要与 --relay 一起使用"
+        );
+        return Ok(None);
+    };
+    let addr: SocketAddr = addr_text.parse().with_context(|| {
+        format!("无法解析中继地址 {addr_text}（示例：relay.example.com:21117）")
+    })?;
+    let key = relay_key
+        .as_deref()
+        .with_context(|| "--relay 需要同时提供 --relay-key（中继服务器的 relay_key）")?;
+    let options = relay_bridge::RelayOptions::new(addr, relay_tag.as_deref(), key, password)?;
+    println!(
+        "[relay] 目标 {}，tag {}",
+        options.addr,
+        relay_bridge::tag_hex(&options.tag)
+    );
+    Ok(Some(options))
 }
 
 async fn run_demo_agent(host: &str, port: u16, password: String) -> Result<()> {

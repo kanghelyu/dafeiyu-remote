@@ -68,8 +68,55 @@ v1 先实现"选择路径"（P2P 直连 or relay），**迁移**作为下一步�
 3. relay 端 `metrics` 显示该 tag 的 `bytes_in/out`、`pkts_dropped`（限速）与 `peer_switch`。
 4. 错误路径：错误 relay_key → `AUTH_FAILED`；过期 tag → `TAG_EXPIRED`；第三端点 → `TAG_FULL`。
 
-## 5. 待办
+## 5. CLI 接入（v0.1 已完成）
 
-- CLI：`agent`/`view` 增加 `--relay <addr> --relay-key <hex> --tag <hex>`，`real.rs` 按 §2 选 socket/peer。
-- `run_client`/`serve_agent` 目前接收 `Connection`，无需改动——这是把 relay 接入成本压到最低的关键。
-- 迁移协议（session_token、Resume/ResumeOk、双发窗口）在 `dfy-session` 里实现，relay 侧不需要改动。
+- `dfy-cli agent|view` 新增：`--relay <ADDR>`、`--relay-key <KEY>`（`hex:…`/`base64:…`/裸 hex）、
+  `--relay-tag <HEX>`（可选）。只给 tag/key 不给 addr 会直接报错。
+- 默认 tag 派生：`tag = BLAKE3(password ‖ "\0dfy-relay-tag\0" ‖ relay_addr)[:16]`。
+  两端口令相同即可自动配对；需要显式控制时用 `--relay-tag`。
+- `crates/dfy-cli/src/relay_bridge.rs`：`RelayOptions{addr,tag,key}` + `bind(role)`；
+- `crates/dfy-transport/src/endpoint.rs`：`agent_endpoint_on_socket(socket, identity)` 与
+  `connect_on_socket(socket, tls, peer)`，把 `RelaySocket::try_clone_socket()` 交还给 quinn。
+  `serve_agent`/`run_client` 一行未改——这是接入成本最低的关键。
+- `real.rs` 中继分支：agent 先 `relay.bind(Role::Agent)`、生成 TLS 身份、用中继 socket 建端点；
+  view 先 `relay.bind(Role::Client)`、`connect_on_socket(…, relay.addr)`。中继 socket 句柄持有到函数结束，
+  以便保活任务存活。
+
+## 6. 实现与验证（已完成，2026-11-25）
+
+实测环境：本机回环，relay `0.0.0.0:21117`（TCP 降级 21118、admin 127.0.0.1:21119）、tag `fa423018cf1e7bbec2862f45f3dd07d2`。
+
+命令：
+
+```powershell
+# 1) 中继
+dfy-relay serve --config .tmp/relay.toml
+# 2) 被控端（经中继）
+dfy agent --port 21116 --relay 127.0.0.1:21117 --relay-key 'base64:…' --fps 30 --bitrate 4000
+# 3) 主控端（经中继，开启剪贴板）
+dfy view --relay 127.0.0.1:21117 --relay-key 'base64:…' --seconds 5 --clipboard
+```
+
+结果：
+
+| 指标 | 直连基线 | 经中继 |
+| --- | --- | --- |
+| 握手 | 本机 socket 直连 | `peer=127.0.0.1:21117`（中继地址），TLS 1.3 握手成功 |
+| 视频 DATAGRAM | 398 / 6s | **359 / 6s** |
+| 重组帧 | 60 | 60 |
+| 关键帧 / 解析失败 | 1 / 0 | 1 / 0 |
+| 心跳 RTT | 0.571 ms | 0.41–0.51 ms（agent 侧 29.55 ms 为会话结束快照） |
+| 输入注入 | 16/16 | 本用例未注入（`--no-input` 对照） |
+| 剪贴板 | 20 B 文本闭环 | **24.55 KiB 分块闭环**（1 清单 / 1 拉取 / 1 分块 / 1 确认） |
+
+结论：**中继模式端到端可用**——视频、心跳、剪贴板全部经中继转发，两端代码路径与直连完全一致
+（只是 socket 来源与 `peer` 地址不同）。这验证了"零知识 tag 配对 UDP 转发"的设计假设：
+中继不解析 QUIC，TLS 仍端到端，客户端只看到中继地址。
+
+## 7. 下一步
+
+- P2P 打洞（STUN/ICE-lite）与"直连优先、relay 兜底"的选择逻辑（业主决策 §17①）。
+- 路径劣化判定与会话迁移（PrepareMigrate/Resume/ResumeOk，`design/013` §4）。
+- relay 端 `transport=relay` 显示、metrics 里的 `peer_switch` 计数、错误路径集成测试
+  （错误 key/过期 tag/第三端点）。
+- 多中继池与健康探测（客户端 profile 列表）。
