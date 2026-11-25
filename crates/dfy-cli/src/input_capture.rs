@@ -23,6 +23,9 @@
 //! 目前采集范围：鼠标移动 + 左/右/中/后退/前进键 + 滚轮 + 键盘（扫描码优先，回退
 //! VK 表）。文本/触摸/手柄不做（钩子拿不到可靠的 Unicode 文本）。
 
+// Windows 低级钩子实现；其它平台调用点被 cfg 掉，保留类型避免 public API 抖动。
+#![cfg_attr(not(windows), allow(dead_code))]
+
 #![allow(unsafe_code)]
 
 use anyhow::Result;
