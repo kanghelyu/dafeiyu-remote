@@ -126,7 +126,7 @@ fn run() -> anyhow::Result<()> {
                 if args.nudge_cursor && consecutive_timeouts >= 5 && nudges < 500 {
                     nudges += 1;
                     nudge_cursor(nudges);
-                    if nudges == 1 || nudges % 25 == 0 {
+                    if nudges == 1 || nudges.is_multiple_of(25) {
                         println!(
                             "  (no new frame from the compositor after {} timeouts; \
                              nudging the cursor to generate one)",
@@ -154,8 +154,8 @@ fn run() -> anyhow::Result<()> {
         capturer.rebuilds()
     );
     if let Some(frame) = &last_frame {
-        let min = intervals.iter().map(|d| *d).min();
-        let max = intervals.iter().map(|d| *d).max();
+        let min = intervals.iter().copied().min();
+        let max = intervals.iter().copied().max();
         let avg = if intervals.is_empty() {
             Duration::from_millis(0)
         } else {
@@ -337,12 +337,12 @@ fn to_rgba(frame: &dfy_capture::CapturedFrame) -> Vec<u8> {
     let mut rgba = Vec::with_capacity(frame.width as usize * frame.height as usize * 4);
     match frame.format {
         PixelFormat::Bgra8 => {
-            for px in packed.chunks_exact(4) {
+            for px in packed.as_chunks::<4>().0 {
                 rgba.extend_from_slice(&[px[2], px[1], px[0], 0xFF]);
             }
         }
         PixelFormat::Rgba8 => {
-            for px in packed.chunks_exact(4) {
+            for px in packed.as_chunks::<4>().0 {
                 rgba.extend_from_slice(&[px[0], px[1], px[2], 0xFF]);
             }
         }
@@ -380,7 +380,7 @@ fn nudge_cursor(step: u64) {
     unsafe {
         let mut pos = POINT::default();
         if GetCursorPos(&mut pos).is_ok() {
-            let dx = if step % 2 == 0 { 2 } else { -2 };
+            let dx = if step.is_multiple_of(2) { 2 } else { -2 };
             let _ = SetCursorPos(pos.x + dx, pos.y);
         }
     }

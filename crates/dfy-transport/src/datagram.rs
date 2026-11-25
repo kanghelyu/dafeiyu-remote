@@ -44,9 +44,7 @@ pub fn send_video_frame(
         "对端 DATAGRAM 上限 {max_datagram}B 太小，装不下 {VIDEO_HEADER_LEN}B 头 + 负载"
     );
 
-    let chunk = (max_datagram - VIDEO_HEADER_LEN)
-        .min(VIDEO_MAX_PAYLOAD)
-        .max(1);
+    let chunk = (max_datagram - VIDEO_HEADER_LEN).clamp(1, VIDEO_MAX_PAYLOAD);
     let packet_count = if payload.is_empty() {
         1
     } else {

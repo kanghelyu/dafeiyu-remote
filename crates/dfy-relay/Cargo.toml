@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Dafeiyu Remote contributors
+[package]
+name = "dfy-relay"
+description = "DFYP/1 relay server: paired UDP forwarding, TCP fallback, admin metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+rand.workspace = true
+hex.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
