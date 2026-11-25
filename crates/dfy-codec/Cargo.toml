@@ -1,0 +1,22 @@
+[package]
+name = "dfy-codec"
+version = "0.1.0"
+edition = "2021"
+description = "Windows Media Foundation H.264 encoder/decoder backend for the Dafeiyu remote-desktop project"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+] }
+
+[dev-dependencies]
+clap = { version = "4", features = ["derive"] }

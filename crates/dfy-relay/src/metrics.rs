@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Dafeiyu Remote contributors
 // Copyright (c) 2026 Dafeiyu Remote contributors
 //! 无依赖的原子计数器 + Prometheus 文本输出。
 
@@ -137,6 +138,10 @@ impl Metrics {
         self.bytes_out.load(Ordering::Relaxed)
     }
 
+    pub fn rebinds(&self) -> u64 {
+        self.rebinds.load(Ordering::Relaxed)
+    }
+
     pub fn uptime_seconds(&self) -> u64 {
         self.started.elapsed().as_secs()
     }
@@ -191,7 +196,10 @@ impl Metrics {
         ));
         s.push_str("# HELP dfy_relay_uptime_seconds 进程运行秒数\n");
         s.push_str("# TYPE dfy_relay_uptime_seconds gauge\n");
-        s.push_str(&format!("dfy_relay_uptime_seconds {}\n", self.uptime_seconds()));
+        s.push_str(&format!(
+            "dfy_relay_uptime_seconds {}\n",
+            self.uptime_seconds()
+        ));
         s
     }
 }

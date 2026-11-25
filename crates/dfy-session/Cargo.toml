@@ -1,0 +1,17 @@
+[package]
+name = "dfy-session"
+description = "大肥鱼远程：会话编排（采集线程 → 编码 → QUIC 发送 / 接收 → 重组 → 解码）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+dfy-proto = { path = "../dfy-proto" }
+dfy-transport = { path = "../dfy-transport" }
+dfy-capture = { path = "../dfy-capture" }
+quinn.workspace = true
+hex.workspace = true

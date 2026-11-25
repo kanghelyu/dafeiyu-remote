@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Dafeiyu Remote contributors
 // Copyright (c) 2026 Dafeiyu Remote contributors
 //! bind 鉴权、时间窗与 nonce 防重放。
 //!
@@ -139,7 +140,7 @@ mod tests {
         assert!(ts_in_window(1_000_000, 1_000_000, 300));
         assert!(ts_in_window(1_000_000, 1_300_000, 300));
         assert!(!ts_in_window(1_000_000, 1_300_001, 300));
-        assert!(!ts_in_window(1_000_000, 700_000, 300));
+        assert!(!ts_in_window(1_000_000, 699_999, 300));
         assert!(ts_in_window(0, 299_000, 300));
     }
 

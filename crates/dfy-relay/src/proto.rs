@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Dafeiyu Remote contributors
 // Copyright (c) 2026 Dafeiyu Remote contributors
 //! DFYP/1-Relay 信封协议（clean-room 自定字段，详见 DESIGN-NOTES.md）。
 //!
