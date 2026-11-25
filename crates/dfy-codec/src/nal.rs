@@ -7,6 +7,10 @@
 //! code），但个别第三方 MFT 会输出 AVCC（4 字节大端长度前缀）。本模块两种都
 //! 能识别，并在需要时把 AVCC 转成 Annex-B，方便上层直接按 Annex-B 传输。
 
+// 非 Windows 平台没有 MF 后端，NAL 工具（AVCC/SPS/PPS）暂未使用；
+// 保留给后续软编/软解与 Linux 后端复用。
+#![cfg_attr(not(windows), allow(dead_code))]
+
 /// 一个 NAL 单元在缓冲区中的范围（不含 start code）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NalRange {
