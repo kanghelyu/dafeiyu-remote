@@ -8,3 +8,5 @@
 # 设备私钥（genkey 产物），绝不入库
 device.key
 device.pub
+# 构建/检查日志
+*.log
