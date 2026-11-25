@@ -10,3 +10,4 @@ device.key
 device.pub
 # 构建/检查日志
 *.log
+deploy/relay.toml

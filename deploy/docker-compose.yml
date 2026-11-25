@@ -1,0 +1,49 @@
+# 大肥鱼远程 · 中继服务器 Docker Compose
+#
+#   1) 生成配置（在仓库根目录）：
+#        cargo run -p dfy-relay -- config init --out deploy/relay.toml
+#      （或已安装二进制：dfy-relay config init --out deploy/relay.toml）
+#   2) 启动：
+#        docker compose -f deploy/docker-compose.yml up -d
+#   3) 查看参数与状态：
+#        grep relay_key deploy/relay.toml
+#        docker compose -f deploy/docker-compose.yml exec relay wget -qO- http://127.0.0.1:21119/healthz
+#
+# 说明：镜像构建上下文是仓库根目录（需要 Cargo.toml / crates/）；
+# Dockerfile 位于 crates/dfy-relay/Dockerfile。配置以只读方式挂载到容器内
+# 默认路径 /etc/dfy/relay.toml（deploy/relay.toml 已被 .gitignore 忽略，不会进仓库）。
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: crates/dfy-relay/Dockerfile
+    image: dafeiyu/dfy-relay:local
+    container_name: dfy-relay
+    restart: unless-stopped
+    ports:
+      - "21117:21117/udp"
+      - "21118:21118/tcp"
+      # 管理端口只映射到宿主机回环，避免把 metrics 暴露到公网
+      - "127.0.0.1:21119:21119/tcp"
+    volumes:
+      - ./relay.toml:/etc/dfy/relay.toml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:21119/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
