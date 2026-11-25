@@ -1,0 +1,10 @@
+[package]
+name = "dfy-proto"
+description = "DFYP/1 wire format: hand-written prost messages, control framing, DATAGRAM headers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+prost.workspace = true

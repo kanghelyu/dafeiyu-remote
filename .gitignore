@@ -1,0 +1,10 @@
+/target
+.tmp/
+*.exe
+.env
+# 逆向调研笔记（内部资料，不随开源仓库发布）
+/research/
+/notes/
+# 设备私钥（genkey 产物），绝不入库
+device.key
+device.pub

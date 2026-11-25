@@ -1,0 +1,21 @@
+[package]
+name = "dfy-transport"
+description = "DFYP/1 QUIC transport: TLS identity, control handshake, DATAGRAM I/O, heartbeat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytes.workspace = true
+dfy-proto.workspace = true
+hmac.workspace = true
+quinn.workspace = true
+rand.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+hex.workspace = true

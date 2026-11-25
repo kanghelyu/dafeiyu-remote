@@ -1,0 +1,25 @@
+[package]
+name = "dfy-cli"
+description = "dfy command line: key generation, QUIC demo agent/client, end-to-end selftest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "dfy"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+clap.workspace = true
+dfy-proto.workspace = true
+dfy-transport.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+quinn.workspace = true
+rand.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
