@@ -43,7 +43,7 @@
 | `input-move` | DATAGRAM 0 | 否 | 鼠标绝对/相对位移、手柄轴（可丢旧帧，序号单调） |
 | `video` | DATAGRAM 1 | 否+FEC | 帧元数据 + 分片；帧内序号；keyframe 标记 |
 | `audio` | DATAGRAM 2 | 否+FEC | Opus 20ms 帧 |
-| `clipboard` | 双向流 4 | 是 | 格式清单/按需拉块/哈希去重 |
+| `clipboard` | 双向流 4（v1 未启用） | 是 | 大对象分块；v1 小对象复用 control 流 tag 13–16 |
 | `file-meta` | 双向流 6 | 是 | 元数据、确认、取消、进度 |
 | `file-data` | 单向流 6..31 | 是 | 1–4MiB 块 + BLAKE3 |
 | `stats` | 单向流 8 | 是 | 1–2Hz：RTT、loss、fps、码率、队列、解码耗时 |
@@ -81,11 +81,13 @@
 - 被控端可强制：隐私屏（黑屏物理显示器）、水印、剪贴板禁用、文件根目录白名单。
 
 ## 8. 剪贴板（拉模式）
-1. 监听方检测变化 → 计算 `FormatList{items[{id,format_hash,size_hint,mime}]}` 发送。
-2. 对端 `PullFormat{format_hash}` → `FormatDataChunk{hash, offset, data, last}` 分块（默认 128KiB），块间流控（未确认不得超 4 块）。
-3. 大对象（>1MiB）或文件列表 → 走 `file-meta/file-data` 通道，剪贴板只传描述符。
-4. 去重：写入后回传 `Applied{hash}`，来源端忽略自身 hash 触发的事件（防环）。
-5. 规则引擎（可选）：目标 App 匹配 → 纯文本化/禁格式/禁图片/大小上限。
+1. 监听方检测变化 → 计算内容 `hash = BLAKE3(格式名 ‖ 内容)`，发送 `ClipboardFormatList{seq, items[{id, hash, size_hint, name}]}`。
+2. 对端按优先级（文本 > HTML > PNG > 文件列表）选一项 → `ClipboardPull{hash}`。
+3. 提供方 → `ClipboardDataChunk{hash, offset, data, last}` 分块（默认 128 KiB），逐块连续发送；接收方校验 offset 单调与总长上限（1 MiB）。
+4. 接收方写回本地剪贴板后回 `Applied{hash}`；来源端据此忽略自身 hash 触发的事件（防环），配合本地 `LoopGuard` 与序列号双重抑制。
+5. 大对象（>1 MiB）或文件列表 → 走 `file-meta/file-data` 通道，剪贴板只传描述符（v1 后续）。
+6. **v1 传输承载**：这四类消息作为 `Envelope` 的 tag 13–16 复用 `control` 双向流（可靠、有序、低速率）；通道表里的 `clipboard` 双向流 4 保留给后续大对象/独立流控，实现前不启用。
+7. 规则引擎（可选）：目标 App 匹配 → 纯文本化/禁格式/禁图片/大小上限。
 
 ## 9. 文件传输
 - `Offer{task_id, files[{rel_path,size,mtime,type}], root_id}` → 接收端 `Accept{resume_map}` / `Reject{code}`。

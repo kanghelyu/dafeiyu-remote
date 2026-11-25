@@ -102,6 +102,98 @@ priority = 10
 enabled = true
 ```
 
+## 客户端集成（QUIC over relay）
+
+`dfy-relay` 不仅是可执行文件，也是一个库：客户端（Agent / Client）可以直接复用下面的
+API 完成「中继 bind + 20s 保活」，再把同一个 UDP socket 交给 quinn。
+这样 QUIC 的握手与 DATAGRAM 全部经过中继转发，而中继不解析 QUIC、也不终结 TLS。
+
+### 配置字段
+
+客户端 TOML 里对应的 `[[relay]]` 条目（`dfy-cli` 读取后映射为
+[`RelayClientConfig`](https://docs.rs/dfy-relay)）：
+
+| 字段 | 含义 | 备注 |
+| --- | --- | --- |
+| `addr` | 中继 UDP 地址，`公网IP:21117` | 服务端 `bind`；QUIC 的 `connect` 目标也是它 |
+| `key` | 与中继 `relay_key` **完全一致** 的 32 字节共享密钥 | `base64:` / `hex:` / 裸 64 hex |
+| `tag` | 16 字节配对 tag | 同一 tag + 不同 role 的两端被配成一对；随机生成，勿用可猜字符串 |
+| `role` | `agent`（槽 0，建议长驻端先 bind）或 `client`（槽 1，拨号端后 bind） | 两端必须不同 |
+
+> `tag` 不是凭据：能读出 bind 报文的人就能看到它。安全性来自 `key` 派生的
+> HMAC 鉴权（±300s 时间窗 + nonce 防重放），所以 `key` 必须只发给受信客户端。
+
+### 调用示例
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+
+use dfy_relay::{bind_relay_socket, RelayClientConfig, Role};
+use dfy_transport::{client_handshake, client_tls, connect, server_config, server_handshake, ServerAuth, TlsIdentity};
+
+let cfg = RelayClientConfig {
+    relay_addr: "203.0.113.10:21117".parse()?,
+    tag: tag_bytes,                 // [u8; 16]
+    role: Role::Client,
+    key: key_bytes,                 // [u8; 32]，与中继 relay_key 一致
+    nonce: rand::random(),
+};
+
+// 1) 中继 bind（内部会自动起 20s 保活任务）。必须比 QUIC 连接活得更久。
+let relay = bind_relay_socket(&cfg).await?;
+
+// 2) 用 socket 的 dup 副本构造 quinn endpoint（副本共享同一 UDP 端口）
+let mut endpoint = quinn::Endpoint::new(
+    quinn::EndpointConfig::default(),
+    None,                                   // Client 不需要 server 配置
+    relay.try_clone_socket()?,              // dup；原件留给 RelaySocket 保活
+    Arc::new(quinn::TokioRuntime),
+)?;
+endpoint.set_default_client_config(client_tls(None)?.config.clone());
+
+// 3) 目标是**中继地址**，server_name 用 "localhost"（自签证书 SAN 含 localhost）
+let conn = endpoint.connect(relay.peer_addr(), "localhost")?.await?;
+let (_welcome, channel) = client_handshake(&conn, password, "my-client", pubkey).await?;
+
+// Agent 侧对称：server_config(&identity)? + endpoint.accept() + server_handshake(...)
+// 两端都只需 bind 一次；中继按 (tag, role) 配对，两个槽位都 bind 后才开始转发。
+```
+
+`RelaySocket` 的其它公开能力：`socket()` / `try_clone_socket()`（交给 quinn 前先 dup）、
+`peer_addr()`（连接目标）、`local_addr()`、`send_bind_request()`（手动保活，幂等）、
+`expires_in_s()` / `server_clock_ms()`（来自 BindOk，可用于发现时钟偏差）、
+`stop_keepalive()`（Drop 时自动中止）。
+
+### 与 QUIC 的配合
+
+- 两端各用自己的 relay socket 建 `quinn::Endpoint`：Agent 传 `Some(server_config)`，
+  Client 传 `None` 并 `set_default_client_config`。
+- 中继原样转发 payload，两端看到的 QUIC 对端地址都是**中继地址**；quinn 按
+  connection ID 解复用，不需要真实对端地址（也因此两端都看不见对方的 IP）。
+- **bind 顺序**不限，但两个 role 槽位都 bind 过、中继才会转发（未配对期间的数据包计
+  `unpaired` 丢弃）。实战建议长驻 Agent 先 bind、拨号 Client 后 bind，重启 Agent
+  不受拨号时序影响。
+- 保活周期默认 20s，中继 `idle_timeout_s` 默认 60s。`RelaySocket` Drop 后中继在
+  idle 超时后回收会话；重连需要重新 `bind_relay_socket`。
+- 同一进程重复 bind 同一 `(tag, role)` 且源地址不变是幂等的（中继刷新 `last_seen`，
+  不计 rebind），所以保活可以放心重发。
+
+### 失败模式与回退
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `bind_relay_socket` 超时（默认 5s） | UDP 21117 未放行；或 `key` 不一致（中继鉴权失败**静默丢弃**）；或 tag 与该 role 已被占用 | 先核对 `key`（`config check` 不会显示它）；再查防火墙；再换 tag |
+| 立即返回 `tag_full` | 该 tag 的此 role 槽位被另一地址占用，旧端点仍在 `rebind_guard`（默认 2s）窗口内 | 退避 2s 重试（NAT 换端口场景），或给这一对端换新 tag |
+| 立即返回 `busy` | 中继 `max_sessions` 满 | 扩容或稍后重试 |
+| QUIC 握手超时 | 两端 `role` 相同（互相顶替）；对端还没 bind；或中继路径单向不通 | 确认 role 不同且两端都已 bind；用 `selftest`/`status` 看会话数与 drop 计数 |
+| 握手成功但 DATAGRAM 收不到 | 中继限速（默认每 tag 200Mbps）或 mtu/分片过小 | 提高 `per_tag_mbps` 或降低码率；`VideoReceiver::malformed()` 可区分解析失败 |
+
+回退路径：中继的 TCP 降级通道（默认 `0.0.0.0:21118`）由上层按需选择，本节的
+`RelaySocket` API 只覆盖 UDP 主通道；UDP 完全不可达时，退回直连或 TCP 通道。
+集成测试见 `tests/relay_quic.rs`：同进程起 relay → 两个 role bind → QUIC 握手 →
+10 帧 1KB DATAGRAM + Ping/Pong，并断言中继零 `bad_packet`/`unpaired` 丢弃。
+
 ## systemd 部署（Linux）
 
 ```bash
