@@ -12,6 +12,7 @@ mod demo;
 mod genkey;
 mod input_bridge;
 mod input_capture;
+mod p2p_bridge;
 mod real;
 mod relay_bridge;
 
@@ -109,6 +110,24 @@ enum Command {
         /// 中继 relay_key（hex:…/base64:…/裸 hex）
         #[arg(long, value_name = "KEY")]
         relay_key: Option<String>,
+        /// 启用 P2P 直连打洞（配合 --peer 或按提示粘贴对端候选）
+        #[arg(long, default_value_t = false)]
+        p2p: bool,
+        /// STUN 服务器（逗号分隔，可多次；例如 stun.l.google.com:19302）
+        #[arg(long, value_name = "ADDR")]
+        stun: Option<String>,
+        /// 对端候选（逗号/空格分隔；省略时从 stdin 读取）
+        #[arg(long, value_name = "ADDRS")]
+        peer: Option<String>,
+        /// P2P 本端 UDP 端口（0 = 内核分配；固定端口便于人工交换候选）
+        #[arg(long, default_value_t = 0)]
+        p2p_port: u16,
+        /// 打洞窗口（毫秒）
+        #[arg(long, default_value_t = 3000)]
+        punch_timeout_ms: u64,
+        /// 视频编码格式：h264（Windows 默认，MF 硬编优先）/ mjpeg（跨平台兜底，非 Windows 默认）
+        #[arg(long, value_name = "CODEC")]
+        codec: Option<String>,
     },
     /// 真实主控端：连接 Agent、解码 H.264、统计并可保存首帧
     View {
@@ -142,6 +161,24 @@ enum Command {
         /// 中继 relay_key（hex:…/base64:…/裸 hex）
         #[arg(long, value_name = "KEY")]
         relay_key: Option<String>,
+        /// 启用 P2P 直连打洞（配合 --peer 或按提示粘贴对端候选）
+        #[arg(long, default_value_t = false)]
+        p2p: bool,
+        /// STUN 服务器（逗号分隔；例如 stun.l.google.com:19302）
+        #[arg(long, value_name = "ADDR")]
+        stun: Option<String>,
+        /// 对端候选（逗号/空格分隔；省略时从 stdin 读取）
+        #[arg(long, value_name = "ADDRS")]
+        peer: Option<String>,
+        /// P2P 本端 UDP 端口（0 = 内核分配）
+        #[arg(long, default_value_t = 0)]
+        p2p_port: u16,
+        /// 打洞窗口（毫秒）
+        #[arg(long, default_value_t = 3000)]
+        punch_timeout_ms: u64,
+        /// 视频编码格式：h264 / mjpeg（必须与 Agent 一致；默认 Windows=h264，其它=mjpeg）
+        #[arg(long, value_name = "CODEC")]
+        codec: Option<String>,
     },
 }
 
@@ -174,8 +211,15 @@ async fn main() -> Result<()> {
             relay,
             relay_tag,
             relay_key,
+            p2p,
+            stun,
+            peer,
+            p2p_port,
+            punch_timeout_ms,
+            codec,
         } => {
             let relay_options = build_relay(relay, relay_tag, relay_key, &password)?;
+            let p2p_options = build_p2p(p2p, stun, peer, p2p_port, punch_timeout_ms)?;
             let addr: SocketAddr = format!("{host}:{port}")
                 .parse()
                 .with_context(|| format!("无法解析监听地址 {host}:{port}"))?;
@@ -189,6 +233,8 @@ async fn main() -> Result<()> {
                 allow_input: !no_input,
                 allow_clipboard: !no_clipboard,
                 relay: relay_options,
+                p2p: p2p_options,
+                codec: parse_codec(codec)?,
             })
             .await
         }
@@ -203,8 +249,15 @@ async fn main() -> Result<()> {
             relay,
             relay_tag,
             relay_key,
+            p2p,
+            stun,
+            peer,
+            p2p_port,
+            punch_timeout_ms,
+            codec,
         } => {
             let relay_options = build_relay(relay, relay_tag, relay_key, &password)?;
+            let p2p_options = build_p2p(p2p, stun, peer, p2p_port, punch_timeout_ms)?;
             let addr: SocketAddr = addr
                 .parse()
                 .with_context(|| format!("无法解析 Agent 地址 {addr}（示例：127.0.0.1:21116）"))?;
@@ -221,6 +274,8 @@ async fn main() -> Result<()> {
                 control,
                 clipboard,
                 relay: relay_options,
+                p2p: p2p_options,
+                codec: parse_codec(codec)?,
             })
             .await
             .map(|_| ())
@@ -237,6 +292,23 @@ fn init_tracing() {
         .with_target(false)
         .compact()
         .try_init();
+}
+
+/// 解析视频编码格式；未指定时按平台给默认值（Windows 走 MF H.264，其它平台走 MJPEG 兜底）。
+fn parse_codec(text: Option<String>) -> Result<dfy_codec::Codec> {
+    match text.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(value) => match value.to_ascii_lowercase().as_str() {
+            "h264" | "avc" => Ok(dfy_codec::Codec::H264),
+            "mjpeg" | "jpeg" => Ok(dfy_codec::Codec::Mjpeg),
+            "h265" | "hevc" => anyhow::bail!("--codec h265 暂不支持（v1 只有 h264 / mjpeg）"),
+            other => anyhow::bail!("未知 --codec {other}（可选：h264 / mjpeg）"),
+        },
+        None => Ok(if cfg!(windows) {
+            dfy_codec::Codec::H264
+        } else {
+            dfy_codec::Codec::Mjpeg
+        }),
+    }
 }
 
 /// 解析中继参数：三者必须同时给出（relay 地址 + key），tag 可省略。
@@ -266,6 +338,36 @@ fn build_relay(
         relay_bridge::tag_hex(&options.tag)
     );
     Ok(Some(options))
+}
+
+/// 组装 P2P 打洞参数。`--tag/--key` 这类只在 relay 下有效的参数不在此处理。
+fn build_p2p(
+    enabled: bool,
+    stun: Option<String>,
+    peer: Option<String>,
+    local_port: u16,
+    punch_timeout_ms: u64,
+) -> Result<Option<real::P2POptions>> {
+    if !enabled {
+        if stun.is_some() || peer.is_some() {
+            anyhow::bail!("--stun/--peer 需要与 --p2p 一起使用");
+        }
+        return Ok(None);
+    }
+    let stun_servers = match stun {
+        Some(text) => crate::p2p_bridge::parse_stun_list(&text)?,
+        None => Vec::new(),
+    };
+    let peers = match peer {
+        Some(text) => crate::p2p_bridge::parse_candidates(&text)?,
+        None => Vec::new(),
+    };
+    Ok(Some(real::P2POptions {
+        stun: stun_servers,
+        peer: peers,
+        local_port,
+        punch_timeout: std::time::Duration::from_millis(punch_timeout_ms.max(200)),
+    }))
 }
 
 async fn run_demo_agent(host: &str, port: u16, password: String) -> Result<()> {

@@ -50,10 +50,10 @@ pub struct MftDecoderAdapter {
 }
 
 impl MftDecoderAdapter {
-    /// 创建默认解码器（硬件优先）。
-    pub fn new() -> Result<Self> {
+    /// 按给定编码格式创建解码器。
+    pub fn with_codec(codec: dfy_codec::Codec, prefer_hardware: bool) -> Result<Self> {
         Ok(Self {
-            inner: dfy_codec::create_decoder(dfy_codec::Codec::H264, true)?,
+            inner: dfy_codec::create_decoder(codec, prefer_hardware)?,
         })
     }
 }

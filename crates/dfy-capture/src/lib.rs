@@ -1,25 +1,32 @@
-//! `dfy-capture` — Windows screen capture for the Dafeiyu remote-desktop project.
+//! `dfy-capture` — screen capture backends for the Dafeiyu remote-desktop
+//! project.
 //!
-//! The Windows backend uses **DXGI Desktop Duplication**
-//! (`IDXGIOutput1::DuplicateOutput` + D3D11 staging-texture readback) to grab
-//! the desktop at the adapter's native resolution, GPU-side, without going
-//! through GDI.
-//!
-//! # Platform support
-//!
-//! * Windows: full implementation ([`DxgiCapturer`]).
-//! * Other platforms: a stub whose constructors return an
+//! * **Windows**: DXGI Desktop Duplication
+//!   (`IDXGIOutput1::DuplicateOutput` + D3D11 staging-texture readback) grabs
+//!   the desktop at the adapter's native resolution, GPU-side, without going
+//!   through GDI.
+//! * **Linux**: X11 `GetImage` through the pure-Rust `x11rb` protocol stack
+//!   (no `libX11`/`libxcb` linkage). Monitors are enumerated with RandR
+//!   (1.5 `GetMonitors`, falling back to 1.2 CRTC/Output), then Xinerama, then
+//!   the root window. Wayland compositors that do not expose XWayland are
+//!   *not* supported by this backend; see `design/025-linux-capture.md` for the
+//!   planned Wayland (portal + PipeWire) route.
+//! * **Other platforms** (macOS): a stub whose constructors return an
 //!   [`Unsupported`](CaptureError::Unsupported) error, so that the rest of the
 //!   workspace still `cargo check`s everywhere.
 //!
 //! # Threading
 //!
-//! [`DxgiCapturer`] owns COM/D3D11 objects bound to the thread that created
-//! them (and to the desktop that was active at that time). It is deliberately
-//! **not `Send`**: create one instance per thread that needs to capture, use it
-//! only from that thread, and drop it there. A single instance per display is
-//! also required by DXGI itself (Desktop Duplication allows only one active
-//! duplication object per output).
+//! The Windows backend object (`DxgiCapturer`) owns COM/D3D11 objects bound to
+//! the thread that created them (and to the desktop that was active at that
+//! time). It is deliberately **not `Send`**: create one instance per thread that
+//! needs to capture, use it only from that thread, and drop it there. A single
+//! instance per display is also required by DXGI itself (Desktop Duplication
+//! allows only one active duplication object per output).
+//!
+//! The Linux backend object (`LinuxCapturer`) owns one X11 connection; it is
+//! also intended to be used (and dropped) on a single capture thread, although
+//! `x11rb`'s connection itself is `Send`.
 
 #![warn(missing_docs)]
 
@@ -119,10 +126,11 @@ impl fmt::Display for Rect {
 /// Description of one desktop output (monitor).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorInfo {
-    /// Index of this monitor in the enumeration order used by
-    /// [`DxgiCapturer::new`]; also the value to pass as `monitor_index`.
+    /// Index of this monitor in the enumeration order; also the value to pass
+    /// as `monitor_index` to the platform backend's `new`.
     pub id: u32,
-    /// Device name as reported by DXGI (e.g. `\\.\DISPLAY1`).
+    /// Device name as reported by the platform backend (DXGI `\\.\DISPLAY1` on
+    /// Windows, the RandR/Xinerama monitor name on Linux).
     pub name: String,
     /// Virtual-desktop x coordinate of the monitor's upper-left corner.
     pub x: i32,
@@ -254,9 +262,16 @@ mod dxgi;
 #[cfg(windows)]
 pub use dxgi::DxgiCapturer;
 
-#[cfg(not(windows))]
+// Linux 走 X11 后端（`linux.rs`）；只有在既非 Windows 又非 Linux 的平台
+// （目前是 macOS）才退化成 stub，保证整个 workspace 仍可编译。
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::LinuxCapturer;
+
+#[cfg(not(any(windows, target_os = "linux")))]
 mod stub;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub use stub::DxgiCapturer;
 
 /// The crate version, for handshake/diagnostics messages.

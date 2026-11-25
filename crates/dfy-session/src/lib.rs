@@ -125,6 +125,22 @@ impl Capturer for dfy_capture::DxgiCapturer {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl Capturer for dfy_capture::LinuxCapturer {
+    fn capture(&mut self, _timeout_ms: u32) -> anyhow::Result<Option<RawFrame>> {
+        // X11 GetImage 每次立即返回一帧（无阻塞能力），节流由采集线程负责。
+        let frame = dfy_capture::LinuxCapturer::capture(self, 0)?;
+        Ok(frame.map(|f| RawFrame {
+            width: f.width,
+            height: f.height,
+            stride: f.stride,
+            data: f.data,
+            pts_us: dfy_transport::now_us(),
+            full_frame: f.full_frame,
+        }))
+    }
+}
+
 /// 接收侧的帧重组器：按 `frame_id` 收集分片，全部到齐（或收到 LAST 且分片齐）时交付整帧。
 ///
 /// 特性：

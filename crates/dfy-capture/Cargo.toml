@@ -9,6 +9,19 @@ publish = false
 [dependencies]
 anyhow = "1.0"
 
+# Linux 采集后端：纯 Rust 的 X11 协议实现（x11rb 默认走自身协议栈，
+# 不启用 `dl-libxcb`，因此不链接 libX11/libxcb，也就没有 C 依赖）。
+# `randr` 用于显示器枚举，`xinerama` 用于 RandR 不可用时的兜底，
+# `resource_manager` 保留给后续 X 资源数据库（DPI/光标主题）使用，
+# `allow-unsafe-code` 是 x11rb 在 Linux 上建立 socket 连接所必需的。
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = [
+    "randr",
+    "xinerama",
+    "resource_manager",
+    "allow-unsafe-code",
+] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",

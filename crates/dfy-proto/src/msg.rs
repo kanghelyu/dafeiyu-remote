@@ -580,7 +580,12 @@ impl Envelope {
     }
 
     /// 构造 `FileResult` 信封。
-    pub fn file_result(transfer_id: u64, ok: bool, error: impl Into<String>, digest: Vec<u8>) -> Self {
+    pub fn file_result(
+        transfer_id: u64,
+        ok: bool,
+        error: impl Into<String>,
+        digest: Vec<u8>,
+    ) -> Self {
         Self {
             body: Some(envelope::Body::FileResult(FileResult {
                 transfer_id,

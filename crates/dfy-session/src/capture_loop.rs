@@ -124,7 +124,10 @@ where
                         consecutive_errors = 0;
                         let now = Instant::now();
                         if now.duration_since(last_emit) < min_interval {
-                            // 超出目标帧率：跳过（不进入编码，省 GPU/CPU）
+                            // 超出目标帧率：跳过（不进入编码，省 GPU/CPU）。
+                            // 注意：Linux X11 GetImage 每次都会立即返回整帧，不做这段
+                            // 补睡会以数百 fps 空转并整帧丢弃，因此必须睡完剩余间隔。
+                            thread::sleep(min_interval - now.duration_since(last_emit));
                             continue;
                         }
                         last_emit = now;

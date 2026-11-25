@@ -29,6 +29,7 @@ use tracing::{debug, info, warn};
 use crate::adapters::{MftDecoderAdapter, MftEncoderAdapter};
 use crate::clipboard_bridge::{AgentHandler, ViewClipboard};
 use crate::input_capture::{CtrlMsg, InputCapture};
+pub use crate::p2p_bridge::P2POptions;
 
 /// 被控端（Agent）参数。
 #[derive(Debug, Clone)]
@@ -51,6 +52,10 @@ pub struct AgentOptions {
     pub allow_clipboard: bool,
     /// 经中继接入（`None` = 直连/公网打洞）。
     pub relay: Option<RelayOptions>,
+    /// P2P 直连打洞（`None` = 不做打洞，直接 bind/connect）。
+    pub p2p: Option<P2POptions>,
+    /// 视频编码格式（Windows 默认 H.264；非 Windows 默认 MJPEG 兜底）。
+    pub codec: dfy_codec::Codec,
 }
 
 /// 主控端（View）参数。
@@ -72,21 +77,30 @@ pub struct ViewOptions {
     pub clipboard: bool,
     /// 经中继接入（`None` = 直连）。
     pub relay: Option<RelayOptions>,
+    /// P2P 直连打洞（`None` = 直连/中继）。
+    pub p2p: Option<P2POptions>,
+    /// 视频编码格式（必须与 Agent 一致）。
+    pub codec: dfy_codec::Codec,
 }
 
 /// 启动真实 Agent：监听、握手、采集+编码、推流，直到 Ctrl+C。
 pub async fn run_agent(opts: AgentOptions) -> Result<()> {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = &opts;
-        anyhow::bail!("当前平台的采集/编码后端尚未实现（v1 仅 Windows DXGI + Media Foundation）");
+        anyhow::bail!(
+            "当前平台的采集后端尚未实现（v1 支持 Windows DXGI 与 Linux X11；macOS 待做）"
+        );
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
-        use dfy_capture::DxgiCapturer;
+        #[cfg(windows)]
+        use dfy_capture::DxgiCapturer as PlatformCapturer;
+        #[cfg(target_os = "linux")]
+        use dfy_capture::LinuxCapturer as PlatformCapturer;
 
-        let monitors = DxgiCapturer::monitors().context("枚举显示器失败")?;
+        let monitors = PlatformCapturer::monitors().context("枚举显示器失败")?;
         let monitor = monitors
             .iter()
             .find(|m| m.id == opts.monitor)
@@ -110,7 +124,7 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
         );
 
         let enc_cfg = dfy_codec::EncoderConfig {
-            codec: dfy_codec::Codec::H264,
+            codec: opts.codec,
             width,
             height,
             fps: opts.fps,
@@ -119,8 +133,11 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
             prefer_hardware: true,
         };
 
-        // 先创建再丢弃一次编码器：尽早暴露「没有 H.264 MFT」这类环境问题。
-        drop(MftEncoderAdapter::new(&enc_cfg).context("创建 H.264 编码器失败")?);
+        // 先创建再丢弃一次编码器：尽早暴露「没有可用编码器」这类环境问题。
+        drop(
+            MftEncoderAdapter::new(&enc_cfg)
+                .with_context(|| format!("创建 {} 编码器失败", enc_cfg.codec))?,
+        );
 
         // 中继模式下：先与中继完成 tag 配对，再把配对后的 socket 交给 quinn；
         // 端点看到的对端是中继地址，TLS/会话语义完全不变。keepalive 由 RelaySocket 自带任务维持，
@@ -139,6 +156,21 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
                 .context("用中继 socket 创建 Agent QUIC 端点失败")?;
             relay_socket = Some(socket);
             (endpoint, identity)
+        } else if let Some(p2p) = opts.p2p.as_ref() {
+            // P2P 直连：先按 STUN 结果收集候选并双端打洞，再把已连通的 socket 交给 quinn。
+            let handoff = crate::p2p_bridge::prepare("agent", p2p)
+                .await
+                .context("P2P 打洞失败")?;
+            println!(
+                "[agent] P2P 就绪：本地端口 {}，候选 {} 个，NAT {:?}",
+                handoff.local_port,
+                handoff.candidates.len(),
+                handoff.nat_hint
+            );
+            let identity = TlsIdentity::generate("dfy-agent").context("生成 Agent TLS 身份失败")?;
+            let endpoint = agent_endpoint_on_socket(handoff.socket, identity.clone())
+                .context("用打洞 socket 创建 Agent QUIC 端点失败")?;
+            (endpoint, identity)
         } else {
             bind_agent(opts.addr)
                 .with_context(|| format!("在 {} 上监听失败（UDP 端口被占用？）", opts.addr))?
@@ -148,8 +180,15 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
         println!("[agent] 证书 SPKI-SHA256 = {}", identity.fingerprint_hex());
         println!("[agent] 短指纹 = {}", identity.fingerprint_short());
         println!(
-            "[agent] 显示器 {}（{} {}x{}，DPI {}）→ H.264 {}kbps {}fps",
-            monitor.id, monitor.name, width, height, monitor.dpi, opts.bitrate_kbps, opts.fps
+            "[agent] 显示器 {}（{} {}x{}，DPI {}）→ {} {}kbps {}fps",
+            monitor.id,
+            monitor.name,
+            width,
+            height,
+            monitor.dpi,
+            enc_cfg.codec,
+            opts.bitrate_kbps,
+            opts.fps
         );
         println!(
             "[agent] 口令 = {}（MVP；生产应使用 Argon2id/TOTP）",
@@ -201,7 +240,7 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
             let monitor_index = monitor.id;
             let enc_cfg_for_loop = enc_cfg.clone();
             let capture = match start_capture_loop(caps, move || {
-                let capturer = DxgiCapturer::new(monitor_index)?;
+                let capturer = PlatformCapturer::new(monitor_index)?;
                 let encoder = MftEncoderAdapter::new(&enc_cfg_for_loop)?;
                 Ok((capturer, encoder))
             }) {
@@ -318,6 +357,19 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
             .with_context(|| format!("经中继连接 {} 失败（agent 是否已上线？）", relay.addr))?;
         relay_socket = Some(socket);
         pair
+    } else if let Some(p2p) = opts.p2p.as_ref() {
+        let handoff = crate::p2p_bridge::prepare("view", p2p)
+            .await
+            .context("P2P 打洞失败")?;
+        println!(
+            "[view] P2P 就绪：本地端口 {}，候选 {} 个，NAT {:?}",
+            handoff.local_port,
+            handoff.candidates.len(),
+            handoff.nat_hint
+        );
+        connect_on_socket(handoff.socket, tls.clone(), handoff.peer)
+            .await
+            .with_context(|| format!("经 P2P 对端 {} 连接失败", handoff.peer))?
     } else {
         connect(opts.addr, tls.clone())
             .await
@@ -355,7 +407,8 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
     let mut hb = heartbeat;
     let mut tx = tx;
     let mut rx = rx;
-    let mut decoder = MftDecoderAdapter::new().context("创建 H.264 解码器失败")?;
+    let mut decoder = MftDecoderAdapter::with_codec(opts.codec, true)
+        .with_context(|| format!("创建 {} 解码器失败", opts.codec))?;
     let mut assembler = FrameAssembler::new();
     let mut stats = ViewStats::default();
     let deadline = Instant::now() + Duration::from_secs(opts.seconds.max(1));

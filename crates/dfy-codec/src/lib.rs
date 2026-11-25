@@ -46,16 +46,21 @@ mod mf;
 #[cfg(not(windows))]
 mod stub;
 
+/// 纯 Rust JPEG/MJPEG 兜底编解码（所有平台可用）。
+pub mod jpeg;
+
 // 常用转换函数直接暴露在 crate 根，方便 dfy-session 等调用方使用。
 pub use format::{bgra_to_nv12, bgra_to_nv12_into, rgba_to_nv12, rgba_to_nv12_into};
 
 /// 视频编码格式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Codec {
-    /// H.264 / AVC（v1 唯一可用编码）。
+    /// H.264 / AVC（Windows 上走 Media Foundation，硬件优先）。
     H264,
     /// H.265 / HEVC（v1 只做能力探测，编码/解码返回 `Unsupported`）。
     H265,
+    /// MJPEG（逐帧 JPEG）：纯 Rust、跨平台兜底，每帧都是关键帧。
+    Mjpeg,
 }
 
 impl Codec {
@@ -64,6 +69,7 @@ impl Codec {
         match self {
             Codec::H264 => "H264",
             Codec::H265 => "H265",
+            Codec::Mjpeg => "MJPEG",
         }
     }
 }
@@ -266,6 +272,9 @@ pub struct EncoderInfo {
 /// （4 字节/像素 → BGRA8）。
 pub fn create_encoder(cfg: &EncoderConfig) -> anyhow::Result<Box<dyn VideoEncoder>> {
     cfg.validate()?;
+    if cfg.codec == Codec::Mjpeg {
+        return Ok(Box::new(jpeg::JpegEncoder::new(cfg)?));
+    }
     let enc = backend::create_encoder(cfg, None)?;
     Ok(enc)
 }
@@ -279,6 +288,11 @@ pub fn create_encoder_with_format(
     format: PixelFormatIn,
 ) -> anyhow::Result<Box<dyn VideoEncoder>> {
     cfg.validate()?;
+    if cfg.codec == Codec::Mjpeg {
+        // MJPEG 后端按数据布局自动识别 BGRA8 / NV12，无需显式格式。
+        let _ = format;
+        return Ok(Box::new(jpeg::JpegEncoder::new(cfg)?));
+    }
     let enc = backend::create_encoder(cfg, Some(format))?;
     Ok(enc)
 }
@@ -294,6 +308,7 @@ pub fn create_decoder(
     match codec {
         Codec::H264 => backend::create_decoder(prefer_hardware),
         Codec::H265 => anyhow::bail!("dfy-codec: v1 不支持 H.265 解码（仅提供 H.264）"),
+        Codec::Mjpeg => Ok(Box::new(jpeg::JpegDecoder::new())),
     }
 }
 
