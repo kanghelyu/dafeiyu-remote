@@ -32,7 +32,7 @@ pub use msg::{
     envelope, Auth, Bye, CapabilityAck, Challenge, ClipboardApplied, ClipboardDataChunk,
     ClipboardFormat, ClipboardFormatList, ClipboardPull, Envelope, FileAccept, FileAck, FileChunk,
     FileOffer, FileResult, Hello, InputEvent, Monitor, MonitorList, Ping, Pong, Reject,
-    VideoConfig, Welcome,
+    SessionResume, SessionResumeOk, VideoConfig, Welcome,
 };
 
 use std::fmt;

@@ -9,13 +9,14 @@
 /// 6 Ping / 7 Pong / 8 VideoConfig / 9 MonitorList / 10 InputEvent /
 /// 11 Bye / 12 Reject / 13 ClipboardFormatList / 14 ClipboardPull /
 /// 15 ClipboardDataChunk / 16 ClipboardApplied / 17 FileOffer /
-/// 18 FileAccept / 19 FileChunk / 20 FileAck / 21 FileResult
+/// 18 FileAccept / 19 FileChunk / 20 FileAck / 21 FileResult /
+/// 22 SessionResume / 23 SessionResumeOk
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Envelope {
     /// 消息体；空 Envelope 视为协议错误。
     #[prost(
         oneof = "envelope::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23"
     )]
     pub body: Option<envelope::Body>,
 }
@@ -88,6 +89,12 @@ pub mod envelope {
         /// 文件传输：最终结果（含 BLAKE3 摘要）。
         #[prost(message, tag = "21")]
         FileResult(super::FileResult),
+        /// 会话恢复：客户端重连/路径迁移时声明上次看到的视频进度。
+        #[prost(message, tag = "22")]
+        SessionResume(super::SessionResume),
+        /// 会话恢复确认：agent 已收到 resume 并请求了关键帧。
+        #[prost(message, tag = "23")]
+        SessionResumeOk(super::SessionResumeOk),
     }
 }
 
@@ -394,6 +401,31 @@ pub struct Bye {
     pub reason: u32,
 }
 
+/// `SessionResume`：客户端重连或路径迁移后，声明自己已看到的视频进度。
+///
+/// agent 收到后会请求一个关键帧并回 [`SessionResumeOk`]，采集线程保持存活
+/// （见 `AgentConfig::stay_alive`），因此不需要重建会话。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SessionResume {
+    /// 客户端最后完整收到的 frame_id（0 = 尚未收到任何帧）。
+    #[prost(uint64, tag = "1")]
+    pub last_frame_id: u64,
+    /// 客户端最后收到的分片序号（用于诊断丢包位置）。
+    #[prost(uint64, tag = "2")]
+    pub last_frame_seq: u64,
+}
+
+/// `SessionResumeOk`：agent 对 [`SessionResume`] 的确认。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SessionResumeOk {
+    /// 是否已请求关键帧（resume 后第一帧应为关键帧）。
+    #[prost(bool, tag = "1")]
+    pub keyframe_requested: bool,
+    /// agent 侧下一帧的 frame_id（客户端可据此计算续接位置）。
+    #[prost(uint64, tag = "2")]
+    pub resume_from_frame_id: u64,
+}
+
 /// `Reject`：握手/会话拒绝。
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Reject {
@@ -603,6 +635,26 @@ impl Envelope {
         }
     }
 
+    /// 构造 `SessionResume` 信封。
+    pub fn session_resume(last_frame_id: u64, last_frame_seq: u64) -> Self {
+        Self {
+            body: Some(envelope::Body::SessionResume(SessionResume {
+                last_frame_id,
+                last_frame_seq,
+            })),
+        }
+    }
+
+    /// 构造 `SessionResumeOk` 信封。
+    pub fn session_resume_ok(keyframe_requested: bool, resume_from_frame_id: u64) -> Self {
+        Self {
+            body: Some(envelope::Body::SessionResumeOk(SessionResumeOk {
+                keyframe_requested,
+                resume_from_frame_id,
+            })),
+        }
+    }
+
     /// 消息短名（日志用）。
     pub fn kind_name(&self) -> &'static str {
         match &self.body {
@@ -627,6 +679,8 @@ impl Envelope {
             Some(envelope::Body::FileChunk(_)) => "FileChunk",
             Some(envelope::Body::FileAck(_)) => "FileAck",
             Some(envelope::Body::FileResult(_)) => "FileResult",
+            Some(envelope::Body::SessionResume(_)) => "SessionResume",
+            Some(envelope::Body::SessionResumeOk(_)) => "SessionResumeOk",
             None => "<empty>",
         }
     }

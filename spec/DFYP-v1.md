@@ -121,3 +121,15 @@
 2. 音频主时钟 vs 视频主时钟在 v1 选用（建议音频主时钟，简化 A/V 同步）。
 3. 虚拟显示器与"super screen"（超大画布 + 视口漫游）是否进入 v1 协议（建议：v1 只做单屏/多屏切换，v2 加入）。
 4. 中继是否支持 TURN 兼容（企业已有 TURN 环境接入）。
+
+## 10. 会话恢复（Session Resume，v1 扩展）
+
+路径变化（P2P ↔ relay、NAT 重绑定、短暂断网）时，客户端在新 QUIC 连接上先发：
+
+| tag | 消息 | 字段 |
+| --- | --- | --- |
+| 22 | `SessionResume` | `last_frame_id: u64`（最后完整收到的帧）、`last_frame_seq: u64` |
+| 23 | `SessionResumeOk` | `keyframe_requested: bool`、`resume_from_frame_id: u64` |
+
+agent 收到后必须请求关键帧并回 `SessionResumeOk`；采集/编码状态保持连续（不重建），
+客户端据 `resume_from_frame_id` 与 `last_frame_id` 判断缺口，等关键帧到达后继续渲染。

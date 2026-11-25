@@ -124,3 +124,107 @@ fn client_config_has_ping_interval_builder() {
     let cfg = ClientConfig::default().with_ping_interval(Duration::from_millis(250));
     assert_eq!(cfg.ping_interval, Duration::from_millis(250));
 }
+
+/// 重连后通过 `SessionResume` 续接：采集线程保持存活（`stay_alive`），
+/// 第二个连接收到 `SessionResumeOk` 并继续出帧。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resume_after_reconnect_continues_frames() {
+    install_crypto_provider();
+
+    let (endpoint, identity, addr) = bind_agent_random().expect("绑定 Agent 端点");
+    let fingerprint = identity.fingerprint;
+
+    let agent_task = tokio::spawn(async move {
+        let mut capture = start_capture_loop(
+            CaptureLoopConfig {
+                capture_timeout_ms: 1,
+                max_fps: 60,
+                queue_capacity: 32,
+                max_consecutive_errors: 3,
+            },
+            || Ok((FakeCapturer::new(64, 48, FRAMES * 8), FakeEncoder::new())),
+        )
+        .expect("启动采集线程失败");
+
+        let mut resumes = 0u64;
+        for _ in 0..2 {
+            let incoming = endpoint.accept().await.expect("端点已关闭，无法 accept");
+            let conn = incoming.await.expect("QUIC 连接建立失败");
+            let (welcome, chan) =
+                server_handshake(&conn, &ServerAuth::new("test-password", "e2e-agent"))
+                    .await
+                    .expect("Agent 握手失败");
+            let cfg = AgentConfig {
+                max_frames: Some(FRAMES),
+                idle_timeout: Duration::from_secs(30),
+                drain_delay: Duration::from_millis(200),
+                stay_alive: true,
+            };
+            let stats = serve_agent(conn, welcome, chan, &mut capture, IgnoreHandler, cfg)
+                .await
+                .expect("Agent 会话失败");
+            resumes += stats.resumes;
+        }
+        capture.stop();
+        let _ = capture.join();
+        endpoint.close(0u32.into(), b"done");
+        resumes
+    });
+
+    // 第一次连接
+    let (_ep1, conn) = connect(addr, client_tls(Some(fingerprint)).expect("TLS"))
+        .await
+        .expect("连接 Agent 失败");
+    let (welcome, chan) = client_handshake(&conn, "test-password", "e2e-client", vec![1, 2, 3])
+        .await
+        .expect("Client 握手失败");
+    let stats1 = run_client(
+        conn,
+        welcome,
+        chan,
+        FakeDecoder::new(),
+        |_| {},
+        ClientConfig::default()
+            .with_expect_frames(FRAMES)
+            .with_ping_interval(Duration::from_millis(300)),
+    )
+    .await
+    .expect("第一次会话失败");
+    assert!(
+        stats1.frames_delivered >= FRAMES - 2,
+        "第一次会话应交付大部分帧"
+    );
+
+    // 第二次连接（重连）：run_client 会自动发 SessionResume
+    let (_ep2, conn) = connect(addr, client_tls(Some(fingerprint)).expect("TLS"))
+        .await
+        .expect("重连 Agent 失败");
+    let (welcome, chan) = client_handshake(&conn, "test-password", "e2e-client", vec![1, 2, 3])
+        .await
+        .expect("Client 重连握手失败");
+    let stats2 = run_client(
+        conn,
+        welcome,
+        chan,
+        FakeDecoder::new(),
+        |_| {},
+        ClientConfig::default()
+            .with_expect_frames(FRAMES)
+            .with_ping_interval(Duration::from_millis(300)),
+    )
+    .await
+    .expect("重连会话失败");
+
+    let resumes = tokio::time::timeout(Duration::from_secs(10), agent_task)
+        .await
+        .expect("Agent 任务超时")
+        .expect("Agent 任务 panic");
+
+    assert!(stats2.resume_ok, "重连后应收到 SessionResumeOk");
+    assert!(
+        stats2.frames_delivered >= FRAMES - 2,
+        "重连后应继续交付帧，实际 {}",
+        stats2.frames_delivered
+    );
+    assert_eq!(resumes, 2, "两次连接各发一次 SessionResume");
+}

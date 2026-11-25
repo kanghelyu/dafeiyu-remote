@@ -81,6 +81,8 @@ pub struct AgentRunStats {
     pub keyframes_sent: u64,
     /// 收到的 input-move DATAGRAM 数。
     pub datagrams_recv: u64,
+    /// 收到的 SessionResume（重连/路径迁移）次数。
+    pub resumes: u64,
     /// 最近一次 RTT（毫秒）。
     pub rtt_ms: Option<f64>,
     /// 结束原因（便于日志/测试断言）。
@@ -188,6 +190,22 @@ pub async fn serve_agent(
                                 stats.end_reason = "rejected";
                                 break;
                             }
+                            Some(envelope::Body::SessionResume(resume)) => {
+                                // 重连/路径迁移：采集线程仍然存活，只需请求一个关键帧。
+                                capture.request_keyframe();
+                                stats.resumes += 1;
+                                info!(
+                                    last_frame_id = resume.last_frame_id,
+                                    last_frame_seq = resume.last_frame_seq,
+                                    "收到会话恢复请求，已请求关键帧"
+                                );
+                                if let Err(err) =
+                                    tx.send_ctrl(&Envelope::session_resume_ok(true, u64::from(frame_id))).await
+                                {
+                                    debug!(error = %err, "回复 SessionResumeOk 失败");
+                                }
+                            }
+
                             _ => {
                                 if let Ok(Some(reply)) = handler.on_ctrl(&env) {
                                     if let Err(err) = tx.send_ctrl(&reply).await {

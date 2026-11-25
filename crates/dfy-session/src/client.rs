@@ -67,6 +67,10 @@ pub struct ClientRunStats {
     pub malformed: u64,
     /// 因内存上限被丢弃的在途帧数。
     pub dropped_frames: u64,
+    /// 最近完整收到的 frame_id（用于重连时 resume）。
+    pub last_frame_id: u64,
+    /// agent 是否确认了 resume 并请求关键帧。
+    pub resume_ok: bool,
     /// 最近一次 RTT（毫秒）。
     pub rtt_ms: Option<f64>,
     /// 结束原因。
@@ -98,6 +102,44 @@ pub async fn run_client(
         expect_frames = ?frames_left,
         "Client 会话开始"
     );
+
+    // 重连/路径迁移：声明已看到的进度，等 agent 确认（它会请求关键帧）。
+    // 先等确认再进入收帧循环，避免帧洪峰让客户端在确认到达前就收满帧退出。
+    if let Err(err) = tx.send_ctrl(&Envelope::session_resume(0, 0)).await {
+        debug!(error = %err, "发送 SessionResume 失败");
+    } else {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => {
+                    debug!("等待 SessionResumeOk 超时，继续收帧");
+                    break;
+                }
+                msg = rx.recv_ctrl() => {
+                    match msg {
+                        Ok(Some(env)) => match env.body {
+                            Some(envelope::Body::SessionResumeOk(ok)) => {
+                                stats.resume_ok = ok.keyframe_requested;
+                                debug!(
+                                    resume_from_frame_id = ok.resume_from_frame_id,
+                                    keyframe_requested = ok.keyframe_requested,
+                                    "会话恢复已确认"
+                                );
+                                break;
+                            }
+                            Some(envelope::Body::Ping(ping)) => {
+                                if let Err(err) = tx.send_ctrl(&Envelope::pong(ping.ts_us)).await {
+                                    debug!(error = %err, "回复 Pong 失败");
+                                }
+                            }
+                            _ => {}
+                        },
+                        _ => break,
+                    }
+                }
+            }
+        }
+    }
 
     loop {
         tokio::select! {
@@ -159,6 +201,15 @@ pub async fn run_client(
                                 stats.end_reason = "rejected";
                                 break;
                             }
+                            Some(envelope::Body::SessionResumeOk(ok)) => {
+                                stats.resume_ok = ok.keyframe_requested;
+                                debug!(
+                                    resume_from_frame_id = ok.resume_from_frame_id,
+                                    keyframe_requested = ok.keyframe_requested,
+                                    "会话恢复已确认"
+                                );
+                            }
+
                             _ => {}
                         }
                     }
@@ -182,6 +233,7 @@ pub async fn run_client(
                                         match decoder.decode(&complete.data, u64::from(complete.ts_us)) {
                                             Ok(Some(frame)) => {
                                                 stats.frames_delivered += 1;
+                                                stats.last_frame_id = u64::from(complete.frame_id);
                                                 on_frame(frame);
                                                 frames_left = frames_left.map(|n| n.saturating_sub(1));
                                             }
