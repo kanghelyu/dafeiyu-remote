@@ -557,6 +557,7 @@ dependencies = [
  "dfy-capture",
  "dfy-clipboard",
  "dfy-codec",
+ "dfy-files",
  "dfy-input",
  "dfy-p2p",
  "dfy-proto",

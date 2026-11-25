@@ -11,6 +11,7 @@ name = "dfy"
 path = "src/main.rs"
 
 [dependencies]
+dfy-files = { path = "../dfy-files" }
 anyhow.workspace = true
 blake3.workspace = true
 clap.workspace = true

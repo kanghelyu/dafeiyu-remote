@@ -21,10 +21,10 @@
 //! # let connecting = server_ep.accept().await.unwrap();
 //! # let conn = connecting.await?;
 //! let (welcome, chan) = dfy_transport::server_handshake(&conn, &dfy_transport::ServerAuth::new("pw", "agent")).await?;
-//! let loop_ = start_capture_loop(CaptureLoopConfig::default(), || {
+//! let mut loop_ = start_capture_loop(CaptureLoopConfig::default(), || {
 //!     Ok((FakeCapturer::new(320, 240, u64::MAX), FakeEncoder::new()))
 //! })?;
-//! let stats = serve_agent(conn, welcome, chan, loop_, dfy_session::IgnoreHandler, AgentConfig::default()).await?;
+//! let stats = serve_agent(conn, welcome, chan, &mut loop_, dfy_session::IgnoreHandler, AgentConfig::default()).await?;
 //! println!("sent {} frames", stats.frames_sent);
 //! # Ok(()) }
 //! ```

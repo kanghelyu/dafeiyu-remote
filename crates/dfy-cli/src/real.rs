@@ -14,8 +14,8 @@ use anyhow::{Context, Result};
 use dfy_proto::envelope;
 use dfy_relay::Role;
 use dfy_session::{
-    serve_agent, start_capture_loop, AgentConfig, CaptureLoopConfig, Decoder as _, FrameAssembler,
-    RawFrame,
+    serve_agent, start_capture_loop, AgentConfig, CaptureLoop, CaptureLoopConfig, Decoder as _,
+    FrameAssembler, RawFrame,
 };
 use dfy_transport::{
     agent_endpoint_on_socket, bind_agent, client_handshake, client_tls, connect, connect_on_socket,
@@ -28,6 +28,7 @@ use tracing::{debug, info, warn};
 
 use crate::adapters::{MftDecoderAdapter, MftEncoderAdapter};
 use crate::clipboard_bridge::{AgentHandler, ViewClipboard};
+use crate::file_bridge::{is_file_envelope, ViewFiles};
 use crate::input_capture::{CtrlMsg, InputCapture};
 pub use crate::p2p_bridge::P2POptions;
 
@@ -50,6 +51,8 @@ pub struct AgentOptions {
     pub allow_input: bool,
     /// 是否与客户端双向同步剪贴板（`--no-clipboard` 关闭）。
     pub allow_clipboard: bool,
+    /// 接收控制端文件的目录（`None` = 不接收）。
+    pub recv_dir: Option<std::path::PathBuf>,
     /// 经中继接入（`None` = 直连/公网打洞）。
     pub relay: Option<RelayOptions>,
     /// P2P 直连打洞（`None` = 不做打洞，直接 bind/connect）。
@@ -75,6 +78,8 @@ pub struct ViewOptions {
     pub control: bool,
     /// 是否与 Agent 双向同步剪贴板（`--clipboard` 开启）。
     pub clipboard: bool,
+    /// 要发送给 Agent 的本地文件/目录（空 = 不发送）。
+    pub send_files: Vec<PathBuf>,
     /// 经中继接入（`None` = 直连）。
     pub relay: Option<RelayOptions>,
     /// P2P 直连打洞（`None` = 直连/中继）。
@@ -196,6 +201,9 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
         );
         println!("[agent] 等待客户端连接，Ctrl+C 退出");
 
+        // 采集/编码线程跨连接复用（断线重连、P2P↔中继迁移都不重建）。
+        let mut capture: Option<CaptureLoop> = None;
+
         loop {
             let incoming = tokio::select! {
                 incoming = endpoint.accept() => match incoming {
@@ -237,28 +245,40 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
                 queue_capacity: 16,
                 max_consecutive_errors: 10,
             };
-            let monitor_index = monitor.id;
-            let enc_cfg_for_loop = enc_cfg.clone();
-            let capture = match start_capture_loop(caps, move || {
-                let capturer = PlatformCapturer::new(monitor_index)?;
-                let encoder = MftEncoderAdapter::new(&enc_cfg_for_loop)?;
-                Ok((capturer, encoder))
-            }) {
-                Ok(capture) => capture,
-                Err(err) => {
-                    warn!(error = %err, "启动采集线程失败");
-                    continue;
+            // 采集线程在整个进程生命周期内只创建一次：断线重连 / 路径迁移时不必
+            // 重建采集器与编码器（重建会丢一帧关键帧并重新探测显示器）。
+            if capture.is_none() {
+                let monitor_index = monitor.id;
+                let enc_cfg_for_loop = enc_cfg.clone();
+                match start_capture_loop(caps, move || {
+                    let capturer = PlatformCapturer::new(monitor_index)?;
+                    let encoder = MftEncoderAdapter::new(&enc_cfg_for_loop)?;
+                    Ok((capturer, encoder))
+                }) {
+                    Ok(loop_handle) => capture = Some(loop_handle),
+                    Err(err) => {
+                        warn!(error = %err, "启动采集线程失败");
+                        continue;
+                    }
                 }
-            };
+            }
+            let capture = capture.as_mut().expect("采集线程刚刚已创建");
+            // 新连接接入：请求一帧关键帧，让对端立刻可以出图（迁移场景同样适用）。
+            capture.request_keyframe();
 
             let agent_cfg = AgentConfig {
                 max_frames: opts.max_frames,
                 idle_timeout: Duration::from_secs(3600),
                 drain_delay: Duration::from_millis(100),
+                stay_alive: true,
             };
 
             // 每个连接独立的注入处理器：注入失败（无桌面/被拒）只降级为「只串流」，不中断会话。
-            let handler = AgentHandler::new(opts.allow_input, opts.allow_clipboard);
+            let handler = AgentHandler::new(
+                opts.allow_input,
+                opts.allow_clipboard,
+                opts.recv_dir.clone(),
+            );
             println!(
                 "[agent] 输入注入{}",
                 if handler.is_enabled() {
@@ -273,6 +293,14 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
                     "已启用（拉模式，500ms 轮询）"
                 } else {
                     "未启用（--no-clipboard 或后端不可用）"
+                }
+            );
+            println!(
+                "[agent] 文件接收{}",
+                if handler.files_enabled() {
+                    "已启用"
+                } else {
+                    "未启用（--recv-dir 未给出或不可用）"
                 }
             );
 
@@ -306,10 +334,35 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
                 clipboard.applied_sent,
                 clipboard.applied_received
             );
+            let files = handler.file_stats();
+            if files.offers_received > 0 || files.chunks_received > 0 {
+                println!(
+                    "[agent] 文件：offer {}，块 {}（{}），确认 {}，结果 {}，完成 {}，失败 {}",
+                    files.offers_received,
+                    files.chunks_received,
+                    dfy_transport::human_bytes(files.bytes),
+                    files.acks_sent,
+                    files.results_sent,
+                    files.files_completed,
+                    files.files_failed
+                );
+            }
         }
 
         endpoint.close(0u32.into(), b"agent shutdown");
         drop(relay_socket);
+        if let Some(mut capture) = capture {
+            capture.stop();
+            if let Some(result) = capture.join() {
+                match result {
+                    Ok(stats) => println!(
+                        "[agent] 采集线程收尾：采集 {}，编码 {}，产出 {} 份",
+                        stats.captured, stats.encoded, stats.frames_yielded
+                    ),
+                    Err(err) => warn!(error = %err, "采集线程异常结束"),
+                }
+            }
+        }
         println!("[agent] 已退出");
         Ok(())
     }
@@ -426,6 +479,25 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
     }
     let mut next_clipboard_poll = Instant::now() + crate::clipboard_bridge::CLIPBOARD_POLL;
 
+    // 文件发送（--send-file 开启）：进入会话后逐个 offer。
+    let mut files = if opts.send_files.is_empty() {
+        None
+    } else {
+        Some(ViewFiles::new(opts.send_files.clone()))
+    };
+    if files.is_some() {
+        println!(
+            "[view] 文件发送已启用（{} 个路径；复用 control 流，256KiB/块）",
+            opts.send_files.len()
+        );
+    }
+    if let Some(view_files) = files.as_mut() {
+        for env in view_files.start_next() {
+            let _ = tx.send_ctrl(&env).await;
+        }
+    }
+    let mut next_file_tick = Instant::now() + Duration::from_millis(100);
+
     // 控制输入采集（仅 Windows 有实现；不可用时降级为「只收视频」）。
     let mut capture = if opts.control {
         match InputCapture::start() {
@@ -466,7 +538,13 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
                             break;
                         }
                         _ => {
-                            if let Some(sync) = clipboard.as_mut() {
+                            if is_file_envelope(&env) {
+                                if let Some(view_files) = files.as_mut() {
+                                    for reply in view_files.on_envelope(&env) {
+                                        let _ = tx.send_ctrl(&reply).await;
+                                    }
+                                }
+                            } else if let Some(sync) = clipboard.as_mut() {
                                 let replies = sync.on_ctrl(&env);
                                 for reply in replies {
                                     let _ = tx.send_ctrl(&reply).await;
@@ -559,6 +637,18 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
                 }
             }
 
+            _ = tokio::time::sleep_until(next_file_tick) => {
+                next_file_tick = Instant::now() + Duration::from_millis(100);
+                if let Some(view_files) = files.as_mut() {
+                    for env in view_files.start_next() {
+                        let _ = tx.send_ctrl(&env).await;
+                    }
+                    for env in view_files.poll_chunks() {
+                        let _ = tx.send_ctrl(&env).await;
+                    }
+                }
+            }
+
             _ = tokio::time::sleep_until(next_ping) => {
                 let ts = dfy_transport::now_us();
                 if tx.send_ctrl(&dfy_proto::Envelope::ping(ts)).await.is_ok() {
@@ -616,6 +706,22 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
             c.applied_received,
             dfy_transport::human_bytes(c.bytes_sent),
             dfy_transport::human_bytes(c.bytes_received)
+        );
+    }
+    if let Some(view_files) = files.as_ref() {
+        let f = view_files.stats();
+        if !view_files.is_done() {
+            println!("[view] 注意：文件队列尚未发送完成（对端提前结束会话？）");
+        }
+        println!(
+            "[view] 文件：offer {}，块 {}（{}），确认 {}，结果 {}，完成 {}，失败 {}",
+            f.offers_sent,
+            f.chunks_sent,
+            dfy_transport::human_bytes(f.bytes),
+            f.acks_received,
+            f.results_received,
+            f.files_completed,
+            f.files_failed
         );
     }
     info!(

@@ -35,7 +35,7 @@ async fn loopback_session_delivers_all_frames() {
                 .await
                 .expect("Agent 握手失败");
 
-        let capture = start_capture_loop(
+        let mut capture = start_capture_loop(
             CaptureLoopConfig {
                 capture_timeout_ms: 1,
                 max_fps: 60,
@@ -50,8 +50,9 @@ async fn loopback_session_delivers_all_frames() {
             max_frames: Some(FRAMES),
             idle_timeout: Duration::from_secs(30),
             drain_delay: Duration::from_millis(200),
+            stay_alive: false,
         };
-        let stats = serve_agent(conn, welcome, chan, capture, IgnoreHandler, cfg)
+        let stats = serve_agent(conn, welcome, chan, &mut capture, IgnoreHandler, cfg)
             .await
             .expect("Agent 会话失败");
         endpoint.close(0u32.into(), b"done");

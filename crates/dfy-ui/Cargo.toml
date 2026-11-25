@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Dafeiyu Remote contributors
+
+[package]
+name = "dfy-ui"
+description = "Reusable viewer surface (winit + softbuffer) for the Dafeiyu Remote controller"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+# 默认带窗口上屏。关掉（`--no-default-features`）后本 crate 退化成纯逻辑库：
+# 帧校验/缩放、键位映射、滚轮换算、渲染统计、帧来源抽象都能在无显示环境编译并单测。
+default = ["window"]
+# 窗口 + 软件上屏（winit 事件循环 + softbuffer）。
+window = ["dep:softbuffer"]
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+# 只用到无运行时依赖的 `sync` 功能：`tokio::sync::mpsc::UnboundedReceiver` 作为对外的
+# ViewerEvent 出口（既定契约），以及 `FrameSource` 的 mpsc 适配器。
+tokio = { version = "1", default-features = false, features = ["sync"] }
+# winit 不随 `window` feature 关闭：`ViewerEvent` 的键位/滚轮映射（`KeyCode`、`MouseButton`、
+# `MouseScrollDelta`）本身就是核心公共 API，必须能在无显示环境编译。
+# 窗口事件循环只在 `window` feature 打开时创建。
+# winit 0.30 走 ApplicationHandler；softbuffer 0.4 自带 Win32 无拷贝上屏。
+# 不用 wgpu：当前 1080p/4K 的 CPU 最近邻缩放已经够快，先把正确性和依赖面控制住。
+winit = "0.30"
+softbuffer = { version = "0.4", optional = true }
+
+[dev-dependencies]
+# 仅 examples/viewer_demo.rs 用来打日志（不引入 GUI 测试框架）。
+tracing-subscriber.workspace = true
+
+[[example]]
+name = "viewer_demo"
+required-features = ["window"]

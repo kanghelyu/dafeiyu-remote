@@ -9,6 +9,7 @@
 mod adapters;
 mod clipboard_bridge;
 mod demo;
+mod file_bridge;
 mod genkey;
 mod input_bridge;
 mod input_capture;
@@ -128,6 +129,9 @@ enum Command {
         /// 视频编码格式：h264（Windows 默认，MF 硬编优先）/ mjpeg（跨平台兜底，非 Windows 默认）
         #[arg(long, value_name = "CODEC")]
         codec: Option<String>,
+        /// 接收控制端发来的文件到该目录（默认关闭）
+        #[arg(long, value_name = "DIR")]
+        recv_dir: Option<PathBuf>,
     },
     /// 真实主控端：连接 Agent、解码 H.264、统计并可保存首帧
     View {
@@ -179,6 +183,9 @@ enum Command {
         /// 视频编码格式：h264 / mjpeg（必须与 Agent 一致；默认 Windows=h264，其它=mjpeg）
         #[arg(long, value_name = "CODEC")]
         codec: Option<String>,
+        /// 发送本地文件/目录到 Agent（可多次；需要 Agent 开启 --recv-dir）
+        #[arg(long, value_name = "PATH")]
+        send_file: Vec<PathBuf>,
     },
 }
 
@@ -217,6 +224,7 @@ async fn main() -> Result<()> {
             p2p_port,
             punch_timeout_ms,
             codec,
+            recv_dir,
         } => {
             let relay_options = build_relay(relay, relay_tag, relay_key, &password)?;
             let p2p_options = build_p2p(p2p, stun, peer, p2p_port, punch_timeout_ms)?;
@@ -235,6 +243,7 @@ async fn main() -> Result<()> {
                 relay: relay_options,
                 p2p: p2p_options,
                 codec: parse_codec(codec)?,
+                recv_dir,
             })
             .await
         }
@@ -255,6 +264,7 @@ async fn main() -> Result<()> {
             p2p_port,
             punch_timeout_ms,
             codec,
+            send_file,
         } => {
             let relay_options = build_relay(relay, relay_tag, relay_key, &password)?;
             let p2p_options = build_p2p(p2p, stun, peer, p2p_port, punch_timeout_ms)?;
@@ -276,6 +286,7 @@ async fn main() -> Result<()> {
                 relay: relay_options,
                 p2p: p2p_options,
                 codec: parse_codec(codec)?,
+                send_files: send_file,
             })
             .await
             .map(|_| ())

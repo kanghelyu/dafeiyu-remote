@@ -7,6 +7,7 @@
 //! （`CtrlHandler::on_tick`）。剪贴板状态机的本地轮询就挂在 tick 上，远端消息在 on_ctrl 里处理，
 //! 一次处理可能产生多条回复（分块），因此走 `outbox` 队列而不是单条返回值。
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,7 @@ use dfy_proto::Envelope;
 use dfy_session::CtrlHandler;
 use tracing::{debug, warn};
 
+use crate::file_bridge::{is_file_envelope, AgentFiles, FileStats};
 use crate::input_bridge::InjectHandler;
 
 /// 本地剪贴板轮询间隔（远端格式清单变化不会主动推送，只能轮询序列号）。
@@ -93,14 +95,17 @@ pub fn to_envelopes(msgs: Vec<SyncMessage>) -> Vec<Envelope> {
 pub struct AgentHandler {
     input: InjectHandler,
     clipboard: Arc<Mutex<Option<ClipboardSync>>>,
+    files: Arc<Mutex<Option<AgentFiles>>>,
     outbox: Vec<Envelope>,
     stats: Arc<Mutex<ClipboardStats>>,
+    file_stats: Arc<Mutex<FileStats>>,
     last_poll: Instant,
 }
 
 impl AgentHandler {
-    /// `allow_input` / `allow_clipboard` 为 `false` 时对应功能降级为关闭。
-    pub fn new(allow_input: bool, allow_clipboard: bool) -> Self {
+    /// `allow_input` / `allow_clipboard` 为 `false` 时对应功能降级为关闭；
+    /// `recv_dir` 为 `Some` 时启用文件接收。
+    pub fn new(allow_input: bool, allow_clipboard: bool, recv_dir: Option<PathBuf>) -> Self {
         let input = if allow_input {
             match InjectHandler::new() {
                 Ok(handler) => handler,
@@ -117,11 +122,23 @@ impl AgentHandler {
         } else {
             None
         };
+        let files = match recv_dir {
+            Some(dir) => match AgentFiles::new(&dir, dfy_files::OverwritePolicy::Rename) {
+                Ok(files) => Some(files),
+                Err(err) => {
+                    warn!(error = %err, "文件接收后端初始化失败，本次会话不接收文件");
+                    None
+                }
+            },
+            None => None,
+        };
         Self {
             input,
             clipboard: Arc::new(Mutex::new(clipboard)),
+            files: Arc::new(Mutex::new(files)),
             outbox: Vec::new(),
             stats: Arc::new(Mutex::new(ClipboardStats::default())),
+            file_stats: Arc::new(Mutex::new(FileStats::default())),
             last_poll: Instant::now(),
         }
     }
@@ -139,6 +156,16 @@ impl AgentHandler {
     /// 输入注入统计快照。
     pub fn stats(&self) -> crate::input_bridge::InjectStats {
         self.input.stats()
+    }
+
+    /// 文件接收是否可用。
+    pub fn files_enabled(&self) -> bool {
+        self.files.lock().map(|f| f.is_some()).unwrap_or(false)
+    }
+
+    /// 文件接收统计快照。
+    pub fn file_stats(&self) -> FileStats {
+        self.file_stats.lock().map(|s| *s).unwrap_or_default()
     }
 
     /// 剪贴板统计快照。
@@ -183,6 +210,26 @@ impl AgentHandler {
 
 impl CtrlHandler for AgentHandler {
     fn on_ctrl(&mut self, env: &Envelope) -> Result<Option<Envelope>> {
+        if is_file_envelope(env) {
+            let replies = {
+                let Ok(mut guard) = self.files.lock() else {
+                    return Ok(None);
+                };
+                match guard.as_mut() {
+                    Some(files) => files.on_envelope(env),
+                    None => Vec::new(),
+                }
+            };
+            if let Ok(mut stats) = self.file_stats.lock() {
+                if let Ok(guard) = self.files.lock() {
+                    if let Some(files) = guard.as_ref() {
+                        *stats = files.stats();
+                    }
+                }
+            }
+            self.outbox.extend(replies);
+            return Ok(None);
+        }
         if let Some(msg) = message_from_envelope(env) {
             if let Ok(mut stats) = self.stats.lock() {
                 stats.record_received(&msg);
@@ -310,9 +357,10 @@ mod tests {
 
     #[test]
     fn disabled_handler_has_empty_outbox() {
-        let mut handler = AgentHandler::new(false, false);
+        let mut handler = AgentHandler::new(false, false, None);
         assert!(handler.drain_outbox().is_empty());
         assert!(!handler.is_enabled());
         assert!(!handler.clipboard_enabled());
+        assert!(!handler.files_enabled());
     }
 }

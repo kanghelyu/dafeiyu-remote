@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# 大肥鱼远程 —— 文件传输状态机（offer/accept/chunk/ack/result）。
+# 与网络解耦：只消费/产出 dfy-proto 消息体，不持有连接；由 dfy-session 的 CtrlHandler 驱动。
+
+[package]
+name = "dfy-files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Network-decoupled file transfer state machines (offer/accept/chunk/ack/result) with path sandboxing, resume and BLAKE3 verification"
+publish = false
+
+[dependencies]
+blake3.workspace = true
+dfy-proto = { path = "../dfy-proto" }
+hex.workspace = true
+thiserror = "2"
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

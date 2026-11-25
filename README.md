@@ -42,6 +42,23 @@
 | `apps/` | 四端 UI（Flutter，脚手架规划中） |
 | `research/` | 逆向/调研笔记（**仅本地保留，不随仓库发布**） |
 
+## 文件传输（控制端 → Agent）
+
+控制端把本地文件/目录发给 Agent，Agent 落到指定目录；协议见 `design/024-file-transfer.md`，
+v1 复用 control 流（256 KiB/块，按 16 MiB 或 64 块回 Ack，BLAKE3 校验，原子落盘 `.dfy-part` → rename）。
+
+```bash
+# Agent：开启接收目录（不存在会自动创建）
+cargo run --release -p dfy-cli -- agent --port 21116 --recv-dir ./incoming
+
+# 控制端：发送文件（可多次 --send-file，目录会被展开递归发送）
+cargo run --release -p dfy-cli -- view --addr 127.0.0.1:21116 --seconds 15 \
+  --send-file ./report.pdf --send-file ./screenshots/
+```
+
+实测（Windows 本机回环，直连）：3 MiB 随机二进制 + 54 B 文本 → `文件：offer 2，块 13（3.00 MiB），确认 2，结果 2，完成 2，失败 0`，
+落盘两个文件 SHA-256 与源文件一致。
+
 ## 经中继连接（防火墙友好的兜底路径）
 
 当两端都在 NAT 后面、UDP 打洞不可行时，用一台有公网 IP 的机器做中继。
@@ -65,6 +82,25 @@ dfy view --relay relay.example.com:21117 --relay-key 'base64:<relay_key>' --clip
 实测（本机回环中继、6 秒）：视频 DATAGRAM 359、重组帧 60、关键帧 1、解析失败 0、
 RTT 0.41 ms；剪贴板 24.55 KiB 分块闭环。设计细节见 `design/022-relay-client.md`。
 
+## P2P 直连（UDP 打洞）
+
+两端都能出 UDP 时优先打洞直连，失败再回退中继。打洞流程：STUN 探测公网映射 →
+交换候选 → 双端互发打洞帧 → 把已连通的 socket 交给 QUIC（TLS/会话语义与中继路径完全一致）。
+
+```powershell
+# 被控端：固定本端端口 + 对端候选（对端候选也可留空，运行时从 stdin 粘贴）
+dfy agent --p2p --peer <对端IP:端口> --p2p-port 21120 --punch-timeout-ms 8000
+
+# 主控端：同样给对端候选
+dfy view --p2p --peer <被控IP:21120> --p2p-port 21121 --seconds 10
+```
+
+- 有公网 STUN 时用 `--stun stun.example.com:19302` 获取 ServerReflexive 候选（可逗号分隔多个）。
+- 注意：候选只枚举本机网卡 IP，**不能用 `127.0.0.1` 当对端**（socket 绑在网卡 IP 上收不到回环包）；
+  同机测试请用网卡 IP（例如 `172.18.0.1`）。
+- 本机回环实测：`打洞成功：本端 0.0.0.0:21121 ↔ 对端 172.18.0.1:21120` → QUIC 握手成功、RTT 0.548 ms。
+  设计细节见 `design/023-p2p-punch.md`。
+
 ## 构建与自测
 
 前置：Rust stable（Windows 建议 `x86_64-pc-windows-gnu` + mingw-w64，或 msvc + VS Build Tools）。
@@ -82,7 +118,7 @@ cargo run -p dfy-cli -- demo-agent --port 21116 --password test
 cargo run -p dfy-cli -- demo-client --addr 127.0.0.1:21116 --password test
 ```
 
-**真实屏幕串流**（Windows：DXGI 采集 + Media Foundation H.264）：
+**真实屏幕串流**（Windows：DXGI 采集 + Media Foundation H.264；其它平台：MJPEG 兜底）：
 
 ```bash
 # 被控端：采集本机屏幕并推流（Ctrl+C 退出）
@@ -94,6 +130,10 @@ cargo run -p dfy-cli -- view --addr 127.0.0.1:21116 --password test --seconds 10
 # 再加控制输入（Windows 低级钩子；Ctrl+Alt+Shift+Q 停止）与双向剪贴板
 cargo run -p dfy-cli -- view --addr 127.0.0.1:21116 --control --clipboard --seconds 10
 ```
+
+- `--codec h264|mjpeg` 选择编码格式（两端必须一致）。Windows 默认 `h264`（Media Foundation 硬编优先）；
+  其它平台默认 `mjpeg`（纯 Rust，无系统编解码依赖，逐帧关键帧、丢包只损单帧）。
+- Linux 被控端（X11 GetImage 采集 + MJPEG）代码已就绪，交叉编译通过；**尚未在真实 Linux 上实机验证**。
 
 实测（本机 2800×1840 桌面，6 秒）：398 个视频 DATAGRAM / 401 KiB、60 帧重组、24 帧解码、0 解析失败、RTT 0.571 ms；首帧转 PNG 后是真实桌面画面。详见 [design/014-real-pipeline-verified.md](design/014-real-pipeline-verified.md)。
 
@@ -110,13 +150,16 @@ cargo run -p dfy-cli -- view --addr 127.0.0.1:21116 --control --clipboard --seco
 | 剪贴板双向（拉模式，文本/HTML/PNG/文件列表） | ✅ 实机 + QUIC 端到端测试 |
 | 零知识中继（UDP tag 配对 / TCP 降级 / metrics） | ✅ 实机验证（视频 + 24.55 KiB 剪贴板） |
 | 一键部署脚本 + Docker Compose | ✅ |
-| P2P 打洞（STUN/ICE-lite） | 🚧 开发中 |
-| 上屏 UI（winit 窗口） | 🚧 开发中 |
-| Linux 采集（X11） | 🚧 开发中 |
+| P2P 打洞（STUN/ICE-lite） | 🚧 已接通 CLI（回环打洞 + QUIC 握手实测通过；视频端到端待真实桌面复核） |
+| 上屏 UI（winit 窗口） | 🚧 crate 已落盘，待验收与接入 |
+| 跨平台软件编码（MJPEG 兜底） | ✅ 纯 Rust，编解码往返单测通过 |
+| Linux 采集（X11 GetImage + RandR 枚举） | 🚧 交叉编译通过，未实机验证 |
 | 文件传输 | 🚧 开发中（协议消息已落地） |
 | 虚拟屏（IddCx 驱动骨架 + 用户态 IOCTL） | 🚧 骨架完成，待 WDK 编译与签名 |
 | macOS / Android | 🚧 逆向已完成，待实现 |
 | Flutter 四端 UI | ⏳ 规划中 |
+
+- 2026-11-25：文件传输接入 CLI（`--recv-dir` / `--send-file`），实机 3 MiB 校验通过；采集线程跨连接复用（重连/迁移不重建采集器）。
 
 ## 路线图
 

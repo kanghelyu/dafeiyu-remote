@@ -24,6 +24,12 @@ pub struct AgentConfig {
     pub idle_timeout: Duration,
     /// 正常收尾（帧数到上限）后等待在途 DATAGRAM 排空的时长，避免最后一帧被 close 丢弃。
     pub drain_delay: Duration,
+    /// 会话结束后是否保留采集线程存活（断线重连/路径迁移时不重建采集与编码器）。
+    ///
+    /// 为 `true` 时 [`serve_agent`] 不会 `stop`/`join` 采集线程，调用方可以在下一个
+    /// 连接里复用同一个 [`CaptureLoop`]；此时帧序号会从 0 重新开始，但编码器状态与
+    /// 采集资源保持连续，重连后只需请求一次关键帧即可继续出图。
+    pub stay_alive: bool,
 }
 
 impl Default for AgentConfig {
@@ -32,6 +38,7 @@ impl Default for AgentConfig {
             max_frames: None,
             idle_timeout: Duration::from_secs(3600),
             drain_delay: Duration::from_millis(50),
+            stay_alive: false,
         }
     }
 }
@@ -85,7 +92,7 @@ pub async fn serve_agent(
     conn: Connection,
     welcome: Welcome,
     chan: CtrlChannel,
-    mut capture: CaptureLoop,
+    capture: &mut CaptureLoop,
     mut handler: impl CtrlHandler,
     cfg: AgentConfig,
 ) -> Result<AgentRunStats> {
@@ -264,17 +271,21 @@ pub async fn serve_agent(
     tx.finish().ok();
     conn.close(0u32.into(), b"done");
     // 必须先请求采集线程退出，再 join：采集器可能在「无新帧」状态无限循环。
-    capture.stop();
-    if let Some(result) = capture.join() {
-        match result {
-            Ok(capture_stats) => debug!(
-                captured = capture_stats.captured,
-                encoded = capture_stats.encoded,
-                yielded = capture_stats.frames_yielded,
-                "采集线程已结束"
-            ),
-            Err(err) => debug!(error = %err, "采集线程异常结束"),
+    if !cfg.stay_alive {
+        capture.stop();
+        if let Some(result) = capture.join() {
+            match result {
+                Ok(capture_stats) => debug!(
+                    captured = capture_stats.captured,
+                    encoded = capture_stats.encoded,
+                    yielded = capture_stats.frames_yielded,
+                    "采集线程已结束"
+                ),
+                Err(err) => debug!(error = %err, "采集线程异常结束"),
+            }
         }
+    } else {
+        debug!("会话结束但保留采集线程（stay_alive），等待下一次连接复用");
     }
     info!(
         frames = stats.frames_sent,

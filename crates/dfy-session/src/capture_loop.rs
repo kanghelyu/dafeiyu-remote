@@ -66,6 +66,7 @@ pub struct CaptureLoop {
     /// 编码结果队列（`None` = 线程结束）。
     pub frames: mpsc::Receiver<EncodedFrame>,
     stop_flag: Arc<AtomicBool>,
+    keyframe_flag: Arc<AtomicBool>,
     join: Option<JoinHandle<anyhow::Result<CaptureStats>>>,
 }
 
@@ -73,6 +74,11 @@ impl CaptureLoop {
     /// 请求线程停止（下一次循环检查时退出）。
     pub fn stop(&self) {
         self.stop_flag.store(true, Ordering::SeqCst);
+    }
+
+    /// 请求编码器在下一帧强制关键帧（新连接接入 / 路径迁移后调用）。
+    pub fn request_keyframe(&self) {
+        self.keyframe_flag.store(true, Ordering::SeqCst);
     }
 
     /// 线程是否已请求停止。
@@ -102,6 +108,8 @@ where
     let (tx, rx) = mpsc::channel::<EncodedFrame>(cfg.queue_capacity.max(1));
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop = Arc::clone(&stop_flag);
+    let keyframe_flag = Arc::new(AtomicBool::new(false));
+    let keyframe = Arc::clone(&keyframe_flag);
 
     let join = thread::Builder::new()
         .name("dfy-capture".into())
@@ -119,6 +127,9 @@ where
                 .unwrap_or_else(Instant::now);
 
             while !stop.load(Ordering::SeqCst) {
+                if keyframe.swap(false, Ordering::SeqCst) {
+                    encoder.request_keyframe();
+                }
                 match capturer.capture(cfg.capture_timeout_ms) {
                     Ok(Some(frame)) => {
                         consecutive_errors = 0;
@@ -178,6 +189,7 @@ where
     Ok(CaptureLoop {
         frames: rx,
         stop_flag,
+        keyframe_flag,
         join: Some(join),
     })
 }
