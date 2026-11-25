@@ -3,6 +3,9 @@
 // CF_HTML 是“ASCII 头部 + UTF-8 HTML 正文”的剪贴板格式；跨端只同步 fragment 片段，
 // 由两边各自补齐头部，避免 HTML 文档外壳膨胀。
 
+// 当前仅 Windows 后端/测试使用；其它平台编译时允许未使用（后续 mac/Linux 后端会复用）。
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use anyhow::{bail, Result};
 
 /// 注册格式名（`RegisterClipboardFormatW` 用）。

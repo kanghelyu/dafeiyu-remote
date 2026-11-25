@@ -4,6 +4,9 @@
 // macOS / Linux 后端会在后续里程碑按同一 `ClipboardBackend` trait 补齐
 // （macOS: NSPasteboard + changeCount；Linux: X11 selections / wl-clipboard）。
 
+// 当前仅 Windows 后端/测试使用；其它平台编译时允许未使用（后续 mac/Linux 后端会复用）。
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use anyhow::bail;
 use anyhow::Result;
 
