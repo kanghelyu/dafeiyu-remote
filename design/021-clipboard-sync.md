@@ -93,7 +93,16 @@ UUX 的做法（见 `research/040-uu-features-ui.md` §4）也是同一思路（
 ## 6. 落地顺序
 
 1. ✅ 协议消息 + 状态机 + 单测（本文件所述）。
-2. ⏳ 接入 `dfy-cli agent/view`：agent 侧 `ClipboardSync` 挂 `CHAN_CLIPBOARD` 分支，viewer 侧同理；`--clipboard=off|text|all` 开关。
+2. ✅ 接入 `dfy-cli agent/view`（已完成）：`crates/dfy-cli/src/clipboard_bridge.rs` 的 `AgentHandler`/`ViewClipboard`；agent 默认开启（`--no-clipboard` 关闭），view 用 `--clipboard` 开启。
 3. ⏳ 权限位协商（Welcome 里声明能力，未授权不发清单）。
 4. ⏳ Linux/mac 后端。
 5. ⏳ 大对象（>1 MiB）改走 `file-meta/file-data` 通道，剪贴板只传"引用"。
+
+## 7. 接入实现要点（v1 现状）
+
+- 会话层只加了两条通用缝：`CtrlHandler::on_tick()`（跟随 100ms ticker）与 `CtrlHandler::drain_outbox()`（一次 `on_ctrl` 可能产生多条回帧，例如分块）。
+- `AgentHandler` 组合输入注入与剪贴板；两者可独立关闭，任一后端不可用只降级不中断会话。
+- `ViewClipboard` 独立处理本地轮询与远端消息，返回待发帧由 `real.rs` 的 `select!` 发送。
+- 消息复用 control 流（tag 13–16；通道 4 保留给将来的独立流）。
+- 实机验证（同一台机器）：agent→view 文本 19B 与 view→agent 文本 20B 各闭环一次（清单 / 拉取 / 分块 / 确认 各 1），无回环。
+- 未做：权限位协商（Welcome 声明 CLIPBOARD 后才发清单）、`--clipboard=text|all` 分级、Linux/mac 后端、>1MiB 走文件通道。

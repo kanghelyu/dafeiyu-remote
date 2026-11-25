@@ -46,6 +46,14 @@ pub trait CtrlHandler: Send {
     fn on_datagram(&mut self, _chan: u8, _payload: &[u8]) -> Result<()> {
         Ok(())
     }
+    /// 取出处理器需要额外发回对端的帧（一次 on_ctrl 可能产生多条，如剪贴板分块）。
+    fn drain_outbox(&mut self) -> Vec<Envelope> {
+        Vec::new()
+    }
+    /// 周期性回调（跟随 100ms ticker），用于本地状态轮询（如剪贴板序列号）。
+    fn on_tick(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// 什么都不做的处理器（selftest / 只串流的场景）。
@@ -117,6 +125,14 @@ pub async fn serve_agent(
                     stats.end_reason = "heartbeat_timeout";
                     break;
                 }
+                if let Err(err) = handler.on_tick() {
+                    debug!(error = %err, "处理器 tick 失败");
+                }
+                for extra in handler.drain_outbox() {
+                    if let Err(err) = tx.send_ctrl(&extra).await {
+                        debug!(error = %err, "发送处理器 tick 附加帧失败");
+                    }
+                }
                 if last_activity.elapsed() > cfg.idle_timeout {
                     stats.end_reason = "idle_timeout";
                     break;
@@ -169,6 +185,11 @@ pub async fn serve_agent(
                                 if let Ok(Some(reply)) = handler.on_ctrl(&env) {
                                     if let Err(err) = tx.send_ctrl(&reply).await {
                                         debug!(error = %err, "发送控制回复失败");
+                                    }
+                                }
+                                for extra in handler.drain_outbox() {
+                                    if let Err(err) = tx.send_ctrl(&extra).await {
+                                        debug!(error = %err, "发送处理器附加帧失败");
                                     }
                                 }
                             }

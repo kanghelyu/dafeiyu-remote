@@ -24,7 +24,7 @@ use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use crate::adapters::{MftDecoderAdapter, MftEncoderAdapter};
-use crate::input_bridge::InjectHandler;
+use crate::clipboard_bridge::{AgentHandler, ViewClipboard};
 use crate::input_capture::{CtrlMsg, InputCapture};
 
 /// 被控端（Agent）参数。
@@ -44,6 +44,8 @@ pub struct AgentOptions {
     pub max_frames: Option<u64>,
     /// 是否把控制端发来的输入注入本机（`--no-input` 关闭）。
     pub allow_input: bool,
+    /// 是否与客户端双向同步剪贴板（`--no-clipboard` 关闭）。
+    pub allow_clipboard: bool,
 }
 
 /// 主控端（View）参数。
@@ -61,6 +63,8 @@ pub struct ViewOptions {
     pub save_first_frame: Option<PathBuf>,
     /// 是否采集本地鼠标/键盘并发给 Agent（`--control` 开启；仅 Windows）。
     pub control: bool,
+    /// 是否与 Agent 双向同步剪贴板（`--clipboard` 开启）。
+    pub clipboard: bool,
 }
 
 /// 启动真实 Agent：监听、握手、采集+编码、推流，直到 Ctrl+C。
@@ -189,17 +193,7 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
             };
 
             // 每个连接独立的注入处理器：注入失败（无桌面/被拒）只降级为「只串流」，不中断会话。
-            let handler = if opts.allow_input {
-                match InjectHandler::new() {
-                    Ok(handler) => handler,
-                    Err(err) => {
-                        warn!(error = %err, "输入注入后端不可用，本次会话只串流");
-                        InjectHandler::disabled()
-                    }
-                }
-            } else {
-                InjectHandler::disabled()
-            };
+            let handler = AgentHandler::new(opts.allow_input, opts.allow_clipboard);
             println!(
                 "[agent] 输入注入{}",
                 if handler.is_enabled() {
@@ -208,12 +202,21 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
                     "未启用（只串流；--no-input 或后端不可用）"
                 }
             );
+            println!(
+                "[agent] 剪贴板同步{}",
+                if handler.clipboard_enabled() {
+                    "已启用（拉模式，500ms 轮询）"
+                } else {
+                    "未启用（--no-clipboard 或后端不可用）"
+                }
+            );
 
             let result =
                 serve_agent(conn, welcome, chan, capture, handler.clone(), agent_cfg).await;
             // 防卡键：会话结束（正常/异常）立刻释放本机可能仍按下的键。
             handler.release();
             let injected = handler.stats();
+            let clipboard = handler.clipboard_stats();
             match result {
                 Ok(stats) => println!(
                     "[agent] 会话结束：帧 {}，{}，RTT {:?} ms，原因 {}；输入注入 {} 条（忽略 {}，失败 {}）",
@@ -227,6 +230,17 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
                 ),
                 Err(err) => warn!(error = %err, "会话异常结束"),
             }
+            println!(
+                "[agent] 剪贴板：清单 {}↑/{}↓，拉取 {}↑/{}↓，分块 {}↑/{}↓，确认 {}↑/{}↓",
+                clipboard.lists_sent,
+                clipboard.lists_received,
+                clipboard.pulls_sent,
+                clipboard.pulls_received,
+                clipboard.chunks_sent,
+                clipboard.chunks_received,
+                clipboard.applied_sent,
+                clipboard.applied_received
+            );
         }
 
         endpoint.close(0u32.into(), b"agent shutdown");
@@ -298,6 +312,17 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
     let mut saved = false;
     let mut next_ping = Instant::now();
 
+    // 剪贴板同步（默认关闭；--clipboard 开启。平台不支持时自动降级）。
+    let mut clipboard = if opts.clipboard {
+        ViewClipboard::new()
+    } else {
+        None
+    };
+    if clipboard.is_some() {
+        println!("[view] 剪贴板同步已启用（拉模式，500ms 轮询本地剪贴板）");
+    }
+    let mut next_clipboard_poll = Instant::now() + crate::clipboard_bridge::CLIPBOARD_POLL;
+
     // 控制输入采集（仅 Windows 有实现；不可用时降级为「只收视频」）。
     let mut capture = if opts.control {
         match InputCapture::start() {
@@ -337,7 +362,14 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
                             stats.end_reason = "agent_bye";
                             break;
                         }
-                        _ => {}
+                        _ => {
+                            if let Some(sync) = clipboard.as_mut() {
+                                let replies = sync.on_ctrl(&env);
+                                for reply in replies {
+                                    let _ = tx.send_ctrl(&reply).await;
+                                }
+                            }
+                        }
                     },
                     Ok(None) => { stats.end_reason = "ctrl_closed"; break; }
                     Err(_) => { stats.end_reason = "ctrl_error"; break; }
@@ -415,6 +447,15 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
                 }
             }
 
+            _ = tokio::time::sleep_until(next_clipboard_poll) => {
+                next_clipboard_poll = Instant::now() + crate::clipboard_bridge::CLIPBOARD_POLL;
+                if let Some(sync) = clipboard.as_mut() {
+                    for env in sync.poll() {
+                        let _ = tx.send_ctrl(&env).await;
+                    }
+                }
+            }
+
             _ = tokio::time::sleep_until(next_ping) => {
                 let ts = dfy_transport::now_us();
                 if tx.send_ctrl(&dfy_proto::Envelope::ping(ts)).await.is_ok() {
@@ -455,6 +496,22 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
         println!(
             "[view] 控制输入：鼠标移动 DATAGRAM = {}，其它事件 = {}",
             stats.input_moves, stats.input_events
+        );
+    }
+    if let Some(sync) = clipboard.as_ref() {
+        let c = sync.stats();
+        println!(
+            "[view] 剪贴板：清单 {}↑/{}↓，拉取 {}↑/{}↓，分块 {}↑/{}↓，确认 {}↑/{}↓，字节 {}↑/{}↓",
+            c.lists_sent,
+            c.lists_received,
+            c.pulls_sent,
+            c.pulls_received,
+            c.chunks_sent,
+            c.chunks_received,
+            c.applied_sent,
+            c.applied_received,
+            dfy_transport::human_bytes(c.bytes_sent),
+            dfy_transport::human_bytes(c.bytes_received)
         );
     }
     info!(

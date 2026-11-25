@@ -1,0 +1,95 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; Copyright (c) 2025 Dafeiyu Remote Project
+;
+; dfy-vdisplay.inf - installation description for the Dafeiyu virtual display
+; (indirect display) driver.  UMDF 2 + IddCx 1.2, root-enumerated device.
+;
+; Structure follows the documented layout of Microsoft's IddSampleDriver.inf
+; (MIT sample, read for reference only); every string, hardware id, service name
+; and security descriptor below is our own.  See README.md section 2 for why this
+; package declares IddCx0102 and not IddCx0110.
+;
+; Not yet validated with Inf2Cat / not signed: this file is a reviewable skeleton.
+
+[Version]
+Signature       = "$Windows NT$"
+Class           = Display
+ClassGuid       = {4D36E968-E325-11CE-BFC1-08002BE10318}
+ClassVer        = 2.0
+Provider        = %ManufacturerName%
+CatalogFile     = dfy-vdisplay.cat
+DriverVer       = 11/25/2025,0.1.0.0
+PnpLockDown     = 1
+
+[Manufacturer]
+; Root-enumerated device: the hardware id below is synthetic, not reported by any
+; bus.  The OS decoration keeps the package off Windows 10 builds older than 1809
+; (build 17763), which is where IddCx 1.2 first appears.
+;
+; Phase 2 (HDR, see README.md §2): add a second model line decorated with
+; NT$ARCH$.10.0...22621 that points at a 1.10-built variant of the package, and let
+; the installer choose by OS build.  Do not simply move this package to IddCx0110:
+; it would stop loading on every OS below 22621.2359.
+%ManufacturerName% = Dafeiyu, NT$ARCH$.10.0...22000
+
+[Dafeiyu.NT$ARCH$.10.0...22000]
+%DeviceName% = dfy-vdisplay_Install, Root\dfyvdisplay
+
+; ----- UMDF plumbing: same Include/Needs pattern as the Microsoft IddCx sample ----
+[dfy-vdisplay_Install.NT]
+Include     = WUDFRD.inf
+Needs       = WUDFRD.NT
+CopyFiles   = UMDriverCopy
+
+; The IndirectKmd filter is the kernel-mode half of the indirect display stack.
+; Without it the adapter reports no outputs.  The WUDF device group id must be
+; unique per driver package: it groups the user-mode host with the kernel client.
+[dfy-vdisplay_Install.NT.hw]
+Include     = WUDFRD.inf
+Needs       = WUDFRD.NT.HW
+AddReg      = dfy-vdisplay_HardwareDeviceSettings
+
+[dfy-vdisplay_HardwareDeviceSettings]
+HKR,,"UpperFilters",%REG_MULTI_SZ%,"IndirectKmd"
+HKR,"WUDF","DeviceGroupId",%REG_SZ%,"DafeiyuVdisplayDriverGroup"
+; Device-interface SDDL: Administrators (BA) and LocalSystem (SY) get full access,
+; the "UD" (user driver / interactive user) class gets full access so our agent can
+; open the interface without elevation.  Anyone else gets nothing.
+HKR,,"Security",%REG_SZ%,"D:P(A;;GA;;;BA)(A;;GA;;;SY)(A;;GA;;;UD)"
+
+[dfy-vdisplay_Install.NT.Services]
+Include     = WUDFRD.inf
+Needs       = WUDFRD.NT.Services
+
+; UmdfServiceOrder lists every UMDF service this device needs, in load order.
+; UmdfKernelModeClientPolicy=AllowKernelModeClients is mandatory: IddCx talks to the
+; UMDF driver through a kernel-mode client (the IndirectKmd filter).
+[dfy-vdisplay_Install.NT.Wdf]
+UmdfService                = dfy-vdisplay,dfy-vdisplay_ServiceInstall
+UmdfServiceOrder           = dfy-vdisplay
+UmdfKernelModeClientPolicy = AllowKernelModeClients
+
+; UmdfExtensions=IddCx0102 loads the IddCx class extension at version 1.2.
+; UmdfLibraryVersion 2.25.0 = the UMDF version shipped with Windows 11 22H2 /
+; Windows 10 22H2 and later; keep it in sync with the WDK used for the build.
+[dfy-vdisplay_ServiceInstall]
+UmdfLibraryVersion  = 2.25.0
+ServiceBinary       = %12%\UMDF\dfy-vdisplay.dll
+UmdfExtensions      = IddCx0102
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+dfy-vdisplay.dll = 1
+
+[DestinationDirs]
+UMDriverCopy    = 12,UMDF
+DefaultDestDir  = 12
+
+[Strings]
+ManufacturerName = "Dafeiyu"
+DeviceName       = "Dafeiyu Virtual Display Adapter"
+DiskName         = "Dafeiyu Virtual Display Driver"
+REG_MULTI_SZ     = 0x00010000
+REG_SZ           = 0x00000000

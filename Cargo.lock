@@ -319,6 +319,7 @@ dependencies = [
  "blake3",
  "clap",
  "dfy-capture",
+ "dfy-clipboard",
  "dfy-codec",
  "dfy-input",
  "dfy-proto",

@@ -7,6 +7,7 @@
 #![deny(unsafe_code)]
 
 mod adapters;
+mod clipboard_bridge;
 mod demo;
 mod genkey;
 mod input_bridge;
@@ -95,6 +96,9 @@ enum Command {
         /// 禁用输入注入（默认允许：把控制端发来的鼠标/键盘注入本机）
         #[arg(long, default_value_t = false)]
         no_input: bool,
+        /// 禁用剪贴板同步（默认允许：与本机剪贴板双向同步）
+        #[arg(long, default_value_t = false)]
+        no_clipboard: bool,
     },
     /// 真实主控端：连接 Agent、解码 H.264、统计并可保存首帧
     View {
@@ -116,6 +120,9 @@ enum Command {
         /// 启用控制输入采集（Windows 低级钩子；Ctrl+Alt+Shift+Q 停止）
         #[arg(long, default_value_t = false)]
         control: bool,
+        /// 启用剪贴板同步（与本机剪贴板双向同步）
+        #[arg(long, default_value_t = false)]
+        clipboard: bool,
     },
 }
 
@@ -144,6 +151,7 @@ async fn main() -> Result<()> {
             fps,
             bitrate,
             no_input,
+            no_clipboard,
         } => {
             let addr: SocketAddr = format!("{host}:{port}")
                 .parse()
@@ -156,6 +164,7 @@ async fn main() -> Result<()> {
                 bitrate_kbps: bitrate,
                 max_frames: None,
                 allow_input: !no_input,
+                allow_clipboard: !no_clipboard,
             })
             .await
         }
@@ -166,6 +175,7 @@ async fn main() -> Result<()> {
             seconds,
             save_first,
             control,
+            clipboard,
         } => {
             let addr: SocketAddr = addr
                 .parse()
@@ -181,6 +191,7 @@ async fn main() -> Result<()> {
                 seconds,
                 save_first_frame: save_first,
                 control,
+                clipboard,
             })
             .await
             .map(|_| ())

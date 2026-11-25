@@ -67,9 +67,14 @@ cargo run -p dfy-cli -- agent --port 21116 --password test --monitor 0 --fps 30 
 
 # 主控端：连接、解码、打印统计，可选把首帧存成裸 BGRA
 cargo run -p dfy-cli -- view --addr 127.0.0.1:21116 --password test --seconds 10 --save-first first-frame.bgra
+
+# 再加控制输入（Windows 低级钩子；Ctrl+Alt+Shift+Q 停止）与双向剪贴板
+cargo run -p dfy-cli -- view --addr 127.0.0.1:21116 --control --clipboard --seconds 10
 ```
 
 实测（本机 2800×1840 桌面，6 秒）：398 个视频 DATAGRAM / 401 KiB、60 帧重组、24 帧解码、0 解析失败、RTT 0.571 ms；首帧转 PNG 后是真实桌面画面。详见 [design/014-real-pipeline-verified.md](design/014-real-pipeline-verified.md)。
+
+输入与剪贴板链路（本机 8 秒实测）：合成 16 次鼠标移动 → agent 注入 16/16（忽略 0、失败 0），view 侧 `控制输入：鼠标移动 DATAGRAM = 16`；剪贴板文本双向闭环各 1 次（清单 / 拉取 / 分块 / 确认）。agent 侧默认开启剪贴板（`--no-clipboard` 关闭），view 侧用 `--clipboard` 开启。详见 [design/021-clipboard-sync.md](design/021-clipboard-sync.md)、[design/022-relay-client.md](design/022-relay-client.md)。
 
 ## 路线图
 
