@@ -13,7 +13,8 @@
 //!   帧来源结束后自动关窗退出。
 //! - `cargo run -p dfy-ui --example viewer_demo -- --smoke`
 //!   无头 CI 冒烟：只确认窗口能在 5 秒内创建，然后退出（退出码为 0）。
-//! - `--fullscreen` 启动即全屏；`--scale 1.5` 改首帧定窗的缩放倍数。
+//! - `--fullscreen` 启动即全屏；`--scale 1.5` 改首帧定窗的缩放倍数；
+//!   `--seconds 30` 改演示时长（默认 3 秒，方便手动抓图/肉眼验收）。
 //!
 //! 窗口内快捷键：`F11` 全屏切换、`Esc` 退出、`Ctrl+Alt+Shift+Q` 打印 ToggleControl 事件。
 
@@ -29,6 +30,9 @@ const FPS: u64 = 30;
 const FRAME_INTERVAL: Duration = Duration::from_millis(1000 / FPS);
 const DEMO_FRAMES: u32 = 90;
 
+/// 默认演示时长（秒）。`--seconds` 可覆盖；帧数 = 时长 × FPS。
+const DEMO_SECONDS: f64 = DEMO_FRAMES as f64 / FPS as f64;
+
 /// 示例参数。
 #[derive(Debug, Default)]
 struct Options {
@@ -36,6 +40,7 @@ struct Options {
     run: bool,
     fullscreen: bool,
     scale: Option<f64>,
+    seconds: Option<f64>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -49,12 +54,14 @@ fn main() -> anyhow::Result<()> {
         // 演示「首帧定窗」：窗口会按首帧尺寸 × scale 调整一次；--scale 可覆盖。
         .with_scale(Some(options.scale.unwrap_or(1.0)));
 
+    let frames = frame_budget(options.seconds);
+
     if options.smoke {
         run_smoke(base)
     } else if options.run {
-        run_blocking(base)
+        run_blocking(base, frames)
     } else {
-        run_spawned(base)
+        run_spawned(base, frames)
     }
 }
 
@@ -73,10 +80,18 @@ fn parse_args() -> Options {
             "--run" => options.run = true,
             "--fullscreen" => options.fullscreen = true,
             "--scale" => options.scale = parse_scale(args.next()),
+            "--seconds" => options.seconds = parse_scale(args.next()),
             other => eprintln!("忽略未知参数 {other}"),
         }
     }
     options
+}
+
+/// 把 `--seconds` 换算成帧数（至少 1 帧）。
+fn frame_budget(seconds: Option<f64>) -> u32 {
+    let seconds = seconds.unwrap_or(DEMO_SECONDS).clamp(0.1, 600.0);
+    let frames = (seconds * FPS as f64).round() as u32;
+    frames.max(1)
 }
 
 fn parse_scale(value: Option<String>) -> Option<f64> {
@@ -86,15 +101,15 @@ fn parse_scale(value: Option<String>) -> Option<f64> {
 }
 
 /// 常驻模式：UI 在独立线程，主线程推帧并收事件。
-fn run_spawned(config: ViewerConfig) -> anyhow::Result<()> {
+fn run_spawned(config: ViewerConfig, frames: u32) -> anyhow::Result<()> {
     let mut viewer = spawn_viewer(config)?;
     wait_for_window(&viewer)?;
 
     let started = Instant::now();
     let mut next_frame_at = Instant::now();
     let mut pushed = 0u32;
-    let timeout = Duration::from_secs(10);
-    while pushed < DEMO_FRAMES && started.elapsed() < timeout {
+    let timeout = FRAME_INTERVAL * frames + Duration::from_secs(10);
+    while pushed < frames && started.elapsed() < timeout {
         while let Some(event) = viewer.try_recv() {
             println!("VIEWER EVENT {event:?}");
             if event == ViewerEvent::Closed {
@@ -124,8 +139,8 @@ fn run_spawned(config: ViewerConfig) -> anyhow::Result<()> {
 
 /// 阻塞模式（CLI `view` 子命令的集成形态）：帧来源实现 [`dfy_ui::FrameSource`]，
 /// UI 在调用线程跑，事件走回调。
-fn run_blocking(config: ViewerConfig) -> anyhow::Result<()> {
-    let frames = (0..DEMO_FRAMES).map(|index| {
+fn run_blocking(config: ViewerConfig, frames: u32) -> anyhow::Result<()> {
+    let frames = (0..frames).map(|index| {
         Frame::new(WIDTH, HEIGHT, build_frame(WIDTH, HEIGHT, index)).expect("演示帧尺寸固定且合法")
     });
     let source = FrameIter::new(frames).with_interval(FRAME_INTERVAL);
@@ -217,6 +232,15 @@ mod tests {
         let left_at = (row * width as usize + 4) * 4;
         let right_at = (row * width as usize + 68) * 4;
         assert_ne!(&bgra[left_at..left_at + 4], &bgra[right_at..right_at + 4]);
+    }
+
+    #[test]
+    fn frame_budget_follows_seconds_and_keeps_a_floor_of_one() {
+        assert_eq!(frame_budget(None), 90);
+        assert_eq!(frame_budget(Some(2.0)), 60);
+        assert_eq!(frame_budget(Some(0.0)), 3);
+        assert_eq!(frame_budget(Some(-5.0)), 3);
+        assert_eq!(frame_budget(Some(10_000.0)), 18_000);
     }
 
     #[test]

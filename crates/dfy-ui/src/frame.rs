@@ -475,6 +475,90 @@ mod tests {
     }
 
     #[test]
+    fn render_frame_places_real_frame_in_small_window_with_side_bars() {
+        // 真实场景（本机 200% DPI）：2800x1840 的远端帧放进 640x360 的客户区。
+        // 等比缩放后画面 548x360 贴高居中，左右各 46 列黑边；本函数必须让窗口里真的
+        // 出现远端画面，而不是整窗黑屏/透明。
+        let (src_w, src_h) = (2800u32, 1840u32);
+        let (dst_w, dst_h) = (640u32, 360u32);
+        let mut src = vec![0u8; (src_w * src_h * 4) as usize];
+        // 左半屏红、右半屏绿（BGRA 内存序），用于断言水平方向没被裁掉/拉伸错位。
+        for y in 0..src_h as usize {
+            for x in 0..src_w as usize {
+                let i = (y * src_w as usize + x) * 4;
+                let (b, g, r) = if (x as u32) < src_w / 2 {
+                    (0x00, 0x00, 0xFF)
+                } else {
+                    (0x00, 0xFF, 0x00)
+                };
+                src[i] = b;
+                src[i + 1] = g;
+                src[i + 2] = r;
+                src[i + 3] = 0xFF;
+            }
+        }
+
+        let mut dst = vec![0xFFFF_FFFFu32; (dst_w * dst_h) as usize];
+        assert!(render_frame(&src, src_w, src_h, &mut dst, dst_w, dst_h));
+
+        let rect = fit_rect(src_w, src_h, dst_w, dst_h).expect("非零尺寸必须有结果");
+        assert_eq!(
+            rect,
+            Rect {
+                x: 46,
+                y: 0,
+                width: 548,
+                height: 360
+            }
+        );
+
+        // 左右黑边是纯黑（既不是源像素，也不是预填充的 0xFFFFFFFF 残留）。
+        assert_eq!(dst[0], 0);
+        assert_eq!(dst[45], 0);
+        assert_eq!(dst[(dst_w - 1) as usize], 0);
+        // 画面左端采样到红、右端采样到绿：证明整幅远端画面都在窗口里。
+        assert_eq!(dst[rect.x as usize], 0x00FF_0000);
+        assert_eq!(dst[(rect.x + rect.width - 1) as usize], 0x0000_FF00);
+        // 竖直方向贴边：最后一行仍属于画面（不是黑边）。
+        let last_row = ((dst_h - 1) * dst_w + rect.x) as usize;
+        assert_eq!(dst[last_row], 0x00FF_0000);
+    }
+
+    #[test]
+    fn render_frame_clears_every_letterbox_pixel() {
+        // 预填白色垃圾值：渲染后画面外的所有像素都必须是 0，否则上一帧/残留内容会露出来。
+        let src = vec![0x40u8; 4 * 2 * 4];
+        let (dst_w, dst_h) = (6u32, 6u32);
+        let mut dst = vec![0xFFFF_FFFFu32; (dst_w * dst_h) as usize];
+        assert!(render_frame(&src, 4, 2, &mut dst, dst_w, dst_h));
+
+        let rect = fit_rect(4, 2, dst_w, dst_h).expect("非零尺寸必须有结果");
+        assert_eq!(
+            rect,
+            Rect {
+                x: 0,
+                y: 1,
+                width: 6,
+                height: 3
+            }
+        );
+        for y in 0..dst_h {
+            for x in 0..dst_w {
+                let inside = x >= rect.x
+                    && x < rect.x + rect.width
+                    && y >= rect.y
+                    && y < rect.y + rect.height;
+                let pixel = dst[(y * dst_w + x) as usize];
+                if inside {
+                    assert_ne!(pixel, 0xFFFF_FFFF, "画面内 ({x},{y}) 必须被源像素覆盖");
+                } else {
+                    assert_eq!(pixel, 0, "黑边 ({x},{y}) 必须被清成 0，实际 0x{pixel:08X}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn render_frame_rejects_bad_shapes() {
         let src = vec![0u8; 4 * 4 * 4];
         let mut dst = vec![0u32; 4 * 4];

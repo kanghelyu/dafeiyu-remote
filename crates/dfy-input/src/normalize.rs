@@ -3,6 +3,9 @@
 
 //! 绝对坐标归一化（纯函数，便于脱离真实注入测试）。
 
+// Windows SendInput 绝对坐标专用；mac/Linux 后端后续复用时去掉此 allow。
+#![cfg_attr(not(windows), allow(dead_code))]
+
 /// 把像素坐标归一化到 Windows `SendInput` 绝对鼠标使用的 `0..=65535` 区间。
 ///
 /// 分母使用 `extent - 1`，保证画面右下角映射到 `65535`（而不是提前一格）。

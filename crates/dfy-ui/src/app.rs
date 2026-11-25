@@ -214,12 +214,11 @@ impl<'a> ViewerApp<'a> {
         let started = Instant::now();
         let mut presented = false;
         if let Some(surface) = self.surface.as_mut() {
-            if self.surface_size != (dst_w, dst_h) {
-                let (Some(width), Some(height)) = (NonZeroU32::new(dst_w), NonZeroU32::new(dst_h))
-                else {
-                    return;
-                };
-                match surface.resize(width, height) {
+            let Some(target) = surface_target(dst_w, dst_h) else {
+                return;
+            };
+            if surface_needs_resize(self.surface_size, target) {
+                match surface.resize(target.0, target.1) {
                     Ok(()) => self.surface_size = (dst_w, dst_h),
                     Err(err) => {
                         tracing::warn!(%err, "调整 softbuffer surface 尺寸失败，跳过本帧");
@@ -544,6 +543,24 @@ fn scaled_dimension(source: u32, scale: f64) -> u32 {
     (f64::from(source) * scale).round().clamp(low, high) as u32
 }
 
+/// 把客户区尺寸换算成 softbuffer 要求的 `NonZeroU32` 尺寸。
+///
+/// 返回 `None` 表示宽或高为 0（窗口最小化/驱动还没给出尺寸）：softbuffer 的
+/// `Surface::resize` 不接受 0，调用方必须跳过本帧。
+fn surface_target(width: u32, height: u32) -> Option<(NonZeroU32, NonZeroU32)> {
+    Some((NonZeroU32::new(width)?, NonZeroU32::new(height)?))
+}
+
+/// surface 是否必须重新 `resize`：只有**记录尺寸与当前目标完全一致**时才跳过。
+///
+/// 历史 bug：`attach_window` 里若用窗口尺寸预填 `surface_size`，首次 render 会误以为
+/// 尺寸已同步而跳过 `resize`，随后 `buffer_mut()` 直接 panic（softbuffer 要求先设置
+/// 尺寸）。现在 `surface_size` 初值恒为 `(0, 0)`，`WindowEvent::Resized` 也把它标脏，
+/// 所以「新窗口 / 每次改窗口大小后」这里一定会走到 resize 分支。
+fn surface_needs_resize(surface_size: (u32, u32), target: (NonZeroU32, NonZeroU32)) -> bool {
+    surface_size != (target.0.get(), target.1.get())
+}
+
 /// 构造 winit 事件循环（`EventLoop<T>` 无法克隆，所以两个入口各自构造一个）。
 ///
 /// Windows 上允许从任意线程创建/驱动（`with_any_thread(true)`），这样 CLI 可以在
@@ -628,6 +645,33 @@ mod tests {
             scaled_dimension(20_000, 4.0),
             ViewerConfig::MAX_INITIAL_SIZE
         );
+    }
+
+    #[test]
+    fn surface_target_rejects_zero_sides() {
+        assert_eq!(surface_target(0, 720), None);
+        assert_eq!(surface_target(1280, 0), None);
+        assert_eq!(surface_target(0, 0), None);
+        let target = surface_target(1920, 1080).expect("非零客户区必须有目标尺寸");
+        assert_eq!((target.0.get(), target.1.get()), (1920, 1080));
+    }
+
+    #[test]
+    fn surface_is_resized_on_first_frame_and_after_every_window_resize() {
+        let initial = surface_target(1280, 720).expect("非零尺寸");
+        // 刚 attach_window：surface_size 恒为 (0, 0)，首帧必须 resize（否则 buffer_mut panic）。
+        assert!(surface_needs_resize((0, 0), initial));
+        // resize 成功后记录尺寸：同样大小的帧不再重复 resize。
+        assert!(!surface_needs_resize((1280, 720), initial));
+
+        // Windows 的 Resized 事件会把 surface_size 标脏成 (0, 0)，必须按新尺寸再 resize。
+        let resized = surface_target(1600, 900).expect("非零尺寸");
+        assert!(surface_needs_resize((0, 0), resized));
+        assert!(surface_needs_resize((1280, 720), resized));
+
+        // DPI 不匹配（例如 200% 缩放改窗口后物理像素变了）同样属于「不一致」。
+        let hidpi = surface_target(2560, 1440).expect("非零尺寸");
+        assert!(surface_needs_resize((1280, 720), hidpi));
     }
 
     #[test]
