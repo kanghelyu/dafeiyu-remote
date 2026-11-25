@@ -44,6 +44,8 @@
 | `video` | DATAGRAM 1 | 否+FEC | 帧元数据 + 分片；帧内序号；keyframe 标记 |
 | `audio` | DATAGRAM 2 | 否+FEC | Opus 20ms 帧 |
 | `clipboard` | 双向流 4（v1 未启用） | 是 | 大对象分块；v1 小对象复用 control 流 tag 13–16 |
+| `file-meta` | 双向流 6（v1 未启用） | 是 | v1 复用 control 流 tag 17–21（offer/accept/result） |
+| `file-data` | 单向流 6..n（v1 未启用） | 是 | v1 数据块走 control 流（≤256 KiB/块）+ Ack 流控 |
 | `file-meta` | 双向流 6 | 是 | 元数据、确认、取消、进度 |
 | `file-data` | 单向流 6..31 | 是 | 1–4MiB 块 + BLAKE3 |
 | `stats` | 单向流 8 | 是 | 1–2Hz：RTT、loss、fps、码率、队列、解码耗时 |
@@ -90,10 +92,16 @@
 7. 规则引擎（可选）：目标 App 匹配 → 纯文本化/禁格式/禁图片/大小上限。
 
 ## 9. 文件传输
-- `Offer{task_id, files[{rel_path,size,mtime,type}], root_id}` → 接收端 `Accept{resume_map}` / `Reject{code}`。
-- `Block{task_id, block_id, offset}` + `BlockAck{block_id, len}`（≤3 未确认）；块长 1–4MiB；整文件 BLAKE3 校验。
-- 策略：`OVERWRITE|SKIP|RENAME|RESUME`；沙箱根校验（拒绝 `..`/符号链接逃逸/绝对路径）；原子落盘。
-- 配额：单文件/总量/速率；目录遍历单独 `ListDir{path}`/`Stat{path}`（只读元数据通道）。
+- v1 消息（复用 `control` 双向流，`Envelope` tag 17–21）：
+  - `FileOffer{transfer_id, name, size, last_modified_ms, is_dir}`：发送方发起；`name` 为相对路径，接收端必须净化。
+  - `FileAccept{transfer_id, resume_offset, accept}`：接收方接受/拒绝；`resume_offset` 为已落盘字节数（断点续传）。
+  - `FileChunk{transfer_id, offset, data, last}`：建议块 ≤256 KiB；`offset` 必须等于接收端期望值。
+  - `FileAck{transfer_id, received}`：接收方流控确认（每 16 MiB 或每 64 块一次）。
+  - `FileResult{transfer_id, ok, error, digest}`：接收完成后的 BLAKE3 摘要与结论。
+- 目录传输：先 `is_dir=true` 的 `FileOffer`，随后逐个文件；接收端按相对路径创建目录。
+- 策略：`OVERWRITE|SKIP|RENAME`（v1）；沙箱根校验（拒绝 `..`/绝对路径/Windows 设备名/符号链接逃逸）；原子落盘（先写 `.part` 再 rename）。
+- 校验：整文件 BLAKE3；续传时以接收端实际长度为准，不信任发送端声明。
+- 后续（非 v1）：多任务并发与优先级、断线重连续传、`file-data` 独立单向流承载大数据以避免阻塞 control。
 
 ## 10. 信令 REST/WSS（v1 最小集）
 - `POST /v1/devices/{id}/register` → `{device_id, relay_ticket, stun_servers[]}`（Ed25519 签名请求体）。

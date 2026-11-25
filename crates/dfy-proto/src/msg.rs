@@ -8,13 +8,14 @@
 /// 1 Hello / 2 Challenge / 3 Auth / 4 Welcome / 5 CapabilityAck /
 /// 6 Ping / 7 Pong / 8 VideoConfig / 9 MonitorList / 10 InputEvent /
 /// 11 Bye / 12 Reject / 13 ClipboardFormatList / 14 ClipboardPull /
-/// 15 ClipboardDataChunk / 16 ClipboardApplied
+/// 15 ClipboardDataChunk / 16 ClipboardApplied / 17 FileOffer /
+/// 18 FileAccept / 19 FileChunk / 20 FileAck / 21 FileResult
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Envelope {
     /// 消息体；空 Envelope 视为协议错误。
     #[prost(
         oneof = "envelope::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21"
     )]
     pub body: Option<envelope::Body>,
 }
@@ -72,6 +73,21 @@ pub mod envelope {
         /// 已写入确认（防环：来源端忽略自己 hash 的事件）。
         #[prost(message, tag = "16")]
         ClipboardApplied(super::ClipboardApplied),
+        /// 文件传输：发送方发起（含元数据与断点信息）。
+        #[prost(message, tag = "17")]
+        FileOffer(super::FileOffer),
+        /// 文件传输：接收方接受/拒绝（含续传偏移）。
+        #[prost(message, tag = "18")]
+        FileAccept(super::FileAccept),
+        /// 文件传输：数据块。
+        #[prost(message, tag = "19")]
+        FileChunk(super::FileChunk),
+        /// 文件传输：接收方流控确认（每 N 块一次）。
+        #[prost(message, tag = "20")]
+        FileAck(super::FileAck),
+        /// 文件传输：最终结果（含 BLAKE3 摘要）。
+        #[prost(message, tag = "21")]
+        FileResult(super::FileResult),
     }
 }
 
@@ -291,6 +307,85 @@ pub struct ClipboardApplied {
     pub hash: Vec<u8>,
 }
 
+/// 文件传输发起（发送方 → 接收方）。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FileOffer {
+    /// 传输 ID（发送方单调递增）。
+    #[prost(uint64, tag = "1")]
+    pub transfer_id: u64,
+    /// 相对路径（收发两端都做路径净化，禁止 `..` 与绝对路径）。
+    #[prost(string, tag = "2")]
+    pub name: String,
+    /// 文件字节数（目录为 0）。
+    #[prost(uint64, tag = "3")]
+    pub size: u64,
+    /// 修改时间（Unix 毫秒，0=未知）。
+    #[prost(uint64, tag = "4")]
+    pub last_modified_ms: u64,
+    /// 是否为目录（目录先建目录再逐个文件传输）。
+    #[prost(bool, tag = "5")]
+    pub is_dir: bool,
+}
+
+/// 文件传输接受/拒绝（接收方 → 发送方）。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FileAccept {
+    /// 传输 ID。
+    #[prost(uint64, tag = "1")]
+    pub transfer_id: u64,
+    /// 续传起始偏移（接收方已落盘的字节数）。
+    #[prost(uint64, tag = "2")]
+    pub resume_offset: u64,
+    /// false 表示拒绝（例如目标已存在且策略为跳过）。
+    #[prost(bool, tag = "3")]
+    pub accept: bool,
+}
+
+/// 文件数据块（发送方 → 接收方）。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FileChunk {
+    /// 传输 ID。
+    #[prost(uint64, tag = "1")]
+    pub transfer_id: u64,
+    /// 本块在文件内的起始偏移。
+    #[prost(uint64, tag = "2")]
+    pub offset: u64,
+    /// 数据（建议 ≤256KiB，避免阻塞控制流）。
+    #[prost(bytes = "vec", tag = "3")]
+    pub data: Vec<u8>,
+    /// 是否最后一块。
+    #[prost(bool, tag = "4")]
+    pub last: bool,
+}
+
+/// 文件传输流控确认（接收方 → 发送方）。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FileAck {
+    /// 传输 ID。
+    #[prost(uint64, tag = "1")]
+    pub transfer_id: u64,
+    /// 已确认落盘的累计字节数。
+    #[prost(uint64, tag = "2")]
+    pub received: u64,
+}
+
+/// 文件传输最终结果（接收方 → 发送方）。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FileResult {
+    /// 传输 ID。
+    #[prost(uint64, tag = "1")]
+    pub transfer_id: u64,
+    /// 是否成功（校验通过且已落盘）。
+    #[prost(bool, tag = "2")]
+    pub ok: bool,
+    /// 失败原因（成功时为空）。
+    #[prost(string, tag = "3")]
+    pub error: String,
+    /// 接收内容的 BLAKE3（32B；成功时填）。
+    #[prost(bytes = "vec", tag = "4")]
+    pub digest: Vec<u8>,
+}
+
 /// `Bye`：结束会话。
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Bye {
@@ -432,6 +527,70 @@ impl Envelope {
         }
     }
 
+    /// 构造 `FileOffer` 信封。
+    pub fn file_offer(
+        transfer_id: u64,
+        name: impl Into<String>,
+        size: u64,
+        last_modified_ms: u64,
+        is_dir: bool,
+    ) -> Self {
+        Self {
+            body: Some(envelope::Body::FileOffer(FileOffer {
+                transfer_id,
+                name: name.into(),
+                size,
+                last_modified_ms,
+                is_dir,
+            })),
+        }
+    }
+
+    /// 构造 `FileAccept` 信封。
+    pub fn file_accept(transfer_id: u64, resume_offset: u64, accept: bool) -> Self {
+        Self {
+            body: Some(envelope::Body::FileAccept(FileAccept {
+                transfer_id,
+                resume_offset,
+                accept,
+            })),
+        }
+    }
+
+    /// 构造 `FileChunk` 信封。
+    pub fn file_chunk(transfer_id: u64, offset: u64, data: Vec<u8>, last: bool) -> Self {
+        Self {
+            body: Some(envelope::Body::FileChunk(FileChunk {
+                transfer_id,
+                offset,
+                data,
+                last,
+            })),
+        }
+    }
+
+    /// 构造 `FileAck` 信封。
+    pub fn file_ack(transfer_id: u64, received: u64) -> Self {
+        Self {
+            body: Some(envelope::Body::FileAck(FileAck {
+                transfer_id,
+                received,
+            })),
+        }
+    }
+
+    /// 构造 `FileResult` 信封。
+    pub fn file_result(transfer_id: u64, ok: bool, error: impl Into<String>, digest: Vec<u8>) -> Self {
+        Self {
+            body: Some(envelope::Body::FileResult(FileResult {
+                transfer_id,
+                ok,
+                error: error.into(),
+                digest,
+            })),
+        }
+    }
+
     /// 构造 `ClipboardApplied` 信封。
     pub fn clipboard_applied(hash: Vec<u8>) -> Self {
         Self {
@@ -458,6 +617,11 @@ impl Envelope {
             Some(envelope::Body::ClipboardPull(_)) => "ClipboardPull",
             Some(envelope::Body::ClipboardDataChunk(_)) => "ClipboardDataChunk",
             Some(envelope::Body::ClipboardApplied(_)) => "ClipboardApplied",
+            Some(envelope::Body::FileOffer(_)) => "FileOffer",
+            Some(envelope::Body::FileAccept(_)) => "FileAccept",
+            Some(envelope::Body::FileChunk(_)) => "FileChunk",
+            Some(envelope::Body::FileAck(_)) => "FileAck",
+            Some(envelope::Body::FileResult(_)) => "FileResult",
             None => "<empty>",
         }
     }

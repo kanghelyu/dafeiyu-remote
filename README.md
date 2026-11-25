@@ -99,12 +99,31 @@ cargo run -p dfy-cli -- view --addr 127.0.0.1:21116 --control --clipboard --seco
 
 输入与剪贴板链路（本机 8 秒实测）：合成 16 次鼠标移动 → agent 注入 16/16（忽略 0、失败 0），view 侧 `控制输入：鼠标移动 DATAGRAM = 16`；剪贴板文本双向闭环各 1 次（清单 / 拉取 / 分块 / 确认）。agent 侧默认开启剪贴板（`--no-clipboard` 关闭），view 侧用 `--clipboard` 开启。详见 [design/021-clipboard-sync.md](design/021-clipboard-sync.md)、[design/022-relay-client.md](design/022-relay-client.md)。
 
+## 项目状态（2026-11）
+
+| 能力 | 状态 |
+| --- | --- |
+| DFYP/1 协议规范 + Rust workspace | ✅ v1 草案 |
+| QUIC + TLS1.3 + DATAGRAM 传输 | ✅ 自测通过（ALPN `dfyp/1`，两端 SPKI 绑定） |
+| Windows 采集（DXGI）→ H.264（Media Foundation）→ 串流 → 解码 | ✅ 真实桌面实测 |
+| 键鼠注入（SendInput）+ 本地低级钩子采集 + 快捷键停控 | ✅ 16/16 注入实测 |
+| 剪贴板双向（拉模式，文本/HTML/PNG/文件列表） | ✅ 实机 + QUIC 端到端测试 |
+| 零知识中继（UDP tag 配对 / TCP 降级 / metrics） | ✅ 实机验证（视频 + 24.55 KiB 剪贴板） |
+| 一键部署脚本 + Docker Compose | ✅ |
+| P2P 打洞（STUN/ICE-lite） | 🚧 开发中 |
+| 上屏 UI（winit 窗口） | 🚧 开发中 |
+| Linux 采集（X11） | 🚧 开发中 |
+| 文件传输 | 🚧 开发中（协议消息已落地） |
+| 虚拟屏（IddCx 驱动骨架 + 用户态 IOCTL） | 🚧 骨架完成，待 WDK 编译与签名 |
+| macOS / Android | 🚧 逆向已完成，待实现 |
+| Flutter 四端 UI | ⏳ 规划中 |
+
 ## 路线图
 
-- **M0** 协议规范 v1 + Rust 骨架 + QUIC 端到端自测（进行中）
-- **M1** Windows↔Windows MVP：屏幕采集 → H.264/AV1 编码 → 串流 → 解码渲染；键鼠注入；剪贴板文本；文件传输基础版
-- **M2** NAT 打洞 + relay + 账号/设备配对 + 安全加固
-- **M3** macOS / Linux 被控；Android 主控
+- **M0** 协议规范 v1 + Rust 骨架 + QUIC 端到端自测 ✅
+- **M1** Windows↔Windows MVP：采集 → H.264 → 串流 → 解码；键鼠注入；剪贴板；文件传输（进行中；串流/输入/剪贴板已可用）
+- **M2** NAT 打洞 + relay + 配对 + 安全加固（relay 路径已可用，P2P 打洞进行中）
+- **M3** macOS / Linux 被控；Android 主控（逆向完成）
 - **M4** 虚拟屏（IddCx / CGVirtualDisplay / evdi）、音频、多屏、性能打磨
 - **M5** 公测发布、签名与公证、文档与协议 v1 定稿
 

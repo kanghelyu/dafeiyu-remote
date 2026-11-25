@@ -1,0 +1,139 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（例如 v0.1.0）"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bins: dfy, dfy-relay
+            archive: tar.gz
+          - os: windows-2022
+            target: x86_64-pc-windows-gnu
+            bins: dfy.exe, dfy-relay.exe
+            archive: zip
+          - os: macos-14
+            target: aarch64-apple-darwin
+            bins: dfy, dfy-relay
+            archive: tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 缓存 cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Ubuntu 依赖（x11rb 编译期不需要 C 库，保留占位）
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config
+
+      - name: 构建
+        shell: bash
+        run: |
+          cargo build --release --locked --target "${{ matrix.target }}" \
+            -p dfy-cli -p dfy-relay
+
+      - name: 打包
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          out="dist"
+          mkdir -p "$out"
+          # 统一二进制名：dfy / dfy-relay
+          for spec in "dfy-cli:dfy" "dfy-relay:dfy-relay"; do
+            pkg="${spec%%:*}"; bin="${spec##*:}"
+            case "${{ matrix.target }}" in
+              *windows*) src="target/${{ matrix.target }}/release/${bin}.exe" ;;
+              *)         src="target/${{ matrix.target }}/release/${bin}" ;;
+            esac
+            [ -f "$src" ] || { echo "missing $src"; exit 1; }
+            cp "$src" "$out/"
+          done
+          cp README.md LICENSE spec/DFYP-v1.md deploy/README.md "$out/" 2>/dev/null || true
+          base="dafeiyu-${tag}-${{ matrix.target }}"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            (cd "$out" && 7z a "../${base}.zip" . >/dev/null)
+          else
+            tar -C "$out" -czf "${base}.tar.gz" .
+          fi
+          ls -lh *.zip *.tar.gz 2>/dev/null || true
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dafeiyu-${{ matrix.target }}
+          path: |
+            *.zip
+            *.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: 发布 GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 生成校验和
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt || true
+          cat SHA256SUMS.txt
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: 大肥鱼远程 ${{ github.event.inputs.tag || github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            artifacts/*
+          body: |
+            ## 大肥鱼远程 ${{ github.event.inputs.tag || github.ref_name }}
+
+            开源跨平台远控：Win / Linux / macOS / Android（开发中）。
+
+            ### 下载
+            - `dafeiyu-*-x86_64-unknown-linux-gnu.tar.gz`：Linux 主控端 + 中继
+            - `dafeiyu-*-x86_64-pc-windows-gnu.zip`：Windows
+            - `dafeiyu-*-aarch64-apple-darwin.tar.gz`：Apple Silicon macOS
+
+            ### 中继一键部署
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/deploy/install-relay.sh | sudo bash
+            ```
+
+            完整用法见仓库 README 与 `spec/DFYP-v1.md`（协议规范）。
