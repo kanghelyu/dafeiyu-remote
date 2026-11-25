@@ -33,7 +33,6 @@ use anyhow::Result;
 
 mod dib;
 mod format;
-#[cfg(windows)]
 mod hdrop;
 mod html;
 mod sync;
@@ -45,7 +44,6 @@ mod stub;
 
 pub use dib::dib_to_png;
 pub use format::{kind_for_format, predefined_format_name, ClipFormat, ClipKind, FormatList};
-#[cfg(windows)]
 pub use hdrop::{encode_file_list, parse_file_list};
 pub use html::{extract_html_fragment, parse_html_offsets, HtmlOffsets, HTML_FORMAT_NAME};
 #[cfg(windows)]
