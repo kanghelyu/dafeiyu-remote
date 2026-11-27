@@ -91,7 +91,7 @@ LABEL=unsigned
 [ -z "$IDENTITY" ] || LABEL=signed
 PKG="$OUTPUT_DIR/dafeiyu-${VERSION}-macos-${ARCH}-${LABEL}.pkg"
 COMPONENT="$WORK/component.pkg"
-pkg_args=(--root "$STAGE" --identifier remote.dafeiyu.cli --version "$VERSION" --install-location /usr/local --component-plist "$SCRIPT_DIR/component.plist")
+pkg_args=(--root "$STAGE" --identifier remote.dafeiyu.cli --version "$VERSION" --install-location /usr/local)
 [ -z "$IDENTITY" ] || pkg_args+=(--sign "$IDENTITY")
 pkgbuild "${pkg_args[@]}" "$COMPONENT"
 product_args=(--package "$COMPONENT")
