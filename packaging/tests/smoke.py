@@ -191,7 +191,9 @@ def check_static_metadata() -> None:
         assert required in inno, required
     assert "sc.exe" not in inno and "CreateService" not in inno
     with (PACKAGING / "macos/component.plist").open("rb") as stream:
-        assert plistlib.load(stream)["BundleIsRelocatable"] is False
+        plist_data = plistlib.load(stream)
+        entry = plist_data[0] if isinstance(plist_data, list) else plist_data
+        assert entry["BundleIsRelocatable"] is False
     mac = (PACKAGING / "macos/build-installer.sh").read_text(encoding="utf-8")
     assert "unsigned" in mac and "notarytool" in mac and "stapler" in mac
     android = (PACKAGING / "android/build.sh").read_text(encoding="utf-8")

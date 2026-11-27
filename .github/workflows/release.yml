@@ -325,11 +325,15 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
-      - uses: android-actions/setup-android@v3
       - name: 安装 Android SDK/NDK 与 cargo-ndk
         shell: bash
         run: |
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          export ANDROID_SDK_ROOT="$SDK_ROOT"
+          export ANDROID_HOME="$SDK_ROOT"
+          SDKMGR="$(command -v sdkmanager || find "$SDK_ROOT/cmdline-tools" -name sdkmanager -type f | head -n 1)"
+          printf 'y\ny\ny\ny\ny\ny\ny\ny\ny\ny\n' | "$SDKMGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null
+          "$SDKMGR" --sdk_root="$SDK_ROOT" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
           cargo install cargo-ndk --locked
       - name: 构建 APK/AAB（秘密缺失时明确输出 unsigned）
         shell: bash
