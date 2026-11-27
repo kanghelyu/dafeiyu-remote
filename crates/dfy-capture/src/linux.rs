@@ -299,7 +299,7 @@ impl std::fmt::Debug for LinuxCapturer {
 /// 纯 Wayland 会话（无 XWayland）没有 `DISPLAY`，这里返回
 /// [`CaptureError::Unsupported`]，方便上层决定是否切到 Wayland 后端。
 fn connect_display() -> anyhow::Result<(RustConnection, usize)> {
-    if std::env::var_os("DISPLAY").map_or(true, |value| value.is_empty()) {
+    if std::env::var_os("DISPLAY").unwrap_or_default().is_empty() {
         return Err(CaptureError::Unsupported(
             "X11 不可用：环境变量 DISPLAY 未设置（Wayland 会话可能没有 XWayland）",
         )

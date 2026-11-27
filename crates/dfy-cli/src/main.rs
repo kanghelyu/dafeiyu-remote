@@ -384,7 +384,7 @@ async fn main() -> Result<()> {
             expect_fingerprint,
             seconds,
         } => run_demo_client(&addr, password.read()?, expect_fingerprint, seconds).await,
-        Command::Selftest => demo::selftest().await,
+        Command::Selftest => Box::pin(demo::selftest()).await,
         Command::Wol {
             mac,
             broadcast,
@@ -475,7 +475,7 @@ async fn main() -> Result<()> {
             let addr: SocketAddr = format!("{host}:{port}")
                 .parse()
                 .with_context(|| format!("无法解析监听地址 {host}:{port}"))?;
-            real::run_agent(real::AgentOptions {
+            Box::pin(real::run_agent(real::AgentOptions {
                 addr,
                 password,
                 monitor,
@@ -502,7 +502,7 @@ async fn main() -> Result<()> {
                 p2p: p2p_options,
                 codec: parse_codec(codec)?,
                 recv_dir,
-            })
+            }))
             .await
         }
         Command::View {
@@ -557,7 +557,7 @@ async fn main() -> Result<()> {
                 Some(text) => Some(real::parse_fingerprint_arg(&text)?),
                 None => None,
             };
-            real::run_view(real::ViewOptions {
+            Box::pin(real::run_view(real::ViewOptions {
                 addr,
                 password,
                 expect_fingerprint: expect,
@@ -589,7 +589,7 @@ async fn main() -> Result<()> {
                 reset_quality,
                 send_files: send_file,
                 probe_bytes: probe_bytes.clamp(64, 1200),
-            })
+            }))
             .await
             .map(|_| ())
         }
