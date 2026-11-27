@@ -26,7 +26,6 @@ done
 [ -n "$BINARY_DIR" ] && [ -n "$VERSION" ] && [ -n "$OUTPUT_DIR" ] || { usage >&2; exit 2; }
 VERSION="$(validate_version "$VERSION")"
 validate_binary_dir "$BINARY_DIR" windows
-need cygpath
 ROOT="$(repo_root)"
 ISCC_BIN="${ISCC:-}"
 if [ -z "$ISCC_BIN" ]; then
@@ -34,11 +33,12 @@ if [ -z "$ISCC_BIN" ]; then
   elif command -v ISCC.exe >/dev/null 2>&1; then ISCC_BIN="$(command -v ISCC.exe)"
   elif [ -x "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" ]; then ISCC_BIN="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
   elif [ -x "/c/Program Files/Inno Setup 6/ISCC.exe" ]; then ISCC_BIN="/c/Program Files/Inno Setup 6/ISCC.exe"
-  elif [ -n "${LOCALAPPDATA:-}" ] && [ -x "$(cygpath -u "$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe")" ]; then
+  elif [ -n "${LOCALAPPDATA:-}" ] && command -v cygpath >/dev/null 2>&1 && [ -x "$(cygpath -u "$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe")" ]; then
     ISCC_BIN="$(cygpath -u "$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe")"
   else die "missing required tool: Inno Setup 6 ISCC.exe (set ISCC to its full path)"; fi
 fi
 [ -f "$ISCC_BIN" ] || die "Inno Setup compiler not found: $ISCC_BIN"
+need cygpath
 need python3
 python3 "$SCRIPT_DIR/../native_binary.py" x86_64-pc-windows-msvc \
   "$BINARY_DIR/dfy.exe" "$BINARY_DIR/dfy-relay.exe"
