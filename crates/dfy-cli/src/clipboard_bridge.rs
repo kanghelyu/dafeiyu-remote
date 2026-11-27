@@ -156,7 +156,7 @@ impl AgentHandler {
                 {
                     display.map_or_else(
                         || InjectHandler::new().map_err(|err| err.context("创建输入注入后端失败")),
-                        |value| InjectHandler::on_display(value),
+                        InjectHandler::on_display,
                     )
                 }
                 #[cfg(not(target_os = "linux"))]

@@ -1242,12 +1242,8 @@ mod linux {
                 };
                 for info in reply.infos {
                     match info.type_ {
-                        DeviceType::MASTER_POINTER => {
-                            pointer_devices.push(u16::from(info.deviceid))
-                        }
-                        DeviceType::MASTER_KEYBOARD => {
-                            keyboard_devices.push(u16::from(info.deviceid))
-                        }
+                        DeviceType::MASTER_POINTER => pointer_devices.push(info.deviceid),
+                        DeviceType::MASTER_KEYBOARD => keyboard_devices.push(info.deviceid),
                         _ => {}
                     }
                 }
