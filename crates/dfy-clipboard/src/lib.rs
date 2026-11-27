@@ -1,30 +1,26 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// 大肥鱼远程 —— dfy-clipboard：Windows 剪贴板后端 + 变更监听 + 拉取式格式枚举。
-// 控制端与被控端共用本 crate 的抽象；macOS/Linux 以后按同一个 ClipboardBackend trait 补齐。
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+// 大肥鱼远程 —— 平台剪贴板后端与拉取式同步状态机。
 
-//! 剪贴板同步模块（Win32 后端）。
+//! 剪贴板后端：Windows Win32 与 Linux X11 CLIPBOARD。
 //!
-//! 机制照抄 UU 远控的“事件驱动 + 拉模式”，而不是整包推送：
+//! [`create_backend`] 不启动传输，也不读取内容。调用方必须先检查每个连接的
+//! 授权、同步方向与手动/自动策略，再调用格式枚举、按需读取或同步状态机。
+//! Windows 使用 WM_CLIPBOARDUPDATE；Linux 通过 XFixes 监听所有权变更，
+//! `X11Clipboard::subscribe_changes` 只报告变化，不读取载荷。
 //!
-//! 1. 被控端用 [`watch`] 监听 `WM_CLIPBOARDUPDATE`，只把 [`FormatList`]（格式清单 + 序列号）发给对端；
-//! 2. 对端按需调用 [`ClipboardBackend::read_block`]，按 `offset`/`max` 分块拉取（建议 32–256 KiB/块），
-//!    天然支持大对象限速与断点续传；
-//! 3. 写回后调用 [`LoopGuard::note_write`] 记下写入后的剪贴板序列号，在监听回调里用
-//!    [`LoopGuard::should_ignore`] 过滤掉自己写入触发的事件，避免两端互相覆盖形成回环。
+//! [`ClipboardBackend::list_formats`] 返回 [`FormatList`] 元数据；
+//! [`ClipboardBackend::read_block`] 才按调用方要求获取载荷。X11 的 TARGETS
+//! 不包含长度，因此即使 `max == 0`，大小探测也需要一次有界转换并缓存内容。
+//! 写入后用同一后端的 [`ClipboardBackend::sequence`] 更新
+//! [`LoopGuard::set_last_written_seq`]，避免跨平台回环。
 //!
-//! # 图像格式约定（重要）
+//! Windows 读取 CF_DIB/CF_DIBV5 会转换成 PNG（见 [`dib_to_png`]）；
+//! Linux 通过 UTF8_STRING/text/plain、text/html、image/png 互操作，
+//! 原生格式 ID 是 X Atom，清单名使用协议标准名以兼容同步状态机。
 //!
-//! * 读取时，`CF_DIB`/`CF_DIBV5` 一律**转换成 PNG** 再返回（见 [`dib_to_png`]），
-//!   对端拿到的 `kind == ClipKind::Dib` 的数据块内容其实是 PNG 字节流；
-//! * 写入时 `ClipKind::Png` 写入注册格式 `"PNG"`，`ClipKind::Dib` 则按原样写入 `CF_DIB`。
-//!   也就是说“跨端传输统一 PNG、本机落盘按目标格式各自转换”。
-//! * 支持 8/16/24/32bpp 的 `BI_RGB` 与 `BI_BITFIELDS` DIB；1/4bpp 及 `CF_BITMAP`（HBITMAP）不支持。
-//!
-//! # 并发
-//!
-//! 剪贴板是窗口站/桌面级全局资源。后端每次操作都独立 `OpenClipboard` → 操作 → `CloseClipboard`
-//! （RAII 守卫，异常路径也不会锁死剪贴板），打开失败最多重试 5 次、每次间隔 20ms。
-//! 后端本身不持有内部锁：**不可并发写入**，写入方必须自行串行化；读取可以并发但会被目标进程占用时重试。
+//! Windows 操作采用 OpenClipboard/CloseClipboard RAII。Linux 使用独立线程
+//! 串行服务选择请求，后端存活时保持所有权；丢弃后端或退出进程后不再保留内容。
+//! INCR 收发、内存与等待均有上限。原生 Wayland 需 compositor 授权，目前明确报错。
 
 use std::fmt;
 use std::path::PathBuf;
@@ -39,13 +35,19 @@ mod sync;
 #[cfg(windows)]
 mod r#win;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(not(any(windows, target_os = "linux")))]
 mod stub;
+#[cfg(any(target_os = "linux", test))]
+mod x11_state;
 
 pub use dib::dib_to_png;
 pub use format::{kind_for_format, predefined_format_name, ClipFormat, ClipKind, FormatList};
 pub use hdrop::{encode_file_list, parse_file_list};
 pub use html::{extract_html_fragment, parse_html_offsets, HtmlOffsets, HTML_FORMAT_NAME};
+#[cfg(target_os = "linux")]
+pub use linux::{X11Clipboard, X11ClipboardOptions, DEFAULT_X11_MAX_BYTES};
 #[cfg(windows)]
 pub use r#win::{read_all, watch, ClipboardWatcher};
 pub use sync::{
@@ -70,15 +72,16 @@ pub struct DataBlock {
 ///
 /// 实现要求 `Send`，便于放进后台线程；但剪贴板是全局资源，写入必须由调用方串行化。
 pub trait ClipboardBackend: Send {
-    /// 当前剪贴板序列号（Win32: `GetClipboardSequenceNumber`）。
+    /// 当前剪贴板序列号。Win32 使用 `GetClipboardSequenceNumber`；
+    /// X11 使用本后端监听到的所有权变更代数，只能在同一实例内比较。
     ///
-    /// 序列号只要剪贴板内容改变就会递增，是判断“是否真的变了”的廉价依据。
+    /// 所有者应在替换内容时重新声明 X11 所有权，后端据此递增序列号。
     fn sequence(&self) -> Result<u64>;
 
-    /// 拉取式格式枚举：当前剪贴板所有格式 + 序列号快照。
+    /// 拉取式格式枚举：当前支持的格式 + 序列号快照。
     ///
-    /// 返回的格式顺序与 `EnumClipboardFormats` 一致（系统格式在前、注册格式在后），
-    /// 调用方按自己的优先级选择（建议 文本 > 图片 > 文件列表）。
+    /// Windows 保持 `EnumClipboardFormats` 顺序；X11 按文本、HTML、PNG 返回
+    /// 每类首选目标。调用方按自己的策略选择，不应依赖跨平台格式顺序。
     fn list_formats(&self) -> Result<FormatList>;
 
     /// 按偏移拉取某个格式的数据块。
@@ -97,13 +100,20 @@ pub trait ClipboardBackend: Send {
     fn write(&mut self, kind: &ClipKind, bytes: &[u8], files: &[PathBuf]) -> Result<()>;
 }
 
-/// 创建当前平台的后端。Windows 上始终可用；其它平台返回“不支持”错误。
+/// 创建当前平台的后端。Windows 使用 Win32，Linux 使用 X11 CLIPBOARD。
+///
+/// 创建后端不读取载荷、不启动同步。调用方必须先检查会话授权与方向策略。
+/// Linux 原生 Wayland 会话明确报错；不能以 DISPLAY/XWayland 代替 compositor 授权。
 pub fn create_backend() -> Result<Box<dyn ClipboardBackend>> {
     #[cfg(windows)]
     {
         r#win::create_backend()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::create_backend()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         stub::create_backend()
     }

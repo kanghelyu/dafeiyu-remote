@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! winit 0.30 应用：窗口生命周期、softbuffer 软件上屏、输入翻译、快捷键、渲染统计。

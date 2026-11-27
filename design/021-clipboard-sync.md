@@ -86,16 +86,16 @@ UUX 的做法（见 `research/040-uu-features-ui.md` §4）也是同一思路（
 | 平台 | 实现 | 状态 |
 |---|---|---|
 | Windows | `win.rs`：`OpenClipboard` 重试 + RAII；`EnumClipboardFormats`；文本 UTF-16、`CF_DIB/CF_DIBV5`→PNG、`HTML Format`、`CF_HDROP`（`hdrop.rs`）、RTF；`AddClipboardFormatListener` + 消息专窗 watcher | 已实现、单测覆盖编解码 |
-| Linux | X11：`XFixes` 选择属主 / `XConvertSelection`；Wayland：`wlr-data-control` 或 Portal（仅 `text/plain`） | 待实现（Linux 里程碑） |
+| Linux | X11：`XFixes` 选择属主 / `XConvertSelection`；Wayland：`wlr-data-control` 或 Portal（仅 `text/plain`） | X11 已实现，原生注入/剪贴板测试通过；Wayland 待实现 |
 | macOS | `NSPasteboard`（`changeCount` 轮询）+ `NSPasteboardItem` 多类型 | 待实现 |
 | Android | `ClipboardManager`（仅文本/URI，后台受限） | 待评估（Android 里程碑） |
 
 ## 6. 落地顺序
 
 1. ✅ 协议消息 + 状态机 + 单测（本文件所述）。
-2. ✅ 接入 `dfy-cli agent/view`（已完成）：`crates/dfy-cli/src/clipboard_bridge.rs` 的 `AgentHandler`/`ViewClipboard`；agent 默认开启（`--no-clipboard` 关闭），view 用 `--clipboard` 开启。
-3. ⏳ 权限位协商（Welcome 里声明能力，未授权不发清单）。
-4. ⏳ Linux/mac 后端。
+2. ✅ 接入 `dfy-cli agent/view`：Agent 使用 `--allow-clipboard`，view 使用 `--clipboard`；均默认关闭，会话开始前的本地内容不自动上传。
+3. ✅ 权限位协商：Welcome 的 `PERM_CLIPBOARD` 与实际后端能力一致，客户端未获授权时不发送清单。
+4. ✅ Linux X11 后端；macOS 待实现。
 5. ⏳ 大对象（>1 MiB）改走 `file-meta/file-data` 通道，剪贴板只传"引用"。
 
 ## 7. 接入实现要点（v1 现状）
@@ -105,4 +105,4 @@ UUX 的做法（见 `research/040-uu-features-ui.md` §4）也是同一思路（
 - `ViewClipboard` 独立处理本地轮询与远端消息，返回待发帧由 `real.rs` 的 `select!` 发送。
 - 消息复用 control 流（tag 13–16；通道 4 保留给将来的独立流）。
 - 实机验证（同一台机器）：agent→view 文本 19B 与 view→agent 文本 20B 各闭环一次（清单 / 拉取 / 分块 / 确认 各 1），无回环。
-- 未做：权限位协商（Welcome 声明 CLIPBOARD 后才发清单）、`--clipboard=text|all` 分级、Linux/mac 后端、>1MiB 走文件通道。
+- 未做：`--clipboard=text|all` 分级、macOS 后端、>1MiB 走文件通道。

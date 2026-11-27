@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! 可判别的错误类型：调用方按变体分类处理（拒绝传输 / 终止会话 / 重试）。

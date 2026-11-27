@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! `dfy-p2p`：P2P 直连优先、中继兜底的打洞层（业主 §17）。

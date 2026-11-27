@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // 大肥鱼远程 —— Win32 剪贴板后端 + `WM_CLIPBOARDUPDATE` 变更监听。
 //
 // 两种使用方式：

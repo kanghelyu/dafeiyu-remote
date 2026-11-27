@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! `dfy-path`：P2P 直连 ↔ 中继 的路径质量监测与切换决策（纯逻辑、无 IO、无时钟）。
@@ -50,11 +50,16 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod adaptation;
 pub mod config;
 pub mod machine;
 pub mod sample;
 pub mod state;
 
+pub use adaptation::{
+    AdaptationConfig, AdaptationController, AdaptationDirection, AdaptationError, AdaptationReason,
+    AdaptationRecommendation, AdaptationResolution,
+};
 pub use config::PathConfig;
 pub use machine::PathMonitor;
 pub use sample::{PathSample, SampleWindow, WindowStats};

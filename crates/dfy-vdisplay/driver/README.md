@@ -11,7 +11,7 @@ GameViewer all use, and it is the only mechanism Microsoft supports for a
 non-hardware-attached monitor. A virtual display is therefore a PnP device + a UMDF
 driver, and the agent talks to it over IOCTLs (see "Protocol" below).
 
-Everything here is **written from scratch** for this project (AGPL-3.0-or-later). The
+Everything here is **written from scratch** for this project (PolyForm Noncommercial License 1.0.0). The
 Microsoft `IddSampleDriver` sample and SudoVDA (MIT) were read for structure and to confirm
 API usage only; no code was copied, and the protocol numbers are deliberately our own so
 both drivers can coexist on one machine.

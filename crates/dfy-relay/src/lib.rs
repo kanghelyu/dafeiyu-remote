@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Dafeiyu Remote contributors
 // Copyright (c) 2026 Dafeiyu Remote contributors
 //! # dfy-relay — DFYP/1 中继服务器（大肥鱼远程）

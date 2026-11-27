@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Dafeiyu Remote contributors
 // Copyright (c) 2026 Dafeiyu Remote contributors
 //! 服务装配：绑定端口、启动数据处理任务、GC、优雅关闭。
@@ -56,6 +56,8 @@ impl RelayHandle {
 
 /// 启动中继（UDP 数据面必需；TCP/管理面可选）。
 pub async fn start(cfg: Arc<Config>) -> Result<RelayHandle> {
+    // Config 字段可直接构造，不能只依赖文件加载或 config check 的校验。
+    cfg.validate_admin_addr()?;
     let udp_sock =
         Arc::new(UdpSocket::bind(cfg.bind).await.with_context(|| {
             format!("UDP 数据面绑定失败：{}（端口被占用或权限不足）", cfg.bind)

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! 接收端状态机：把 [`FileChunk`] 落盘到接收根内，按需回 `FileAck` / `FileResult`。

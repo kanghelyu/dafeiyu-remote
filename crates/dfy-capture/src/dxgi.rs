@@ -36,6 +36,7 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_NOT_FOUND, DXGI_ERROR_SESSION_DISCONNECTED, DXGI_ERROR_WAIT_TIMEOUT,
     DXGI_OUTDUPL_DESC, DXGI_OUTDUPL_FRAME_INFO, DXGI_OUTDUPL_MOVE_RECT, DXGI_OUTPUT_DESC,
 };
+use windows::Win32::Graphics::Gdi::HMONITOR;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 use windows::Win32::System::Performance::QueryPerformanceCounter;
 use windows::Win32::UI::HiDpi::{
@@ -190,6 +191,23 @@ fn qpc_ticks() -> i64 {
         let _ = QueryPerformanceCounter(&mut ticks);
     }
     ticks
+}
+
+pub(crate) fn select_monitor(monitor_index: u32) -> Result<(MonitorInfo, HMONITOR)> {
+    ensure_com_initialized()?;
+    let outputs = enumerate_outputs()?;
+    if outputs.is_empty() {
+        return Err(anyhow!("no desktop-attached DXGI output found"));
+    }
+    let selected = outputs
+        .into_iter()
+        .nth(monitor_index as usize)
+        .ok_or_else(|| anyhow!(CaptureError::NoSuchMonitor(monitor_index)))?;
+    let primary = is_primary(&selected.desc);
+    Ok((
+        selected.monitor_info(monitor_index, primary, effective_dpi(selected.desc.Monitor)),
+        selected.desc.Monitor,
+    ))
 }
 
 /// A DXGI Desktop Duplication capturer.

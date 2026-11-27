@@ -1,0 +1,19 @@
+[package]
+name = "dfy-audio"
+description = "Cross-platform PCM audio capture/playback for Dafeiyu Remote (cpal)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# 打开真实设备后端（cpal）。Linux 需要 libasound2-dev / pipewire 开发库；
+# Windows/macOS 可在各自 target 依赖中默认启用。
+device-backend = ["dep:cpal"]
+
+[dependencies]
+anyhow.workspace = true
+cpal = { version = "0.18", optional = true }
+dfy-proto = { path = "../dfy-proto" }
+tracing.workspace = true

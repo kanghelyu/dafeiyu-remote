@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+// No credentials are stored here. Values are supplied only through process env vars.
+gradle.projectsEvaluated {
+    def app = rootProject.findProject(':app')
+    if (app == null || !app.plugins.hasPlugin('com.android.application')) return
+    app.android {
+        signingConfigs {
+            ciRelease {
+                storeFile file(System.getenv('DFY_KEYSTORE_PATH'))
+                storePassword System.getenv('DFY_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('DFY_KEY_ALIAS')
+                keyPassword System.getenv('DFY_KEY_PASSWORD')
+            }
+        }
+        buildTypes {
+            release {
+                signingConfig signingConfigs.ciRelease
+            }
+        }
+    }
+}

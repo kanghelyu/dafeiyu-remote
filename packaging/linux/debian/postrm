@@ -1,0 +1,16 @@
+#!/bin/sh
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+set -eu
+case "$1" in
+  remove|purge)
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+      systemctl disable dfy-relay.service >/dev/null 2>&1 || true
+      systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    # 配置目录按配置处理：purge 时才清理，且仅在空目录时删除。
+    if [ "$1" = purge ] && [ -d /etc/dfy-relay ]; then
+      rmdir /etc/dfy-relay >/dev/null 2>&1 || true
+    fi
+    ;;
+esac
+exit 0

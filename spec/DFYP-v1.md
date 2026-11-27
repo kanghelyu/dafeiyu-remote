@@ -1,7 +1,7 @@
 # DFYP/1 — 大肥鱼远程 协议规范（v1 草案）
 
 > 本文是 clean-room 设计规范：由产品/架构目标独立推演，**不复制任何第三方协议的字段号、消息名或常量表**（包括 UU远程 `gv_pb`、RustDesk 定义）。
-> 规范文本按 Apache-2.0 / CC-BY-4.0 发布以便生态实现；代码实现按 AGPL-3.0-or-later。
+> 规范文本按 Apache-2.0 / CC-BY-4.0 发布以便生态实现；代码实现按 PolyForm Noncommercial License 1.0.0（非商用源码可见，非 OSI 开源）。
 
 ## 0. 术语
 - **Agent（被控端）**：运行在被远程控制的机器上，负责采集/编码/注入/文件。
@@ -53,12 +53,12 @@
 消息统一帧：`varint len | varint type | payload(protobuf)`（control/流通道）；DATAGRAM 独立头部见 §6。
 
 ## 4. 握手（control 流）
-1. Client→Agent：`Hello{proto_min=1, proto_max=1, client_info{platform,version,name}, device_pubkey}`（若 TLS 已完成，pubkey 必须一致）。
+1. Client→Agent：`Hello{proto_min=1, proto_max=1, client_info{platform,version,name}, device_pubkey, resume_session_id}`（若 TLS 已完成，pubkey 必须一致）。首次连接 `resume_session_id` 为空；迁移连接必须声明原会话 ID，Agent 在签名 COMMIT 前不消费共享采集帧。
 2. Agent→Client：`Challenge{nonce(32B), auth_modes[]}`。
 3. Client→Agent：`Auth{ mode: PASSWORD|ASSIST_CODE|PIN, proof = HMAC-SHA256(pake? ) }`——v1 用「密码哈希（Argon2id 输出）与 nonce 的 HMAC」；协助码模式由 RDV 预置一次性 token。
 4. Agent→Client：`Welcome{session_id, agent_info, capabilities{ codecs[], max_res, hw_enc, hdr, virtual_display, clipboard_formats, audio, terminal, file, multi_monitor }, permission_bitmap, monitor_list[{id,w,h,dpi,name,primary}]}`。
 5. 双方 `CapabilityAck` 后进入会话；失败 `Reject{code}`。
-- 心跳：control 上 `Ping/Pong`，5s 间隔；15s 无响应判定断线；断线重连保留会话 <30s（0-RTT 迁移）。
+- 心跳：control 上 `Ping/Pong`，5s 间隔；15s 无响应判定断线；断线重连保留逻辑会话 <30s，但新路径必须完整执行 auth v2，不使用 0-RTT 恢复认证。
 - 分辨率/帧率/码率协商走 `VideoConfig` 双向可变更消息（ABR）。
 
 ## 5. 控制消息目录（v1）
@@ -128,8 +128,39 @@
 
 | tag | 消息 | 字段 |
 | --- | --- | --- |
-| 22 | `SessionResume` | `last_frame_id: u64`（最后完整收到的帧）、`last_frame_seq: u64` |
-| 23 | `SessionResumeOk` | `keyframe_requested: bool`、`resume_from_frame_id: u64` |
+| 22 | `SessionResume` | `last_frame_id`、`last_frame_seq`、`session_id`、`resume_token`、`phase`、`client_nonce`、`server_nonce`、`signature`、`permission_bitmap` |
+| 23 | `SessionResumeOk` | `keyframe_requested`、`resume_from_frame_id`、`session_id`、`session_epoch`、`phase`、`server_nonce`、`resume_token`、`permission_bitmap`、`capability` |
+| 24 | `StreamFeedback` | `window_ms`、`payload_bytes`、`packets`、`frames_assembled`、`frames_delivered`、`dropped_frames`、`stall_ms` |
+| 25 | `KeyframeRequest` | 空消息；查看端请求下一个编码帧为关键帧 |
+| 26 | `QualityControl` | `width`、`height`、`fps`、`bitrate_kbps`；查看端设置质量上限 |
 
-agent 收到后必须请求关键帧并回 `SessionResumeOk`；采集/编码状态保持连续（不重建），
-客户端据 `resume_from_frame_id` 与 `last_frame_id` 判断缺口，等关键帧到达后继续渲染。
+`StreamFeedback` 是主控端到 agent 的单向质量窗口（默认 500ms），只统计视频 DATAGRAM
+负载，不包含 QUIC/控制流开销。完全静止的桌面不发送反馈，避免把“无新画面”误判为
+零吞吐拥塞。agent 仅在已认证的当前会话代次接受该消息，以 Quinn RTT/丢包增量与反馈
+吞吐/丢帧/帧间隔驱动确定性 ABR；推荐分辨率、帧率（1..=120）和码率通过采集线程事务性
+生效，分辨率变化重建编码器并请求关键帧。默认连续两个坏样本才降级、连续五个好样本
+才恢复；拥塞门限为 RTT>150ms、丢包>30000ppm 或停顿>1000ms，恢复门限为
+RTT<80ms、丢包<5000ppm 且停顿<500ms，并有两秒最小调整间隔和十秒恢复冷却。
+500ms 反馈窗口之间的活动停顿可保留至多三秒；无视频活动的静止桌面不产生拥塞样本。
+用户设置是上界，自适应只能向下或恢复至该上界。旧版客户端不宣告
+`stream-feedback.v1` 时保持固定质量。
+
+`QualityControl` 仅在查看端具备 `PERM_CONTROL` 且双方会话宣告 `quality-control.v1`
+时接受；迁移后按 COMMIT 冻结的当前权限与能力判断。全零请求恢复 agent 启动质量；
+非零请求四个字段必须齐全，并限制在编码器支持的范围内。宽高是保持采集面宽高比的
+最大包围盒，不得放大；平台确认的宽高可以更小，但均不得超过请求值，确认的帧率和
+码率必须等于门限处理后的请求值。agent 事务性应用成功后以 `VideoConfig` 通告实际
+结果，失败或未授权只记录审计，不发送会终止旧客户端会话的 `Reject`。用户上限与
+自主降级上限分开保存，恢复不得因先前的网络降级而逐级变低。agent 在首帧已确认的
+分辨率可用时发送初始 `VideoConfig`，使查看端无需等待下一次画质变化即可显示当前质量。
+
+迁移仅接受签名 PREPARE/COMMIT；迁移连接必须在 `Hello.resume_session_id` 声明原逻辑
+会话 ID，auth v2 转录也绑定该字段；未声明的恢复目标会被拒绝。COMMIT 成功后 agent
+才接管发帧、递增 epoch、轮换 `resume_token` 并请求关键帧。采集/编码状态保持连续
+（不重建），客户端据 `resume_from_frame_id` 与 `last_frame_id` 判断缺口，等关键帧
+到达后继续渲染。每条新连接使用新的会话相对时钟；自适应控制器只在该连接的首个
+有效反馈样本上重新基准化一次，保留先前降级进度而不反复重置恢复计时。
+
+`KeyframeRequest` 与恢复握手无关，供无持久设备身份的查看端在解码失败时请求恢复。
+agent 仅在已认证、当前且未处于待迁移状态的会话中接受请求，并限制为一秒最多一次；
+新连接在 COMMIT 前不得消费或发送共享采集帧。

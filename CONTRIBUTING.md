@@ -27,11 +27,12 @@
 参考开源项目时只借鉴**架构与思想**，并用我们自己的命名与协议字段重写实现。提交 PR 时请确认：
 - 没有直接搬运代码片段/资源；
 - 没有从逆向目标复制私有协议常量或消息名；
-- 依赖许可证与 AGPL-3.0-or-later 兼容（禁止 GPLv3/GPL-2.0-only 静态链接）。
+- 依赖许可证与 PolyForm Noncommercial License 1.0.0 的分发条款兼容，
+  且不得引入要求本仓库整体按 OSI 开源或允许商用的传染性条款（禁止 GPLv3/GPL-2.0-only 静态链接）。
 
 ## 许可证与 DCO
 
-- 贡献默认采用 **AGPL-3.0-or-later**。
+- 贡献默认采用 **PolyForm Noncommercial License 1.0.0**（非商用源码可见）。
 - 提交需带 `Signed-off-by`（`git commit -s`），表示你有权提交该代码。
 
 ## 行为准则

@@ -63,6 +63,7 @@
 - 权限：允许控制/仅查看/仅文件/仅终端等分级（UU 有 controlled_ability_map/controller_ability_map）。
 - 隐私：隐私屏、剪贴板开关、连接提示、水印、审计日志（本地加密）。
 
-## 7. 开源与授权（待用户拍板）
-- 候选：AGPL-3.0（对齐 RustDesk，防闭源商用）或 Apache-2.0（更宽松，利于生态）。草案默认 AGPL-3.0。
+## 7. 开源与授权（2026-11-27 用户已拍板）
+- 最终采用 **PolyForm Noncommercial License 1.0.0**：禁止商用、源码可见，属于 source-available 而非 OSI 开源。
+- 原需求“完全开源”与“禁止商用”法律上互斥；本决策以用户后续明确选择为准，原需求原文保留不改。
 - 仓库结构（计划）：`crates/{proto,transport,relay,core-server,core-client,capture-*,input-*,display-*,clipboard,audio}`、`apps/{desktop-tauri,cli,android}`、`docs/`、`scripts/`。

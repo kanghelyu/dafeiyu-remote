@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Dafeiyu Remote
+GenericName=Remote Desktop
+Comment=Cross-platform remote desktop and self-hosted relay tools
+Exec=dfy view
+Icon=dfy
+Terminal=true
+Categories=Network;RemoteAccess;
+Keywords=remote;desktop;relay;dfy;

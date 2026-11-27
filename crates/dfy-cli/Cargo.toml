@@ -11,29 +11,40 @@ name = "dfy"
 path = "src/main.rs"
 
 [dependencies]
+dfy-audio = { path = "../dfy-audio" }
 dfy-files = { path = "../dfy-files" }
 dfy-ui = { path = "../dfy-ui" }
 anyhow.workspace = true
 blake3.workspace = true
+bytes.workspace = true
 clap.workspace = true
 dfy-proto.workspace = true
 dfy-transport.workspace = true
 dfy-capture = { path = "../dfy-capture" }
 dfy-relay = { path = "../dfy-relay" }
+dfy-relay-profiles = { path = "../dfy-relay-profiles" }
 dfy-p2p = { path = "../dfy-p2p" }
+dfy-path = { path = "../dfy-path" }
 dfy-clipboard = { path = "../dfy-clipboard" }
 dfy-codec = { path = "../dfy-codec" }
 dfy-input = { path = "../dfy-input" }
 dfy-session = { path = "../dfy-session" }
+dfy-vdisplay = { path = "../dfy-vdisplay" }
 ed25519-dalek.workspace = true
 hex.workspace = true
 quinn.workspace = true
 rand.workspace = true
+rpassword = "7"
 tokio.workspace = true
+zeroize = { version = "1", features = ["alloc"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", default-features = false, features = ["xinput", "xkb"] }
+
 [target.'cfg(windows)'.dependencies]
+dfy-audio = { path = "../dfy-audio", features = ["device-backend"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",

@@ -77,14 +77,16 @@ impl LinuxCapturer {
     /// 返回值顺序与 [`LinuxCapturer::new`] 的 `monitor_index` 一致。
     pub fn monitors() -> anyhow::Result<Vec<MonitorInfo>> {
         let (conn, screen_num) = connect_display()?;
-        let geoms = {
-            let screen = &conn.setup().roots[screen_num];
-            enumerate_geometries(&conn, screen.root, screen)?
-        };
-        if geoms.is_empty() {
-            return Err(anyhow!("X11: 没有枚举到任何显示器"));
-        }
-        Ok(geometries_to_monitors(&geoms))
+        monitors_on_connection(&conn, screen_num)
+    }
+
+    /// Enumerates monitors on an explicitly selected X11 endpoint.
+    ///
+    /// This does not modify process environment variables and is suitable for an isolated
+    /// virtual display managed by another process.
+    pub fn monitors_on_display(display: &str) -> anyhow::Result<Vec<MonitorInfo>> {
+        let (conn, screen_num) = connect_explicit_display(display)?;
+        monitors_on_connection(&conn, screen_num)
     }
 
     /// 为 `monitor_index` 指定的显示器创建采集器。
@@ -93,7 +95,20 @@ impl LinuxCapturer {
     /// [`CaptureError::Unsupported`]（通常意味着当前会话是纯 Wayland）。
     pub fn new(monitor_index: u32) -> anyhow::Result<Self> {
         let (conn, screen_num) = connect_display()?;
+        Self::from_connection(conn, screen_num, monitor_index)
+    }
 
+    /// Creates a capturer on an explicitly selected X11 endpoint without changing `DISPLAY`.
+    pub fn on_display(display: &str, monitor_index: u32) -> anyhow::Result<Self> {
+        let (conn, screen_num) = connect_explicit_display(display)?;
+        Self::from_connection(conn, screen_num, monitor_index)
+    }
+
+    fn from_connection(
+        conn: RustConnection,
+        screen_num: usize,
+        monitor_index: u32,
+    ) -> anyhow::Result<Self> {
         let geoms = {
             let screen = &conn.setup().roots[screen_num];
             enumerate_geometries(&conn, screen.root, screen)?
@@ -284,13 +299,32 @@ impl std::fmt::Debug for LinuxCapturer {
 /// 纯 Wayland 会话（无 XWayland）没有 `DISPLAY`，这里返回
 /// [`CaptureError::Unsupported`]，方便上层决定是否切到 Wayland 后端。
 fn connect_display() -> anyhow::Result<(RustConnection, usize)> {
-    if std::env::var_os("DISPLAY").is_none_or(|value| value.is_empty()) {
+    if std::env::var_os("DISPLAY").map_or(true, |value| value.is_empty()) {
         return Err(CaptureError::Unsupported(
             "X11 不可用：环境变量 DISPLAY 未设置（Wayland 会话可能没有 XWayland）",
         )
         .into());
     }
     x11rb::connect(None).map_err(|e| anyhow!("连接 X11 服务器失败（DISPLAY）：{e}"))
+}
+
+fn connect_explicit_display(display: &str) -> anyhow::Result<(RustConnection, usize)> {
+    anyhow::ensure!(!display.trim().is_empty(), "X11 display endpoint 不能为空");
+    x11rb::connect(Some(display)).map_err(|e| anyhow!("连接 X11 服务器失败（{display}）：{e}"))
+}
+
+fn monitors_on_connection(
+    conn: &RustConnection,
+    screen_num: usize,
+) -> anyhow::Result<Vec<MonitorInfo>> {
+    let geoms = {
+        let screen = &conn.setup().roots[screen_num];
+        enumerate_geometries(conn, screen.root, screen)?
+    };
+    if geoms.is_empty() {
+        return Err(anyhow!("X11: 没有枚举到任何显示器"));
+    }
+    Ok(geometries_to_monitors(&geoms))
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,14 @@ use crate::tls::{self, ClientTls, TlsIdentity, SERVER_NAME};
 /// 绑定 Agent 的 QUIC 监听端点（UDP），同时生成一次性自签身份。
 pub fn bind_agent(addr: SocketAddr) -> Result<(Endpoint, TlsIdentity)> {
     let identity = TlsIdentity::generate("dfy-agent").context("生成 Agent TLS 身份失败")?;
+    bind_agent_with_identity(addr, identity)
+}
+
+/// 使用调用方持久化或恢复的身份绑定 Agent 端点。
+pub fn bind_agent_with_identity(
+    addr: SocketAddr,
+    identity: TlsIdentity,
+) -> Result<(Endpoint, TlsIdentity)> {
     let server_cfg = tls::server_config(&identity)?;
     let endpoint = Endpoint::server(server_cfg, addr)
         .with_context(|| format!("Agent QUIC 端点绑定失败（UDP {addr}）"))?;

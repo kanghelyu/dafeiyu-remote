@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (C) 2025 Dafeiyu Remote Project
 
 //! Cross-platform virtual display control plane for Dafeiyu Remote.
@@ -13,18 +13,15 @@
 //! | OS | mechanism | state in this phase |
 //! |----|-----------|----------------------|
 //! | Windows | our own IddCx (UMDF2) indirect display driver; this crate implements the **user-mode half** (device-interface enumeration + IOCTL control plane) | implemented, requires `dfy-vdisplay` driver from `driver/` |
-//! | Linux | evdi (out-of-tree GPL-2.0 kernel module, shipped separately) or DRM lease | stub (`stub::UnsupportedBackend`), phase 2 |
+//! | Linux | one isolated Xvfb X server per desktop (no root; X11 clients only) | implemented; requires `Xvfb`, `xdpyinfo`, and optionally `xrandr` |
 //! | macOS | `CGVirtualDisplay` (private CoreGraphics API) | stub, phase 2 |
 //!
 //! # Threading model
 //!
-//! [`VirtualDisplayBackend`] methods are **synchronous** and `Send + Sync`: every call
-//! performs a `DeviceIoControl` round trip (plus a `CreateFileW` when the device handle
-//! is not open yet) and may block for as long as the driver takes to answer. Async
-//! callers must wrap calls in `tokio::task::spawn_blocking` instead of awaiting them on
-//! a runtime worker thread. There is no internal lock spanning OS calls other than a
-//! mutex that serialises the control channel and its small id→name cache, so a stalled
-//! driver can block only the caller's thread.
+//! [`VirtualDisplayBackend`] methods are **synchronous** and `Send + Sync`. Backends
+//! serialise their control channel and state internally, and calls may block while an OS
+//! operation or health probe completes. Async callers must wrap calls in
+//! `tokio::task::spawn_blocking` instead of awaiting them on a runtime worker thread.
 //!
 //! Per [`design/012-module-apis.md`](../../../design/012-module-apis.md), no function in
 //! this crate panics on a normal error path: missing drivers, unsupported platforms,
@@ -62,6 +59,9 @@
 use std::fmt;
 
 pub mod stub;
+
+#[cfg(target_os = "linux")]
+pub mod linux_xvfb;
 
 #[cfg(windows)]
 pub mod win_driver;
@@ -133,7 +133,7 @@ pub fn platform_name() -> &'static str {
 /// This says nothing about whether the mechanism is *installed* (the Windows driver can
 /// be missing); use [`VirtualDisplayBackend::is_available`] for that.
 pub const fn is_platform_supported() -> bool {
-    cfg!(windows)
+    cfg!(any(windows, target_os = "linux"))
 }
 
 /// Description of a virtual display to create or update.
@@ -309,6 +309,10 @@ pub trait VirtualDisplayBackend: Send + Sync {
     /// Only the fields of [`VirtualDisplaySpec`] are applied; `name_hint` is ignored on
     /// update because the driver derives the monitor's friendly name from the creation
     /// hint. Must not disturb other displays or the physical monitors.
+    ///
+    /// Linux prefers `xrandr --fb`; if Xvfb cannot perform the requested live resize, it
+    /// recreates only this display's X server under the same id. X11 clients must then
+    /// reconnect. Refresh-rate and DPI changes are unsupported on Linux.
     fn update(&self, id: u32, spec: &VirtualDisplaySpec) -> anyhow::Result<()>;
 
     /// Removes a virtual display and releases its swap chain.
@@ -328,6 +332,15 @@ pub trait VirtualDisplayBackend: Send + Sync {
     fn capabilities(&self) -> u32 {
         0
     }
+
+    /// Returns a backend-specific endpoint that capture/input clients can connect to.
+    ///
+    /// Linux Xvfb returns its managed `:N` X11 endpoint. Backends whose displays are
+    /// enumerated through the operating system, such as DXGI, return `None`.
+    fn capture_endpoint(&self, id: u32) -> anyhow::Result<Option<String>> {
+        let _ = id;
+        Ok(None)
+    }
 }
 
 /// Creates the backend for the current platform.
@@ -335,16 +348,20 @@ pub trait VirtualDisplayBackend: Send + Sync {
 /// On Windows this returns the IddCx driver control plane. The device is opened lazily,
 /// so a machine without the driver still gets `Ok(..)` and can ask
 /// [`VirtualDisplayBackend::is_available`]; operations then fail with a descriptive
-/// error. On platforms without an implementation it returns [`stub::UnsupportedBackend`],
-/// whose methods all return an `Unsupported` error and whose
-/// [`is_available`](VirtualDisplayBackend::is_available) is `false` — uniform handling
-/// beats a platform `cfg` in every caller, and the stub is directly testable everywhere.
+/// error. On Linux this returns [`linux_xvfb::XvfbBackend`], which manages isolated Xvfb
+/// desktops without root or access to the physical display. Other platforms return
+/// [`stub::UnsupportedBackend`], whose methods report `Unsupported` and whose availability
+/// is `false`.
 pub fn create_backend() -> anyhow::Result<Box<dyn VirtualDisplayBackend>> {
     #[cfg(windows)]
     {
         Ok(Box::new(win_driver::WinDriverBackend::new()))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Box::new(linux_xvfb::XvfbBackend::new()?))
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Ok(Box::new(stub::UnsupportedBackend::new(platform_name())))
     }
@@ -451,9 +468,9 @@ mod tests {
     #[test]
     fn platform_helpers_are_consistent() {
         assert!(!platform_name().is_empty());
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         assert!(is_platform_supported());
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         assert!(!is_platform_supported());
     }
 }

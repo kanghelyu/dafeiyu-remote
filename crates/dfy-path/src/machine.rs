@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! 路径切换状态机（纯逻辑）。
@@ -720,6 +720,35 @@ mod tests {
             Action::SwitchTo(PathKind::Relay)
         );
         monitor
+    }
+
+    #[test]
+    fn probe_requested_after_cooldown_with_epoch_timestamps() {
+        // 真实会话用 Unix 毫秒作为 at_ms；确认大基准值下 30s 冷期后仍会请求探测。
+        let base = 1_790_000_000_000u64;
+        let mut monitor = PathMonitor::with_initial_path(PathConfig::default(), PathKind::Direct);
+        for i in 0..5u64 {
+            let _ = monitor.on_sample(sample(base + 1_000 + i * 250, 20.0, 0, 0));
+        }
+        for at in [base + 2_250, base + 2_750] {
+            let _ = monitor.on_sample(sample(at, 45.0, 0, 0));
+        }
+        assert_eq!(
+            monitor.on_sample(sample(base + 3_250, 45.0, 0, 0)),
+            Action::SwitchTo(PathKind::Relay)
+        );
+        assert!(monitor.on_switch_committed(base + 3_300, 100));
+        let mut requested = false;
+        for i in 1..200u64 {
+            let at = base + 4_000 + i * 250;
+            if monitor.on_sample_for(PathKind::Relay, sample(at, 8.0, 0, 0))
+                == Action::RequestProbe(PathKind::Direct)
+            {
+                requested = true;
+                break;
+            }
+        }
+        assert!(requested, "30s 冷期后应请求探测直连候选路径");
     }
 
     /// 已切到 Relay 并处于观察期。

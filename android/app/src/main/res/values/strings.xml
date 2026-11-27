@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">大肥鱼远程</string>
+    <string name="accessibility_description">仅在用户明确开启后，把已认证会话中的点击、移动和有限导航手势注入本机。不读取屏幕内容，不提供全局键盘、剪贴板或文件访问。</string>
+    <string name="notification_channel">远程会话</string>
+    <string name="notification_title">大肥鱼远程被控端正在运行</string>
+    <string name="notification_stop">停止会话</string>
+</resources>

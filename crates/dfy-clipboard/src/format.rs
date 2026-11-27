@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // 大肥鱼远程 —— 剪贴板格式类型、系统格式名表与 kind 归类规则。
 // 这里全部是平台无关逻辑，便于控制端/被控端共用和单元测试。
 

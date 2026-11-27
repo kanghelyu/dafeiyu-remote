@@ -8,7 +8,10 @@
 use prost::Message as _;
 
 use crate::{
-    consts::{CHAN_INPUT_MOVE, CHAN_VIDEO, VIDEO_FLAG_KEY, VIDEO_FLAG_LAST, VIDEO_HEADER_LEN},
+    consts::{
+        AUDIO_HEADER_LEN, AUDIO_MAX_PAYLOAD, CHAN_AUDIO, CHAN_INPUT_MOVE, CHAN_VIDEO,
+        VIDEO_FLAG_KEY, VIDEO_FLAG_LAST, VIDEO_HEADER_LEN,
+    },
     msg::InputEvent,
     ProtoError,
 };
@@ -146,10 +149,63 @@ pub fn decode_input_move(buf: &[u8]) -> Result<InputEvent, ProtoError> {
     }
 }
 
+/// 一包音频帧：`chan(2) | u32 seq | u32 ts_us | s16le PCM`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioPacket {
+    /// 单调递增包序号（接收端用于检测丢包）。
+    pub seq: u32,
+    /// 采集时间戳（Unix 微秒，截断到 u32，约 71 分钟回绕）。
+    pub ts_us: u32,
+    /// s16le 交错 PCM 字节（偶数长度）。
+    pub pcm: Vec<u8>,
+}
+
+/// 编码一个音频 DATAGRAM；PCM 必须非空、偶数且不超过 [`AUDIO_MAX_PAYLOAD`]。
+pub fn encode_audio(seq: u32, ts_us: u32, pcm: &[u8]) -> Result<Vec<u8>, ProtoError> {
+    if pcm.is_empty() || pcm.len() % 2 != 0 || pcm.len() > AUDIO_MAX_PAYLOAD {
+        return Err(ProtoError::Oversize {
+            len: pcm.len(),
+            max: AUDIO_MAX_PAYLOAD,
+        });
+    }
+    let mut out = Vec::with_capacity(AUDIO_HEADER_LEN + pcm.len());
+    out.push(CHAN_AUDIO);
+    out.extend_from_slice(&seq.to_be_bytes());
+    out.extend_from_slice(&ts_us.to_be_bytes());
+    out.extend_from_slice(pcm);
+    Ok(out)
+}
+
+/// 解码音频 DATAGRAM。
+pub fn decode_audio(buf: &[u8]) -> Result<AudioPacket, ProtoError> {
+    if buf.len() < AUDIO_HEADER_LEN {
+        return Err(ProtoError::ShortHeader {
+            need: AUDIO_HEADER_LEN,
+            got: buf.len(),
+        });
+    }
+    match buf[0] {
+        CHAN_AUDIO => {}
+        got => return Err(ProtoError::BadChannel { got }),
+    }
+    let seq = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+    let ts_us = u32::from_be_bytes([buf[5], buf[6], buf[7], buf[8]]);
+    let pcm = buf[AUDIO_HEADER_LEN..].to_vec();
+    if pcm.is_empty() || pcm.len() % 2 != 0 || pcm.len() > AUDIO_MAX_PAYLOAD {
+        return Err(ProtoError::Oversize {
+            len: pcm.len(),
+            max: AUDIO_MAX_PAYLOAD,
+        });
+    }
+    Ok(AudioPacket { seq, ts_us, pcm })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consts::{INPUT_KIND_MOUSE_MOVE, INPUT_STATE_DOWN, VIDEO_FLAG_FEC};
+    use crate::consts::{
+        AUDIO_MAX_PAYLOAD, CHAN_AUDIO, INPUT_KIND_MOUSE_MOVE, INPUT_STATE_DOWN, VIDEO_FLAG_FEC,
+    };
 
     fn sample_event() -> InputEvent {
         InputEvent {
@@ -254,6 +310,29 @@ mod tests {
         assert!(matches!(
             VideoHeader::single(1, 0, 0, 0).encode(&mut [0u8; 4]),
             Err(ProtoError::ShortHeader { need: 16, got: 4 })
+        ));
+    }
+
+    #[test]
+    fn audio_datagram_roundtrip_and_bounds() {
+        let pcm = vec![0x1234u16; 320];
+        let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let dgram = encode_audio(42, 1_700_000_123, &bytes).unwrap();
+        assert_eq!(dgram[0], CHAN_AUDIO);
+        assert_eq!(dgram.len(), AUDIO_HEADER_LEN + bytes.len());
+        let got = decode_audio(&dgram).unwrap();
+        assert_eq!(got.seq, 42);
+        assert_eq!(got.ts_us, 1_700_000_123);
+        assert_eq!(got.pcm, bytes);
+        for bad in [vec![], vec![0u8; 3], vec![0u8; AUDIO_MAX_PAYLOAD + 2]] {
+            assert!(encode_audio(0, 0, &bad).is_err());
+        }
+        assert!(decode_audio(&[CHAN_AUDIO, 0, 0]).is_err());
+        let mut wrong = dgram.clone();
+        wrong[0] = 0xFF;
+        assert!(matches!(
+            decode_audio(&wrong),
+            Err(ProtoError::BadChannel { got: 0xFF })
         ));
     }
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! 解码一个 Annex-B 的 `.h264` 文件，用于排查解码链路（对比 ffmpeg 产出的参考码流）。

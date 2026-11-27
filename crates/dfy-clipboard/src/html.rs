@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // 大肥鱼远程 —— CF_HTML（"HTML Format"）头部解析与构造。
 // CF_HTML 是“ASCII 头部 + UTF-8 HTML 正文”的剪贴板格式；跨端只同步 fragment 片段，
 // 由两边各自补齐头部，避免 HTML 文档外壳膨胀。

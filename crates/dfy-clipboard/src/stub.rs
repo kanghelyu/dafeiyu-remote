@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // 大肥鱼远程 —— 非 Windows 平台的剪贴板后端占位实现。
 //
 // macOS / Linux 后端会在后续里程碑按同一 `ClipboardBackend` trait 补齐

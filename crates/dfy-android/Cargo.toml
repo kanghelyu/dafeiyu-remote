@@ -1,0 +1,22 @@
+[package]
+name = "dfy-android"
+description = "大肥鱼远程：Android JNI 被控端桥接"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+anyhow.workspace = true
+jni.workspace = true
+prost.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+quinn.workspace = true
+tracing.workspace = true
+zeroize = { version = "1", features = ["alloc"] }
+dfy-proto.workspace = true
+dfy-session.workspace = true
+dfy-transport.workspace = true

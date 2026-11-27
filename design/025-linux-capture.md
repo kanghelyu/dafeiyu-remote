@@ -465,7 +465,7 @@ Linux 端到端要能推流，还需要一路 H.264 编码后端，候选（按 
 | 后端 | 优点 | 代价 |
 |---|---|---|
 | **OpenH264**（Cisco，BSD） | 纯软件、稳定、源码可控；UU 也把 OpenH264 当兜底 | 需要 C 编译（或预编译 so），与我们「零 C 依赖」的偏好冲突；性能只够 1080p 中低帧率 |
-| **x264**（GPL） | 质量/性能好 | GPL 传染性与 AGPL 主仓的兼容需法务确认 |
+| **x264**（GPL） | 质量/性能好 | GPL 传染性与本仓 PolyForm Noncommercial 1.0.0 的分发条款兼容需法务确认 |
 | **VA-API**（libva，MIT） | 硬编，零拷贝（DMA-BUF） | 需要 `libva` dlopen + 按 GPU 选编码入口（H.264/H.265），实现成本最高 |
 | **NVENC**（dlopen `libnvidia-encode.so.1`） | N 卡上延迟最低、零拷贝（Vulkan→CUDA 外部内存） | NVIDIA 专有驱动，需运行期探测 |
 

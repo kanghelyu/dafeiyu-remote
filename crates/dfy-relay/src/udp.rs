@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Dafeiyu Remote contributors
 // Copyright (c) 2026 Dafeiyu Remote contributors
 //! UDP 数据面：单 socket、单 recv 循环，不每包 spawn task。

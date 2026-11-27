@@ -32,8 +32,8 @@
 | 决策 | 内容 | 理由 |
 |---|---|---|
 | D1 | 虚拟屏是独立 crate `dfy-vdisplay`，不并入 capture/session | 生命周期、权限（驱动/服务）、崩溃恢复语义都不同；独立 crate 才能被 agent 作为「设备管理器」单点持有 |
-| D2 | Windows 走自研 IddCx UMDF2 驱动 | 无用户态替代方案；SudoVDA / RustDesk / UU 均已被验证可产品化；许可证干净（自研，AGPL-3.0-or-later） |
-| D3 | Linux 走 evdi（GPL-2.0 内核模块独立分发）+ libevdi 动态链接，Wayland 场景补 DRM lease | evdi 是 DisplayLink 官方内核模块，事实标准；GPL-2.0 只约束内核模块，独立分发并在用户态 dlopen libevdi（LGPL-2.1）可与 AGPL-3.0 共存 |
+| D2 | Windows 走自研 IddCx UMDF2 驱动 | 无用户态替代方案；SudoVDA / RustDesk / UU 均已被验证可产品化；许可证干净（自研，PolyForm Noncommercial License 1.0.0） |
+| D3 | Linux 走 evdi（GPL-2.0 内核模块独立分发）+ libevdi 动态链接，Wayland 场景补 DRM lease | evdi 是 DisplayLink 官方内核模块，事实标准；GPL-2.0 只约束内核模块，独立分发并在用户态 dlopen libevdi（LGPL-2.1）需与 PolyForm Noncommercial License 1.0.0 的分发条款逐项确认 |
 | D4 | macOS 走 CGVirtualDisplay（私有 API） | 无公开 API；App Store 不可用，Developer ID 直发；接受其脆弱性与版本适配成本 |
 | D5 | 用户态-驱动协议**自定**，不复用 UU/RustDesk 的 IOCTL 数值 | 同一台机器可能同时装了 UU/RustDesk 的 IddCx 驱动，数值必须区分；clean-room，不拷贝 SudoVDA 代码 |
 | D6 | display id == ConnectorIndex（0..7） | 驱动重载/设备重启后连接器编号稳定；与 OS 回调中的 ConnectorIndex 双向一致，映射零成本 |
@@ -50,7 +50,7 @@
 | 无物理屏可用 | 是（唯一显示目标也可以） | 是 | 否（无 connector 可租） | 是 |
 | 多屏独立 | 是（ConnectorIndex 0..N，每屏独立 swapchain） | 是（每 device 一个屏幕，可多 device） | 受硬件 connector 数限制 | 是（每个 display 一个对象） |
 | 动态改模式 | 是（`IddCxMonitorUpdateModes`，1.2 即可） | 是（libevdi 模式列表） | 受 connector 能力限制 | 是（需重建 display 或改 mode） |
-| 许可证/分发 | 自研驱动 AGPL-3.0；需 EV/WHQL 签名 | 内核模块 GPL-2.0（独立分发，DKMS/MOK），用户态库 LGPL-2.1 动态链接 | 内核自带（GPL-2.0），无额外模块 | 私有 API，Developer ID 直发，App Store 拒绝 |
+| 许可证/分发 | 自研驱动 PolyForm Noncommercial 1.0.0；需 EV/WHQL 签名 | 内核模块 GPL-2.0（独立分发，DKMS/MOK），用户态库 LGPL-2.1 动态链接 | 内核自带（GPL-2.0），无额外模块 | 私有 API，Developer ID 直发，App Store 拒绝 |
 | 主要风险 | WHQL 2–4 周日历时间；HDR 需 1.10 | Secure Boot 下 MOK 注册；Wayland 合成器忽略 evdi；内核崩溃风险 | 不满足无头/多虚拟屏需求 | 私有 API 随 OS 更新失效；无官方支持 |
 | 结论 | **产品化主路径** | Win 之外 Linux 主路径 | 仅作 Linux「已有屏幕复用」补充 | mac 唯一路径，接受脆弱性 |
 

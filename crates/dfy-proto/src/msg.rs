@@ -10,13 +10,14 @@
 /// 11 Bye / 12 Reject / 13 ClipboardFormatList / 14 ClipboardPull /
 /// 15 ClipboardDataChunk / 16 ClipboardApplied / 17 FileOffer /
 /// 18 FileAccept / 19 FileChunk / 20 FileAck / 21 FileResult /
-/// 22 SessionResume / 23 SessionResumeOk
+/// 22 SessionResume / 23 SessionResumeOk / 24 StreamFeedback / 25 KeyframeRequest /
+/// 26 QualityControl
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Envelope {
     /// 消息体；空 Envelope 视为协议错误。
     #[prost(
         oneof = "envelope::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26"
     )]
     pub body: Option<envelope::Body>,
 }
@@ -32,7 +33,7 @@ pub mod envelope {
         /// 服务端挑战：32B nonce。
         #[prost(message, tag = "2")]
         Challenge(super::Challenge),
-        /// 客户端鉴权应答：`HMAC-SHA256(sha256(password), nonce)`（MVP 简化）。
+        /// 客户端鉴权应答：Argon2id 密钥与 TLS exporter 绑定的 HMAC-SHA256 证明。
         #[prost(message, tag = "3")]
         Auth(super::Auth),
         /// 服务端欢迎：会话 ID + 能力 + 权限位。
@@ -95,6 +96,15 @@ pub mod envelope {
         /// 会话恢复确认：agent 已收到 resume 并请求了关键帧。
         #[prost(message, tag = "23")]
         SessionResumeOk(super::SessionResumeOk),
+        /// 接收端视频质量窗口：仅在有实际视频流量时发送。
+        #[prost(message, tag = "24")]
+        StreamFeedback(super::StreamFeedback),
+        /// 查看端请求下一个编码帧为关键帧，用于解码恢复。
+        #[prost(message, tag = "25")]
+        KeyframeRequest(super::KeyframeRequest),
+        /// 查看端设置流质量上限；全零表示恢复 agent 启动上限。
+        #[prost(message, tag = "26")]
+        QualityControl(super::QualityControl),
     }
 }
 
@@ -113,20 +123,35 @@ pub struct Hello {
     /// 设备 Ed25519 公钥（32B；v1 只做记录与指纹展示）。
     #[prost(bytes = "vec", tag = "4")]
     pub device_pubkey: Vec<u8>,
+    /// 客户端一次性随机数（认证 v2 要求恰为 32B）。
+    #[prost(bytes = "vec", tag = "5")]
+    pub client_nonce: Vec<u8>,
+    /// 本次连接准备迁移的逻辑会话 ID（16B）；首次连接为空。
+    #[prost(bytes = "vec", tag = "6")]
+    pub resume_session_id: Vec<u8>,
 }
 
-/// `Challenge`：服务端 → 客户端，32B 随机 nonce。
+/// `Challenge`：服务端 → 客户端，包含通道绑定的服务端口令证明。
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Challenge {
-    /// 一次性随机数（32B）。
+    /// 服务端一次性随机数（32B）。
     #[prost(bytes = "vec", tag = "1")]
     pub nonce: Vec<u8>,
+    /// Argon2id 随机盐（16B）；参数由认证版本固定，不接受远端指定资源量。
+    #[prost(bytes = "vec", tag = "2")]
+    pub salt: Vec<u8>,
+    /// 服务端证明（32B），绑定 TLS exporter、双方随机数及完整 Hello。
+    #[prost(bytes = "vec", tag = "3")]
+    pub server_proof: Vec<u8>,
+    /// 认证子协议版本；当前仅接受 2，禁止降级到旧 nonce-only 证明。
+    #[prost(uint32, tag = "4")]
+    pub auth_version: u32,
 }
 
 /// `Auth`：客户端 → 服务端，密码证明。
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Auth {
-    /// `HMAC-SHA256(key = SHA-256(password), msg = nonce)`；MVP 简化，正式版换 Argon2id。
+    /// Argon2id 密钥与 TLS exporter 绑定的客户端 HMAC-SHA256 证明（32B）。
     #[prost(bytes = "vec", tag = "1")]
     pub proof: Vec<u8>,
 }
@@ -146,6 +171,12 @@ pub struct Welcome {
     /// 本会话授予的权限位（见 [`crate::consts::PERM_VIEW`] 等）。
     #[prost(uint32, tag = "4")]
     pub permission_bitmap: u32,
+    /// 一次性会话恢复令牌（32B）；只通过已认证的 TLS 控制流传输。
+    #[prost(bytes = "vec", tag = "5")]
+    pub resume_token: Vec<u8>,
+    /// 会话代数；每次成功迁移后递增，用于拒绝旧路径的恢复确认。
+    #[prost(uint64, tag = "6")]
+    pub session_epoch: u64,
 }
 
 /// `CapabilityAck`：能力确认（当前无字段，保留扩展位）。
@@ -413,6 +444,27 @@ pub struct SessionResume {
     /// 客户端最后收到的分片序号（用于诊断丢包位置）。
     #[prost(uint64, tag = "2")]
     pub last_frame_seq: u64,
+    /// 原逻辑会话 ID（16B），迁移后保持不变。
+    #[prost(bytes = "vec", tag = "3")]
+    pub session_id: Vec<u8>,
+    /// 当前一次性恢复令牌（32B）。
+    #[prost(bytes = "vec", tag = "4")]
+    pub resume_token: Vec<u8>,
+    /// 阶段：1 = PREPARE，2 = COMMIT。
+    #[prost(uint32, tag = "5")]
+    pub phase: u32,
+    /// 客户端本次恢复的新随机数（32B）。
+    #[prost(bytes = "vec", tag = "6")]
+    pub client_nonce: Vec<u8>,
+    /// PREPARE 返回的服务端随机数（32B）；COMMIT 必须原样回显。
+    #[prost(bytes = "vec", tag = "7")]
+    pub server_nonce: Vec<u8>,
+    /// 设备私钥对恢复 transcript 的 Ed25519 签名（64B）。
+    #[prost(bytes = "vec", tag = "8")]
+    pub signature: Vec<u8>,
+    /// 请求保留的权限位；只能是原授权的子集。
+    #[prost(uint32, tag = "9")]
+    pub permission_bitmap: u32,
 }
 
 /// `SessionResumeOk`：agent 对 [`SessionResume`] 的确认。
@@ -424,6 +476,76 @@ pub struct SessionResumeOk {
     /// agent 侧下一帧的 frame_id（客户端可据此计算续接位置）。
     #[prost(uint64, tag = "2")]
     pub resume_from_frame_id: u64,
+    /// 逻辑会话 ID（16B）。
+    #[prost(bytes = "vec", tag = "3")]
+    pub session_id: Vec<u8>,
+    /// 确认后的会话代数。
+    #[prost(uint64, tag = "4")]
+    pub session_epoch: u64,
+    /// 确认阶段：1 = PREPARE，2 = COMMIT。
+    #[prost(uint32, tag = "5")]
+    pub phase: u32,
+    /// PREPARE 生成、COMMIT 原样回显的服务端随机数（32B）。
+    #[prost(bytes = "vec", tag = "6")]
+    pub server_nonce: Vec<u8>,
+    /// COMMIT 成功后轮换的新恢复令牌（32B）。
+    #[prost(bytes = "vec", tag = "7")]
+    pub resume_token: Vec<u8>,
+    /// 冻结后的权限位；只可能等于或小于原授权。
+    #[prost(uint32, tag = "8")]
+    pub permission_bitmap: u32,
+    /// 冻结后的能力清单。
+    #[prost(string, repeated, tag = "9")]
+    pub capability: Vec<String>,
+}
+
+/// `StreamFeedback`：主控端 → agent 的接收质量窗口。
+///
+/// 只统计视频 DATAGRAM 的负载字节，不把 QUIC/控制流开销算作有效吞吐。窗口内没有
+/// 完整帧时发送 dropped/字节信息仍可暴露丢包；完全静止的桌面不发送此消息。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StreamFeedback {
+    /// 本窗口实际时长（毫秒，1..=60_000）。
+    #[prost(uint64, tag = "1")]
+    pub window_ms: u64,
+    /// 收到的视频负载字节。
+    #[prost(uint64, tag = "2")]
+    pub payload_bytes: u64,
+    /// 收到的视频 DATAGRAM 数。
+    #[prost(uint64, tag = "3")]
+    pub packets: u64,
+    /// 完整重组的视频帧数。
+    #[prost(uint64, tag = "4")]
+    pub frames_assembled: u64,
+    /// 成功解码交付的视频帧数。
+    #[prost(uint64, tag = "5")]
+    pub frames_delivered: u64,
+    /// 本窗口因不完整/超限而丢弃的帧数。
+    #[prost(uint64, tag = "6")]
+    pub dropped_frames: u64,
+    /// 有码流活动时的最大帧间隔（毫秒，0..=60_000）；静止桌面不累计。
+    #[prost(uint64, tag = "7")]
+    pub stall_ms: u64,
+}
+
+/// `KeyframeRequest`：查看端请求恢复关键帧，无附加参数。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KeyframeRequest {}
+
+/// `QualityControl`：查看端 → agent 的流质量上限。
+///
+/// 四个字段全为零时恢复 agent 启动配置；否则每个字段都必须非零。分辨率是包围盒，
+/// 按采集源比例拟合且不放大。实际生效参数由 `VideoConfig` 返回。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QualityControl {
+    #[prost(uint32, tag = "1")]
+    pub width: u32,
+    #[prost(uint32, tag = "2")]
+    pub height: u32,
+    #[prost(uint32, tag = "3")]
+    pub fps: u32,
+    #[prost(uint32, tag = "4")]
+    pub bitrate_kbps: u32,
 }
 
 /// `Reject`：握手/会话拒绝。
@@ -448,6 +570,8 @@ impl Envelope {
                 proto_minor,
                 client_name: client_name.into(),
                 device_pubkey,
+                client_nonce: Vec::new(),
+                resume_session_id: Vec::new(),
             })),
         }
     }
@@ -455,7 +579,12 @@ impl Envelope {
     /// 构造 `Challenge` 信封。
     pub fn challenge(nonce: Vec<u8>) -> Self {
         Self {
-            body: Some(envelope::Body::Challenge(Challenge { nonce })),
+            body: Some(envelope::Body::Challenge(Challenge {
+                nonce,
+                salt: Vec::new(),
+                server_proof: Vec::new(),
+                auth_version: 0,
+            })),
         }
     }
 
@@ -479,6 +608,29 @@ impl Envelope {
                 agent_name: agent_name.into(),
                 capability,
                 permission_bitmap,
+                resume_token: Vec::new(),
+                session_epoch: 0,
+            })),
+        }
+    }
+
+    /// 构造带会话恢复令牌的 `Welcome` 信封。
+    pub fn welcome_with_resume(
+        session_id: Vec<u8>,
+        agent_name: impl Into<String>,
+        capability: Vec<String>,
+        permission_bitmap: u32,
+        resume_token: Vec<u8>,
+        session_epoch: u64,
+    ) -> Self {
+        Self {
+            body: Some(envelope::Body::Welcome(Welcome {
+                session_id,
+                agent_name: agent_name.into(),
+                capability,
+                permission_bitmap,
+                resume_token,
+                session_epoch,
             })),
         }
     }
@@ -513,6 +665,13 @@ impl Envelope {
                 fps,
                 bitrate_kbps,
             })),
+        }
+    }
+
+    /// 构造 `StreamFeedback` 信封。
+    pub fn stream_feedback(feedback: StreamFeedback) -> Self {
+        Self {
+            body: Some(envelope::Body::StreamFeedback(feedback)),
         }
     }
 
@@ -641,6 +800,32 @@ impl Envelope {
             body: Some(envelope::Body::SessionResume(SessionResume {
                 last_frame_id,
                 last_frame_seq,
+                session_id: Vec::new(),
+                resume_token: Vec::new(),
+                phase: 0,
+                client_nonce: Vec::new(),
+                server_nonce: Vec::new(),
+                signature: Vec::new(),
+                permission_bitmap: 0,
+            })),
+        }
+    }
+
+    /// 构造 `KeyframeRequest` 信封。
+    pub fn keyframe_request() -> Self {
+        Self {
+            body: Some(envelope::Body::KeyframeRequest(KeyframeRequest {})),
+        }
+    }
+
+    /// 构造 `QualityControl` 信封。
+    pub fn quality_control(width: u32, height: u32, fps: u32, bitrate_kbps: u32) -> Self {
+        Self {
+            body: Some(envelope::Body::QualityControl(QualityControl {
+                width,
+                height,
+                fps,
+                bitrate_kbps,
             })),
         }
     }
@@ -651,6 +836,13 @@ impl Envelope {
             body: Some(envelope::Body::SessionResumeOk(SessionResumeOk {
                 keyframe_requested,
                 resume_from_frame_id,
+                session_id: Vec::new(),
+                session_epoch: 0,
+                phase: 0,
+                server_nonce: Vec::new(),
+                resume_token: Vec::new(),
+                permission_bitmap: 0,
+                capability: Vec::new(),
             })),
         }
     }
@@ -681,6 +873,9 @@ impl Envelope {
             Some(envelope::Body::FileResult(_)) => "FileResult",
             Some(envelope::Body::SessionResume(_)) => "SessionResume",
             Some(envelope::Body::SessionResumeOk(_)) => "SessionResumeOk",
+            Some(envelope::Body::StreamFeedback(_)) => "StreamFeedback",
+            Some(envelope::Body::KeyframeRequest(_)) => "KeyframeRequest",
+            Some(envelope::Body::QualityControl(_)) => "QualityControl",
             None => "<empty>",
         }
     }
@@ -722,7 +917,19 @@ mod tests {
             Envelope::capability_ack(),
             Envelope::ping(1_700_000_000_000_000),
             Envelope::pong(1_700_000_000_000_000),
+            Envelope::keyframe_request(),
+            Envelope::quality_control(1920, 1080, 120, 12_000),
+            Envelope::quality_control(0, 0, 0, 0),
             Envelope::video_config(1920, 1080, 60, 8000),
+            Envelope::stream_feedback(StreamFeedback {
+                window_ms: 500,
+                payload_bytes: 1_000_000,
+                packets: 64,
+                frames_assembled: 30,
+                frames_delivered: 30,
+                dropped_frames: 1,
+                stall_ms: 120,
+            }),
             Envelope {
                 body: Some(envelope::Body::MonitorList(MonitorList {
                     monitors: vec![
@@ -766,6 +973,38 @@ mod tests {
             let got = roundtrip(&env);
             assert_eq!(got, env, "roundtrip mismatch for {}", env.kind_name());
         }
+    }
+
+    #[test]
+    fn migration_messages_roundtrip_with_security_fields() {
+        let env = Envelope {
+            body: Some(envelope::Body::SessionResume(SessionResume {
+                last_frame_id: 123,
+                last_frame_seq: 4,
+                session_id: vec![1; 16],
+                resume_token: vec![2; 32],
+                phase: crate::consts::SESSION_RESUME_PREPARE,
+                client_nonce: vec![3; 32],
+                server_nonce: Vec::new(),
+                signature: vec![4; 64],
+                permission_bitmap: 0b11,
+            })),
+        };
+        assert_eq!(roundtrip(&env), env);
+        let env = Envelope {
+            body: Some(envelope::Body::SessionResumeOk(SessionResumeOk {
+                keyframe_requested: true,
+                resume_from_frame_id: 124,
+                session_id: vec![1; 16],
+                session_epoch: 7,
+                phase: crate::consts::SESSION_RESUME_COMMIT,
+                server_nonce: vec![5; 32],
+                resume_token: vec![6; 32],
+                permission_bitmap: 0b11,
+                capability: vec!["session.resume.v1".into()],
+            })),
+        };
+        assert_eq!(roundtrip(&env), env);
     }
 
     #[test]

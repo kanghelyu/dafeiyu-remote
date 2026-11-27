@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Dafeiyu Remote contributors
 // Copyright (c) 2026 Dafeiyu Remote contributors
 //! tag 会话表：配对、转发、重绑定、回收、限速钩子。
@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, trace};
 
 use crate::auth::{self, NonceCache};
@@ -36,11 +36,32 @@ pub enum EndpointKind {
     Tcp(mpsc::Sender<Vec<u8>>),
 }
 
+/// 数据面的发送者身份：必须同时匹配当前代际与承载方式。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EndpointSource {
+    Udp { addr: SocketAddr, id: u64 },
+    Tcp { id: u64 },
+}
+
 pub struct Endpoint {
     pub kind: EndpointKind,
-    /// 唯一 id：TCP 重连/重绑定时用于让旧连接退出时不要误删新端点。
+    /// 唯一 id：旧连接不能转发、保活或移除新端点。
     pub id: u64,
     pub last_seen: Instant,
+    /// 槽位替换/移除时释放 sender，唤醒并终止旧 TCP reader/writer。
+    _closed: watch::Sender<bool>,
+}
+
+impl Endpoint {
+    fn matches(&self, source: EndpointSource) -> bool {
+        match (&self.kind, source) {
+            (EndpointKind::Udp(expected), EndpointSource::Udp { addr, id }) => {
+                *expected == addr && self.id == id
+            }
+            (EndpointKind::Tcp(_), EndpointSource::Tcp { id }) => self.id == id,
+            _ => false,
+        }
+    }
 }
 
 struct TagSession {
@@ -94,8 +115,10 @@ pub enum BindOutcome {
     Ok {
         tag: Tag,
         role: u8,
-        /// 端点 id（TCP 连接退出时用它避免误删重绑定后的新端点）。
+        /// 端点 id（所有数据、心跳和解绑都必须验证此代际）。
         id: u64,
+        /// 当前槽位被替换/移除时 channel 关闭，旧 TCP 任务必须退出。
+        closed: watch::Receiver<bool>,
         reply: Vec<u8>,
         rebind: bool,
         expires_in_s: u32,
@@ -112,8 +135,8 @@ pub struct State {
     limits: Limits,
     metrics: Arc<Metrics>,
     sessions: HashMap<Tag, TagSession>,
-    /// 仅 UDP 端点：源地址 → (tag, role)。
-    by_addr: HashMap<SocketAddr, (Tag, u8)>,
+    /// 仅 UDP 端点：源地址 → (tag, role, endpoint id)。
+    by_addr: HashMap<SocketAddr, (Tag, u8, u64)>,
     nonces: NonceCache,
     global: Option<TokenBucket>,
     next_id: u64,
@@ -206,7 +229,7 @@ impl State {
         if let Some(sess) = self.sessions.remove(tag) {
             for ep in sess.ends.iter().flatten() {
                 if let EndpointKind::Udp(addr) = &ep.kind {
-                    self.by_addr.remove(addr);
+                    self.remove_addr_index(*addr, ep.id);
                 }
             }
         }
@@ -232,25 +255,23 @@ impl State {
         // 阶段 1：只读判断是否 tag_full。
         let mut reject_tag_full = false;
         let mut rebind = false;
-        let mut stale_udp: Option<SocketAddr> = None;
+        let mut stale_udp: Option<(SocketAddr, u64)> = None;
         if let Some(sess) = self.sessions.get(&tag) {
             if let Some(old) = &sess.ends[slot] {
                 let same = match (&old.kind, &kind) {
                     (EndpointKind::Udp(a), EndpointKind::Udp(b)) => a == b,
-                    // TCP 每次 bind 都是一个新连接，旧连接由客户端关闭；直接覆盖。
+                    // TCP 的新连接不能继承旧连接的槽位身份。
                     _ => false,
                 };
                 if !same {
                     let hot =
                         now.saturating_duration_since(old.last_seen) < self.limits.rebind_guard;
-                    match &kind {
-                        // UDP 热槽位来自不同地址 → 视为第三端点（tag_full）。
-                        EndpointKind::Udp(_) if hot => reject_tag_full = true,
-                        _ => {
-                            rebind = true;
-                            if let EndpointKind::Udp(a) = &old.kind {
-                                stale_udp = Some(*a);
-                            }
+                    if hot {
+                        reject_tag_full = true;
+                    } else {
+                        rebind = true;
+                        if let EndpointKind::Udp(a) = &old.kind {
+                            stale_udp = Some((*a, old.id));
                         }
                     }
                 }
@@ -289,36 +310,26 @@ impl State {
             );
         }
 
-        if let Some(addr) = stale_udp {
-            self.by_addr.remove(&addr);
+        if let Some((addr, id)) = stale_udp {
+            self.remove_addr_index(addr, id);
         }
 
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
+        let (closed_tx, closed) = watch::channel(false);
 
-        // 先把地址索引写进去（kind 需要按值保存到端点里）。
-        if let EndpointKind::Udp(addr) = kind {
-            if let Some(sess) = self.sessions.get_mut(&tag) {
-                sess.ends[slot] = Some(Endpoint {
-                    kind: EndpointKind::Udp(addr),
-                    id,
-                    last_seen: now,
-                });
-                sess.last_seen = now;
-            }
-            self.by_addr.insert(addr, (tag, role));
-        } else {
-            let EndpointKind::Tcp(tx) = kind else {
-                unreachable!()
-            };
-            if let Some(sess) = self.sessions.get_mut(&tag) {
-                sess.ends[slot] = Some(Endpoint {
-                    kind: EndpointKind::Tcp(tx),
-                    id,
-                    last_seen: now,
-                });
-                sess.last_seen = now;
-            }
+        if let EndpointKind::Udp(addr) = &kind {
+            self.by_addr.insert(*addr, (tag, role, id));
+        }
+        if let Some(sess) = self.sessions.get_mut(&tag) {
+            // 丢弃旧 endpoint 的 lifetime sender，立即通知旧 TCP 任务退出。
+            sess.ends[slot] = Some(Endpoint {
+                kind,
+                id,
+                last_seen: now,
+                _closed: closed_tx,
+            });
+            sess.last_seen = now;
         }
 
         self.metrics.set_sessions(self.sessions.len());
@@ -345,24 +356,63 @@ impl State {
             tag,
             role,
             id,
+            closed,
             reply: proto::bind_ok_packet(&tag, expires_in_s, now_ms),
             rebind,
             expires_in_s,
         }
     }
 
-    /// UDP 数据面：按源地址查表并成对转发。
+    /// 删除索引时验证代际，避免旧会话清理误删同地址的新绑定。
+    fn remove_addr_index(&mut self, addr: SocketAddr, id: u64) {
+        if matches!(self.by_addr.get(&addr), Some((_, _, current)) if *current == id) {
+            self.by_addr.remove(&addr);
+        }
+    }
+
+    fn is_current_source(&self, tag: &Tag, role: u8, source: EndpointSource) -> bool {
+        let Some(ep) = self
+            .sessions
+            .get(tag)
+            .and_then(|s| s.ends.get(role as usize))
+            .and_then(Option::as_ref)
+        else {
+            return false;
+        };
+        if !ep.matches(source) {
+            return false;
+        }
+        match source {
+            EndpointSource::Udp { addr, id } => self.by_addr.get(&addr) == Some(&(*tag, role, id)),
+            EndpointSource::Tcp { .. } => true,
+        }
+    }
+
+    /// UDP 数据面：源地址索引和当前槽位的地址、代际必须全部匹配。
     pub fn forward_udp(&mut self, src: SocketAddr, payload: &[u8], now: Instant) -> Option<Egress> {
-        let Some((tag, role)) = self.by_addr.get(&src).copied() else {
+        let Some((tag, role, id)) = self.by_addr.get(&src).copied() else {
             self.metrics.inc_drop(DropReason::UnknownSource);
             return None;
         };
-        self.forward(tag, role, payload, now)
+        self.forward(
+            tag,
+            role,
+            EndpointSource::Udp { addr: src, id },
+            payload,
+            now,
+        )
     }
 
-    /// 按 (tag, role) 转发；TCP 通道复用同一路径。
-    pub fn forward(&mut self, tag: Tag, role: u8, payload: &[u8], now: Instant) -> Option<Egress> {
-        if !self.sessions.contains_key(&tag) {
+    /// 发送者必须仍持有当前 endpoint 身份，验证通过后才扣限速桶、刷新活性。
+    pub fn forward(
+        &mut self,
+        tag: Tag,
+        role: u8,
+        source: EndpointSource,
+        payload: &[u8],
+        now: Instant,
+    ) -> Option<Egress> {
+        if !self.is_current_source(&tag, role, source) {
             self.metrics.inc_drop(DropReason::UnknownSource);
             return None;
         }
@@ -375,7 +425,7 @@ impl State {
         }
 
         let sess = self.sessions.get_mut(&tag)?;
-        let slot = (role as usize).min(1);
+        let slot = role as usize;
         if let Some(b) = &mut sess.bucket {
             if !b.try_consume(payload.len(), now) {
                 self.metrics.inc_drop(DropReason::RateLimit);
@@ -399,32 +449,32 @@ impl State {
         })
     }
 
-    /// TCP 心跳帧：只刷新 last_seen。
-    pub fn touch(&mut self, tag: &Tag, role: u8, now: Instant) {
+    /// 心跳只允许当前来源刷新活性；旧代际、错误承载方式/地址一律拒绝。
+    pub fn touch(&mut self, tag: &Tag, role: u8, source: EndpointSource, now: Instant) -> bool {
+        if !self.is_current_source(tag, role, source) {
+            self.metrics.inc_drop(DropReason::UnknownSource);
+            return false;
+        }
         if let Some(sess) = self.sessions.get_mut(tag) {
             sess.last_seen = now;
-            let slot = (role as usize).min(1);
-            if let Some(ep) = &mut sess.ends[slot] {
+            if let Some(ep) = &mut sess.ends[role as usize] {
                 ep.last_seen = now;
             }
         }
+        true
     }
 
-    /// 显式解绑（客户端 Bye / TCP 断开）。返回需要发给对端的 Bye。
-    pub fn unbind(&mut self, tag: &Tag, role: u8, id: Option<u64>) -> Vec<Egress> {
-        let slot = (role as usize).min(1);
+    /// 显式解绑（客户端 Bye / TCP 断开），必须提供当前来源身份。
+    pub fn unbind(&mut self, tag: &Tag, role: u8, source: EndpointSource) -> Vec<Egress> {
+        if !self.is_current_source(tag, role, source) {
+            return Vec::new();
+        }
+        let slot = role as usize;
         let Some(sess) = self.sessions.get(tag) else {
             return Vec::new();
         };
-        if let Some(expected) = id {
-            match &sess.ends[slot] {
-                Some(ep) if ep.id == expected => {}
-                // 旧连接退出：端点已被新连接覆盖，不要误删。
-                _ => return Vec::new(),
-            }
-        }
         let peer_kind = sess.ends[1 - slot].as_ref().map(|e| e.kind.clone());
-        let removed_kind = sess.ends[slot].as_ref().map(|e| e.kind.clone());
+        let removed = sess.ends[slot].as_ref().map(|e| (e.kind.clone(), e.id));
         let peer_remains = peer_kind.is_some();
 
         let mut out = Vec::new();
@@ -436,18 +486,20 @@ impl State {
         } else if let Some(sess) = self.sessions.get_mut(tag) {
             sess.ends[slot] = None;
         }
-        if let Some(EndpointKind::Udp(addr)) = removed_kind {
-            self.by_addr.remove(&addr);
+        if let Some((EndpointKind::Udp(addr), id)) = removed {
+            self.remove_addr_index(addr, id);
         }
         self.metrics.set_sessions(self.sessions.len());
         debug!(tag = %proto::tag_prefix(tag), role, "端点解绑");
         out
     }
 
-    /// 按 UDP 源地址解绑（客户端 Bye），要求 tag 匹配以避免误伤。
+    /// UDP Bye 同样验证地址索引、tag、承载方式与代际。
     pub fn unbind_addr(&mut self, src: SocketAddr, tag: &Tag) -> Vec<Egress> {
         match self.by_addr.get(&src).copied() {
-            Some((t, role)) if t == *tag => self.unbind(tag, role, None),
+            Some((t, role, id)) if t == *tag => {
+                self.unbind(tag, role, EndpointSource::Udp { addr: src, id })
+            }
             _ => Vec::new(),
         }
     }
@@ -473,7 +525,7 @@ impl State {
             for ep in sess.ends.iter().flatten() {
                 out.push(bye_egress(&tag, &ep.kind));
                 if let EndpointKind::Udp(addr) = &ep.kind {
-                    self.by_addr.remove(addr);
+                    self.remove_addr_index(*addr, ep.id);
                 }
             }
             debug!(tag = %proto::tag_prefix(&tag), "会话回收");
@@ -493,7 +545,7 @@ impl State {
                 for ep in sess.ends.iter().flatten() {
                     out.push(bye_egress(&tag, &ep.kind));
                     if let EndpointKind::Udp(addr) = &ep.kind {
-                        self.by_addr.remove(addr);
+                        self.remove_addr_index(*addr, ep.id);
                     }
                 }
             }
@@ -571,6 +623,188 @@ mod tests {
             now,
             1_000_000,
         )
+    }
+
+    #[test]
+    fn full_nonce_cache_rejects_replay_and_fresh_bind_across_transports() {
+        for first_tcp in [false, true] {
+            let mut limits = test_limits();
+            limits.nonce_capacity = 2;
+            let mut st = state_with(limits);
+            let tag = [13; 16];
+            let now = Instant::now();
+            let pkt = bind_pkt(tag, ROLE_INIT, [1; 16], 1_000_000);
+            let (tx, _rx) = mpsc::channel(8);
+            let first = if first_tcp {
+                st.bind(KEY, &pkt, None, Some(tx), now, 1_000_000)
+            } else {
+                st.bind(KEY, &pkt, Some(addr(49001)), None, now, 1_000_000)
+            };
+            assert!(first.ok_());
+            assert!(ok_bind(&mut st, tag, ROLE_RESP, 49002, 2).ok_());
+            let current = st.sessions[&tag].ends[0].as_ref().unwrap().id;
+            for candidate in [pkt, bind_pkt(tag, ROLE_INIT, [3; 16], 1_000_000)] {
+                let (tx, _rx) = mpsc::channel(8);
+                let replay = if first_tcp {
+                    st.bind(KEY, &candidate, Some(addr(49003)), None, now, 1_000_000)
+                } else {
+                    st.bind(KEY, &candidate, None, Some(tx), now, 1_000_000)
+                };
+                assert!(matches!(replay, BindOutcome::Silent));
+                assert_eq!(st.sessions[&tag].ends[0].as_ref().unwrap().id, current);
+                assert_eq!(st.nonces.len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn hot_slots_reject_replacement_in_every_transport_direction() {
+        for old_tcp in [false, true] {
+            for new_tcp in [false, true] {
+                let mut limits = test_limits();
+                limits.rebind_guard = Duration::from_secs(2);
+                let mut st = state_with(limits);
+                let tag = [14; 16];
+                let now = Instant::now();
+                let (tx, _rx) = mpsc::channel(8);
+                let old = st.bind(
+                    KEY,
+                    &bind_pkt(tag, ROLE_INIT, [1; 16], 1_000_000),
+                    (!old_tcp).then_some(addr(49101)),
+                    old_tcp.then_some(tx),
+                    now,
+                    1_000_000,
+                );
+                let BindOutcome::Ok { id, closed, .. } = old else {
+                    panic!("first bind failed");
+                };
+                let (tx, _rx) = mpsc::channel(8);
+                let replacement = st.bind(
+                    KEY,
+                    &bind_pkt(tag, ROLE_INIT, [2; 16], 1_000_000),
+                    (!new_tcp).then_some(addr(49102)),
+                    new_tcp.then_some(tx),
+                    now + Duration::from_millis(1),
+                    1_000_000,
+                );
+                assert!(
+                    matches!(
+                        replacement,
+                        BindOutcome::Reject {
+                            code: proto::ERR_TAG_FULL,
+                            ..
+                        }
+                    ),
+                    "old_tcp={old_tcp}, new_tcp={new_tcp}"
+                );
+                assert_eq!(st.sessions[&tag].ends[0].as_ref().unwrap().id, id);
+                assert!(matches!(closed.has_changed(), Ok(false)));
+            }
+        }
+    }
+
+    #[test]
+    fn replaced_tcp_cannot_forward_touch_or_unbind_current_generation() {
+        let mut limits = test_limits();
+        limits.rebind_guard = Duration::from_millis(50);
+        let mut st = state_with(limits);
+        let tag = [15; 16];
+        let t0 = Instant::now();
+        let (tx, _rx) = mpsc::channel(8);
+        let BindOutcome::Ok {
+            id: old_id, closed, ..
+        } = st.bind(
+            KEY,
+            &bind_pkt(tag, ROLE_INIT, [1; 16], 1_000_000),
+            None,
+            Some(tx),
+            t0,
+            1_000_000,
+        )
+        else {
+            panic!("old TCP bind failed");
+        };
+        assert!(ok_bind(&mut st, tag, ROLE_RESP, 49202, 2).ok_());
+        let t1 = t0 + Duration::from_millis(100);
+        let (tx, _rx) = mpsc::channel(8);
+        let BindOutcome::Ok { id: new_id, .. } = st.bind(
+            KEY,
+            &bind_pkt(tag, ROLE_INIT, [3; 16], 1_000_000),
+            None,
+            Some(tx),
+            t1,
+            1_000_000,
+        ) else {
+            panic!("replacement TCP bind failed");
+        };
+        assert_ne!(old_id, new_id);
+        assert!(closed.has_changed().is_err(), "旧连接必须收到槽位失效通知");
+        let old = EndpointSource::Tcp { id: old_id };
+        let t2 = t1 + Duration::from_millis(10);
+        assert!(st.forward(tag, ROLE_INIT, old, b"old", t2).is_none());
+        assert!(!st.touch(&tag, ROLE_INIT, old, t2));
+        assert!(st.unbind(&tag, ROLE_INIT, old).is_empty());
+        assert_eq!(st.sessions[&tag].last_seen, t1);
+        assert_eq!(st.sessions[&tag].ends[0].as_ref().unwrap().last_seen, t1);
+        let current = EndpointSource::Tcp { id: new_id };
+        assert!(st.forward(tag, 255, current, b"bad role", t2).is_none());
+        assert!(!st.touch(&tag, 255, current, t2));
+        assert!(st.unbind(&tag, 255, current).is_empty());
+        let eg = st.forward(tag, ROLE_INIT, current, b"new", t2).unwrap();
+        assert!(matches!(eg.kind, EgressKind::Udp { to, .. } if to == addr(49202)));
+        assert!(st.touch(&tag, ROLE_INIT, current, t2));
+    }
+
+    #[test]
+    fn udp_sources_require_current_address_transport_and_generation() {
+        let mut st = state_with(test_limits());
+        let tag = [16; 16];
+        let BindOutcome::Ok { id: old_id, .. } = ok_bind(&mut st, tag, ROLE_INIT, 49301, 1) else {
+            panic!("old UDP bind failed");
+        };
+        assert!(ok_bind(&mut st, tag, ROLE_RESP, 49302, 2).ok_());
+        let BindOutcome::Ok { id, .. } = ok_bind(&mut st, tag, ROLE_INIT, 49303, 3) else {
+            panic!("replacement UDP bind failed");
+        };
+        let last_seen = st.sessions[&tag].last_seen;
+        let later = last_seen + Duration::from_millis(10);
+        assert!(st.forward_udp(addr(49301), b"old", later).is_none());
+        // 模拟过期索引残留：仅凭可查到 tag/role 不能授权旧地址或错误代际。
+        st.by_addr.insert(addr(49301), (tag, ROLE_INIT, id));
+        for source in [
+            EndpointSource::Udp {
+                addr: addr(49301),
+                id,
+            },
+            EndpointSource::Udp {
+                addr: addr(49303),
+                id: old_id,
+            },
+            EndpointSource::Tcp { id },
+        ] {
+            assert!(st.forward(tag, ROLE_INIT, source, b"bad", later).is_none());
+            assert!(!st.touch(&tag, ROLE_INIT, source, later));
+            assert!(st.unbind(&tag, ROLE_INIT, source).is_empty());
+        }
+        assert!(st.forward_udp(addr(49301), b"stale index", later).is_none());
+        assert!(st.unbind_addr(addr(49301), &tag).is_empty());
+        assert_eq!(st.sessions[&tag].last_seen, last_seen);
+        assert!(st.forward_udp(addr(49303), b"current", later).is_some());
+    }
+
+    #[test]
+    fn old_udp_session_cleanup_preserves_new_address_mapping() {
+        let mut st = state_with(test_limits());
+        let old_tag = [17; 16];
+        let new_tag = [18; 16];
+        assert!(ok_bind(&mut st, old_tag, ROLE_INIT, 49401, 1).ok_());
+        assert!(ok_bind(&mut st, new_tag, ROLE_INIT, 49401, 2).ok_());
+        assert!(ok_bind(&mut st, new_tag, ROLE_RESP, 49402, 3).ok_());
+        st.drop_session(&old_tag);
+        let eg = st
+            .forward_udp(addr(49401), b"new tag", Instant::now())
+            .unwrap();
+        assert!(matches!(eg.kind, EgressKind::Udp { to, .. } if to == addr(49402)));
     }
 
     #[test]
@@ -808,11 +1042,11 @@ mod tests {
             BindOutcome::Ok { .. }
         ));
         assert!(ok_bind(&mut st, tag, ROLE_RESP, 48002, 2).ok_());
-        let out = st.unbind(&tag, ROLE_INIT, None);
+        let out = st.unbind_addr(addr(48001), &tag);
         assert_eq!(out.len(), 1, "对端应收到 Bye");
         assert_eq!(st.session_count(), 1, "对端仍绑定");
         assert!(st.forward_udp(addr(48001), b"x", Instant::now()).is_none());
-        let out = st.unbind(&tag, ROLE_RESP, None);
+        let out = st.unbind_addr(addr(48002), &tag);
         assert!(out.is_empty());
         assert_eq!(st.session_count(), 0);
     }

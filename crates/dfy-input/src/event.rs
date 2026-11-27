@@ -1,11 +1,11 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! 输入事件、注入接口与「按下状态」跟踪。
 //!
 //! 控制端采集原始输入后编码为 [`InputEvent`]，经 `dfy-proto` 的 input 通道送到被控端，
 //! 由被控端的 [`InputSink`] 实现注入系统。键位一律使用 HID Usage ID
-//! （Keyboard/Keypad page `0x07`），平台差异由 [`crate::keymap`] 负责映射。
+//! （Keyboard/Keypad page `0x07`），由具体平台后端负责映射。
 
 /// 按键状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +34,7 @@ pub enum MouseButton {
 /// 单个输入事件。
 ///
 /// `usage` 为 HID Usage ID（Keyboard/Keypad page `0x07`），不是 Windows VK，
-/// 也不是扫描码；VK/扫描码由 [`crate::HidKeymap`] 转换。
+/// 也不是扫描码；Windows VK/扫描码由 [`crate::HidKeymap`] 转换，Linux 使用 XKB 物理键名。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
     /// 键盘按键。`modifiers` 为 HID 修饰键位图（bit0=LCtrl … bit7=RGUI），
@@ -63,8 +63,8 @@ pub enum InputEvent {
     },
     /// 绝对鼠标移动：目标端像素坐标。
     ///
-    /// `x`/`y` 是采集画面内的像素坐标，`width`/`height` 是画面尺寸；画面覆盖
-    /// 整个虚拟桌面时（多屏/虚拟显示器场景），实现端按该尺寸归一化到 `0..=65535`。
+    /// `x`/`y` 是采集画面内的像素坐标，`width`/`height` 是画面尺寸；画面需覆盖
+    /// 整个目标桌面。Windows 归一化到 `0..=65535`，Linux 缩放到当前 X11 根窗口尺寸。
     MouseMoveAbs {
         /// 目标像素横坐标。
         x: u32,
@@ -84,6 +84,8 @@ pub enum InputEvent {
         dy: i16,
     },
     /// 文本注入（IME/Unicode），绕开键盘布局直接输入字符。
+    ///
+    /// Windows 支持；Linux X11 对非空文本返回 [`InputError::UnsupportedEvent`]。
     Text {
         /// 要注入的文本。
         text: String,
@@ -100,7 +102,7 @@ pub trait InputSink: Send {
 }
 
 /// 把文本按 UTF-16 码元拆分（Windows `KEYEVENTF_UNICODE` 需要逐码元注入，
-/// 补充平面字符会被拆成代理对）。非 Windows 后端做文本注入时也复用该逻辑。
+/// 补充平面字符会被拆成代理对）。
 #[must_use]
 pub fn utf16_units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
@@ -108,8 +110,8 @@ pub fn utf16_units(text: &str) -> Vec<u16> {
 
 /// 跟踪当前仍按下的键与鼠标键，供 [`InputSink::release_all`] 补发 Up 事件。
 ///
-/// 真实后端与测试用的 [`crate::testing::RecordingSink`] 共用该逻辑，保证
-/// 「防卡键」行为可被单元测试覆盖。
+/// Windows 后端与测试用的 [`crate::testing::RecordingSink`] 共用该逻辑。
+/// Linux 后端另行保存已发送的实际键码，以便映射改变或发送失败时仍可重试释放。
 #[derive(Debug, Default)]
 pub struct PressedState {
     keys: Vec<u16>,
@@ -198,8 +200,17 @@ impl PressedState {
 #[derive(Debug, thiserror::Error)]
 pub enum InputError {
     /// 当前平台没有可用的注入后端。
-    #[error("当前平台不支持输入注入（仅 Windows 后端已实现）")]
+    #[error("当前平台不支持输入注入（已实现 Windows 与 Linux X11 后端）")]
     Unsupported,
+    /// 当前桌面会话不支持安全、已授权的输入注入。
+    #[error("当前桌面会话不支持输入注入：{0}")]
+    UnsupportedSession(String),
+    /// 显示连接、授权或所需扩展不可用。
+    #[error("输入后端不可用：{0}")]
+    Unavailable(String),
+    /// 后端无法忠实表示该事件，且没有注入任何替代输入。
+    #[error("输入后端不支持此事件：{0}")]
+    UnsupportedEvent(String),
     /// 系统注入 API 失败。
     #[error("输入注入失败：{0}")]
     Send(String),

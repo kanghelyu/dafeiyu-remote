@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! 把 `dfy-codec`（Media Foundation H.264）适配成 `dfy-session` 的编码/解码抽象。
@@ -42,6 +42,18 @@ impl SessionEncoder for MftEncoderAdapter {
     fn request_keyframe(&mut self) {
         self.inner.request_keyframe();
     }
+
+    fn flush(&mut self) -> Result<Vec<EncodedFrame>> {
+        let frames = self.inner.flush()?;
+        Ok(frames
+            .into_iter()
+            .map(|f| EncodedFrame {
+                data: f.data,
+                keyframe: f.is_keyframe,
+                pts_us: f.pts_us,
+            })
+            .collect())
+    }
 }
 
 /// MFT H.264 解码器适配器（输出 BGRA8）。
@@ -55,6 +67,23 @@ impl MftDecoderAdapter {
         Ok(Self {
             inner: dfy_codec::create_decoder(codec, prefer_hardware)?,
         })
+    }
+}
+
+impl MftDecoderAdapter {
+    pub fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(self
+            .inner
+            .flush()?
+            .into_iter()
+            .map(|f| DecodedFrame {
+                width: f.width,
+                height: f.height,
+                stride: f.width * 4,
+                data: nv12_to_bgra(&f.data, f.stride, f.width, f.height),
+                pts_us: dfy_transport::now_us(),
+            })
+            .collect())
     }
 }
 
@@ -116,6 +145,46 @@ pub fn nv12_to_bgra(nv12: &[u8], y_stride: u32, width: u32, height: u32) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FlushProbeEncoder;
+
+    impl dfy_codec::VideoEncoder for FlushProbeEncoder {
+        fn encode(
+            &mut self,
+            _raw: &[u8],
+            _stride: u32,
+            _pts_us: u64,
+        ) -> Result<Vec<dfy_codec::EncodedFrame>> {
+            Ok(Vec::new())
+        }
+
+        fn set_bitrate(&mut self, _kbps: u32) -> Result<()> {
+            Ok(())
+        }
+
+        fn request_keyframe(&mut self) {}
+
+        fn flush(&mut self) -> Result<Vec<dfy_codec::EncodedFrame>> {
+            Ok(vec![dfy_codec::EncodedFrame {
+                data: b"drained".to_vec(),
+                is_keyframe: true,
+                pts_us: 1234,
+                extra: dfy_codec::CodecExtra::default(),
+            }])
+        }
+    }
+
+    #[test]
+    fn encoder_adapter_forwards_flushed_frames() {
+        let mut adapter = MftEncoderAdapter {
+            inner: Box::new(FlushProbeEncoder),
+        };
+        let frames = SessionEncoder::flush(&mut adapter).unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].data, b"drained");
+        assert!(frames[0].keyframe);
+        assert_eq!(frames[0].pts_us, 1234);
+    }
 
     #[test]
     fn nv12_black_is_dark() {

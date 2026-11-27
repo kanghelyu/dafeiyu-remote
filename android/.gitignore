@@ -1,0 +1,11 @@
+# Android/Gradle local outputs
+.gradle/
+build/
+app/build/
+local.properties
+app/src/main/jniLibs/
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/

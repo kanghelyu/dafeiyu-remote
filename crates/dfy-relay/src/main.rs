@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Dafeiyu Remote contributors
 // Copyright (c) 2026 Dafeiyu Remote contributors
 //! 命令行入口：`serve`（默认）/ `config init|check` / `status` / `doctor` / `version` / `selftest`。
@@ -132,7 +132,7 @@ fn print_version() {
     println!("dfy-relay {}", env!("CARGO_PKG_VERSION"));
     println!("协议：DFYP/1 —— UDP 数据面 + TCP 降级通道（可桥接），tag 16B，HMAC-SHA256 鉴权");
     println!("默认端口：21117/udp 数据，21118/tcp 降级，127.0.0.1:21119 本机管理");
-    println!("许可：AGPL-3.0-or-later");
+    println!("许可：LicenseRef-PolyForm-Noncommercial-1.0.0");
 }
 
 fn init_tracing(cfg: &Config) {

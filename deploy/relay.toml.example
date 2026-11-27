@@ -1,0 +1,18 @@
+# Dafeiyu relay configuration example -- contains no credentials.
+# Generate a real configuration with:
+#   dfy-relay config init --out /etc/dfy-relay/relay.toml \
+#     --bind 0.0.0.0:21117 --tcp-bind 0.0.0.0:21118 --admin 127.0.0.1:21119
+# Then validate it with: dfy-relay config check --config /etc/dfy-relay/relay.toml
+# Never commit the generated relay.toml or a key_file.
+bind = "0.0.0.0:21117"
+tcp_bind = "0.0.0.0:21118"
+admin_addr = "127.0.0.1:21119"
+max_sessions = 1024
+per_tag_mbps = 200
+tag_ttl_hours = 48
+idle_timeout_s = 60
+bind_window_s = 300
+rebind_guard_ms = 2000
+log = "info"
+log_json = false
+no_log_ips = true

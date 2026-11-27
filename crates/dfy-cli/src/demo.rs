@@ -23,6 +23,9 @@ use quinn::{Connection, Endpoint};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
+use crate::credentials::SessionPassword;
+use zeroize::Zeroizing;
+
 /// demo 视频参数（与 `VideoConfig` 一致）。
 pub const VIDEO_WIDTH: u32 = 1920;
 pub const VIDEO_HEIGHT: u32 = 1080;
@@ -70,7 +73,7 @@ pub struct ClientStats {
 }
 
 /// Agent 主循环：接受连接，每个连接一个 task。
-pub async fn serve(endpoint: Endpoint, password: String) -> Result<()> {
+pub async fn serve(endpoint: Endpoint, password: SessionPassword) -> Result<()> {
     while let Some(incoming) = endpoint.accept().await {
         let password = password.clone();
         let remote = incoming.remote_address();
@@ -106,8 +109,11 @@ pub async fn serve(endpoint: Endpoint, password: String) -> Result<()> {
 }
 
 /// 单个 Agent 会话：握手 → 下发配置 → 推流循环。
-async fn handle_agent_connection(conn: Connection, password: String) -> Result<AgentStats> {
-    let auth = ServerAuth::new(&password, "dfy-demo-agent");
+async fn handle_agent_connection(
+    conn: Connection,
+    password: SessionPassword,
+) -> Result<AgentStats> {
+    let auth = ServerAuth::new(password.expose(), "dfy-demo-agent");
     let (welcome, channel) = server_handshake(&conn, &auth)
         .await
         .context("服务端握手失败")?;
@@ -437,6 +443,8 @@ async fn run_client_loop(session: ClientSession, duration: Duration) -> Result<C
     Ok(stats)
 }
 
+const SELFTEST_PASSWORD: &str = "selftest-only-passphrase-2026";
+
 /// 进程内端到端自测：随机端口起 Agent + Client，跑 1s，断言握手成功且视频 DATAGRAM ≥ 10。
 pub async fn selftest() -> Result<()> {
     println!("=== dfy selftest：进程内 Agent + Client（127.0.0.1 随机端口）===");
@@ -447,7 +455,8 @@ pub async fn selftest() -> Result<()> {
         identity.fingerprint_hex()
     );
 
-    let password = "test".to_owned();
+    let password = SessionPassword::new(Zeroizing::new(SELFTEST_PASSWORD.to_owned()))
+        .expect("selftest passphrase");
     let agent_endpoint = endpoint.clone();
     let agent_task = tokio::spawn(async move {
         let incoming = agent_endpoint
@@ -463,7 +472,7 @@ pub async fn selftest() -> Result<()> {
 
     let client_stats = run_client(
         addr,
-        "test",
+        SELFTEST_PASSWORD,
         Some(identity.fingerprint),
         Duration::from_secs(1),
         "dfy-selftest-client",

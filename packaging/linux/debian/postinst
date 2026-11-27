@@ -1,0 +1,21 @@
+#!/bin/sh
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+set -eu
+case "$1" in
+  configure)
+    if ! getent group dfy-relay >/dev/null 2>&1; then
+      if command -v groupadd >/dev/null 2>&1; then groupadd --system dfy-relay
+      else addgroup --system dfy-relay; fi
+    fi
+    if ! getent passwd dfy-relay >/dev/null 2>&1; then
+      if command -v useradd >/dev/null 2>&1; then
+        useradd --system --gid dfy-relay --home-dir /nonexistent --shell /usr/sbin/nologin dfy-relay
+      else
+        adduser --system --disabled-password --ingroup dfy-relay --home /nonexistent --no-create-home dfy-relay
+      fi
+    fi
+    install -d -o root -g dfy-relay -m 0750 /etc/dfy-relay
+    # Deliberately no systemctl enable/start: the operator must create a key first.
+    ;;
+esac
+exit 0

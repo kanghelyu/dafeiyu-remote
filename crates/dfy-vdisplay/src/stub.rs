@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (C) 2025 Dafeiyu Remote Project
 
 //! Reference implementation that reports "this platform has no virtual display
@@ -15,20 +15,16 @@
 //!
 //! # Where the real implementations will live
 //!
-//! * Linux — evdi, an out-of-tree GPL-2.0 kernel module that must be built and
-//!   distributed separately from this AGPL-3.0 crate, plus `libevdi`
-//!   (<https://github.com/DisplayLink/evdi>); the alternative is DRM lease
-//!   (<https://www.kernel.org/doc/html/latest/gpu/drm-uapi.html#drm-leasing>), which
-//!   needs no out-of-tree module but cannot expose an extra *desktop* on every
-//!   compositor. Plan: `src/stub.rs` keeps the trait point; a future
-//!   `src/linux_evdi.rs` will dlopen `libevdi` behind a load-time probe exactly like
-//!   the Windows backend probes the driver device interface.
+//! * Linux — the production backend is `crate::linux_xvfb`: one isolated,
+//!   no-root Xvfb server per desktop. It is available on Linux targets only; evdi/DRM
+//!   integration with a Wayland compositor remains future work.
 //! * macOS — `CGVirtualDisplay` in CoreGraphics, a private (undocumented, App Store
 //!   rejected) API; a future `src/mac_cgvirtualdisplay.rs` will bind it through
 //!   `objc2`/`CoreGraphics` and keep the same trait shape.
 //!
-//! Neither is implemented in phase 1; see `design/020-virtual-display.md` for the
-//! milestone plan and licence constraints.
+//! macOS is not implemented yet; see `design/020-virtual-display.md` for the milestone
+//! plan and licence constraints. This stub remains useful on every platform for callers
+//! that explicitly need a feature-gated unsupported backend.
 
 use anyhow::{anyhow, Result};
 

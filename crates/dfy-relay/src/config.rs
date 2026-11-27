@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Dafeiyu Remote contributors
 // Copyright (c) 2026 Dafeiyu Remote contributors
 //! 配置模型：TOML 文件 → 校验后的 [`Config`]，以及 `config init` 模板生成。
@@ -299,7 +299,7 @@ impl Config {
             _ => None,
         };
 
-        Ok(Self {
+        let cfg = Self {
             bind,
             tcp_bind,
             admin_addr,
@@ -317,13 +317,25 @@ impl Config {
                 nonce_capacity: NONCE_CAPACITY,
                 rebind_guard: Duration::from_millis(fc.rebind_guard_ms),
             },
-        })
+        };
+        cfg.validate_admin_addr()?;
+        Ok(cfg)
+    }
+
+    /// 管理接口尚未实现远程鉴权，所有配置入口及实际启动都必须强制回环。
+    pub fn validate_admin_addr(&self) -> Result<()> {
+        if let Some(addr) = self.admin_addr {
+            if !addr.ip().is_loopback() {
+                bail!("admin_addr 必须为回环地址（127.0.0.0/8 或 ::1），远程管理尚未启用");
+            }
+        }
+        Ok(())
     }
 
     /// 配置模板（`config init` 使用）。
     pub fn template(key: &RelayKey, bind: &str, tcp_bind: &str, admin: &str) -> String {
         format!(
-            r#"# dfy-relay 中继配置（AGPL-3.0-or-later）
+            r#"# dfy-relay 中继配置（LicenseRef-PolyForm-Noncommercial-1.0.0）
 # 该文件包含凭据，权限应为 0600。
 
 # 数据面 UDP 监听地址（客户端 relay.addr 填公网 IP:21117）
@@ -475,6 +487,19 @@ per_tag_mbps = 10
         assert!(Config::from_toml(&bad_sessions, Path::new(".")).is_err());
         let bad_log = minimal_toml(KEY_B64).replace("per_tag_mbps = 10", "log = \"loud\"");
         assert!(Config::from_toml(&bad_log, Path::new(".")).is_err());
+    }
+
+    #[test]
+    fn admin_addresses_require_loopback_or_disabled() {
+        for addr in ["0.0.0.0:0", "192.0.2.1:0", "[::]:0", "[2001:db8::1]:0"] {
+            let text = minimal_toml(KEY_B64).replace("127.0.0.1:21119", addr);
+            let err = Config::from_toml(&text, Path::new(".")).unwrap_err();
+            assert!(err.to_string().contains("admin_addr"), "{addr}: {err:#}");
+        }
+        for addr in ["127.0.0.1:0", "127.0.0.2:0", "[::1]:0", ""] {
+            let text = minimal_toml(KEY_B64).replace("127.0.0.1:21119", addr);
+            assert!(Config::from_toml(&text, Path::new(".")).is_ok(), "{addr}");
+        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // 大肥鱼远程 —— CF_HDROP（文件列表剪贴板）的编码/解码。
 //
 // DROPFILES 结构（见 MSDN「DROPFILES」）：

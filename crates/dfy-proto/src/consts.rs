@@ -5,7 +5,20 @@
 /// 协议主版本：不兼容变更才升级（`spec/DFYP-v1.md` §11）。
 pub const PROTO_MAJOR: u32 = 1;
 /// 协议次版本：追加字段 / 消息时递增。
-pub const PROTO_MINOR: u32 = 0;
+pub const PROTO_MINOR: u32 = 4;
+
+/// 会话迁移 PREPARE 阶段。
+pub const SESSION_RESUME_PREPARE: u32 = 1;
+/// 会话迁移 COMMIT 阶段。
+pub const SESSION_RESUME_COMMIT: u32 = 2;
+/// 逻辑会话 ID 长度。
+pub const SESSION_ID_LEN: usize = 16;
+/// 会话恢复令牌长度。
+pub const RESUME_TOKEN_LEN: usize = 32;
+/// 迁移握手随机数长度。
+pub const RESUME_NONCE_LEN: usize = 32;
+/// Ed25519 签名长度。
+pub const RESUME_SIGNATURE_LEN: usize = 64;
 
 /// QUIC ALPN 标识。
 pub const ALPN: &[u8] = b"dfyp/1";
@@ -17,7 +30,7 @@ pub const MAX_FRAME_LEN: usize = 8 * 1024 * 1024;
 pub const CHAN_INPUT_MOVE: u8 = 0;
 /// 视频 DATAGRAM 通道。
 pub const CHAN_VIDEO: u8 = 1;
-/// 音频 DATAGRAM 通道（v1 未实现）。
+/// 音频 DATAGRAM 通道。
 pub const CHAN_AUDIO: u8 = 2;
 /// 剪贴板数据通道（DATAGRAM 预留；v1 走 control 流，见 DFYP §8）。
 pub const CHAN_CLIPBOARD: u8 = 4;
@@ -35,6 +48,15 @@ pub const VIDEO_FLAG_XOR_GROUP: u8 = 0b0000_1000;
 
 /// 单个视频分片的建议负载上限（QUIC 初始 MTU 1200 − 头开销，见 `research/050` §4.1）。
 pub const VIDEO_MAX_PAYLOAD: usize = 1100;
+
+/// 音频 DATAGRAM 头长度（字节）：`u8 chan | u32 seq | u32 ts_us`。
+pub const AUDIO_HEADER_LEN: usize = 9;
+/// 单个音频 DATAGRAM 的 PCM 负载上限；s16le 交错，必须为偶数长度。
+pub const AUDIO_MAX_PAYLOAD: usize = 1100;
+/// v1 固定音频参数：16 kHz / 单声道 / s16le / 20 ms 帧（640 B）。
+pub const AUDIO_SAMPLE_RATE: u32 = 16_000;
+pub const AUDIO_CHANNELS: u16 = 1;
+pub const AUDIO_FRAME_MS: u32 = 20;
 
 /// 输入事件类别：按键（可靠流）。
 pub const INPUT_KIND_KEY: u32 = 1;
@@ -75,8 +97,8 @@ pub const PERM_SYSTEM_ACTION: u32 = 1 << 7;
 /// 权限位：隐私屏。
 pub const PERM_PRIVACY_SCREEN: u32 = 1 << 8;
 
-/// 默认权限：`VIEW|CONTROL|CLIPBOARD`。
-pub const PERM_DEFAULT: u32 = PERM_VIEW | PERM_CONTROL | PERM_CLIPBOARD;
+/// 默认权限：仅查看；控制、剪贴板及文件必须由主机显式授权。
+pub const PERM_DEFAULT: u32 = PERM_VIEW;
 
 /// 错误码 `E_AUTH`：鉴权失败。
 pub const ERR_AUTH: u32 = 1;
@@ -109,12 +131,16 @@ pub const BYE_TIMEOUT: u32 = 2;
 pub const BYE_ERROR: u32 = 3;
 
 /// 本实现宣告的能力名（Welcome.capability）。
+pub const CAPABILITY_QUALITY_CONTROL: &str = "quality-control.v1";
 pub const CAPABILITIES: &[&str] = &[
     "ctrl.frame.v1",
     "video.datagram.v1",
     "input-move.datagram.v1",
     "monitor-list.v1",
     "heartbeat.v1",
+    "session.resume.v1",
+    "stream-feedback.v1",
+    CAPABILITY_QUALITY_CONTROL,
 ];
 
 /// 错误码 → 规范名（日志/诊断用）。

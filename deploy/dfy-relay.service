@@ -1,0 +1,35 @@
+[Unit]
+Description=Dafeiyu Remote relay (DFYP/1)
+Documentation=https://github.com/kanghelyu/dafeiyu
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dfy-relay
+Group=dfy-relay
+ExecStart=/usr/bin/dfy-relay serve --config /etc/dfy-relay/relay.toml
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=/etc/dfy-relay
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

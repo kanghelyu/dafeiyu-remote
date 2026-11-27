@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! 纯 Rust JPEG / MJPEG 软件编解码后端（跨平台兜底）。
@@ -29,8 +29,7 @@ const ASSUMED_FRAME_US: u64 = 33_333;
 /// MJPEG 编码器。
 #[derive(Debug)]
 pub struct JpegEncoder {
-    width: u32,
-    height: u32,
+    cfg: EncoderConfig,
     quality: u8,
     frames: u64,
 }
@@ -47,8 +46,7 @@ impl JpegEncoder {
             );
         }
         Ok(Self {
-            width: cfg.width,
-            height: cfg.height,
+            cfg: cfg.clone(),
             quality: DEFAULT_QUALITY,
             frames: 0,
         })
@@ -63,15 +61,15 @@ impl JpegEncoder {
 
 impl VideoEncoder for JpegEncoder {
     fn encode(&mut self, raw: &[u8], stride: u32, pts_us: u64) -> Result<Vec<EncodedFrame>> {
-        let rgb = to_rgb24(raw, stride, self.width, self.height)?;
+        let rgb = to_rgb24(raw, stride, self.cfg.width, self.cfg.height)?;
         let mut data = Vec::new();
         {
             let encoder = jpeg_encoder::Encoder::new(&mut data, self.quality);
             encoder
                 .encode(
                     &rgb,
-                    self.width as u16,
-                    self.height as u16,
+                    self.cfg.width as u16,
+                    self.cfg.height as u16,
                     jpeg_encoder::ColorType::Rgb,
                 )
                 .map_err(|err| anyhow::anyhow!("dfy-codec: JPEG 编码失败：{err}"))?;
@@ -90,9 +88,15 @@ impl VideoEncoder for JpegEncoder {
         // 每帧都是关键帧，无需处理。
     }
 
-    fn set_bitrate(&mut self, _kbps: u32) -> Result<()> {
-        // JPEG 质量固定，码率由分辨率/帧率/场景复杂度决定；接受调用但不生效。
-        Ok(())
+    fn set_bitrate(&mut self, kbps: u32) -> Result<()> {
+        crate::validate_bitrate_kbps(kbps)?;
+        anyhow::bail!(
+            "dfy-codec: MJPEG 没有目标码率控制器，无法动态设置 {kbps} kbps；请调整分辨率或帧率"
+        )
+    }
+
+    fn config(&self) -> Option<&EncoderConfig> {
+        Some(&self.cfg)
     }
 }
 

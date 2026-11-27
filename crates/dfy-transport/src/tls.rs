@@ -3,8 +3,8 @@
 //! 设计要点（对应 `spec/DFYP-v1.md` 与会话安全模型）：
 //! - Agent 每次启动生成一次性自签证书（`rcgen`），证书指纹 = **SPKI DER 的 SHA-256**，
 //!   比整张证书指纹更稳定（换有效期/序列号不影响）。
-//! - Client 默认「接受任意证书 + 打印指纹」（首次连接 TOFU 语义）；
-//!   传入 `--expect-fingerprint` 时严格比对 SPKI 指纹。
+//! - Client 未指定 pin 时仅观察指纹；传入 `--expect-fingerprint` 时严格比对 SPKI 指纹。
+//!   观察结果未持久保存，不构成已实现的 TOFU；应用握手另作 TLS 通道绑定的口令互证。
 //! - ALPN 固定 `dfyp/1`，与 `dfy_proto::ALPN` 保持一致。
 
 use std::{
@@ -64,20 +64,32 @@ impl TlsIdentity {
     /// 生成一次性自签身份（含 `hostname`、`localhost`、`dfy.local` 三个 SAN）。
     pub fn generate(hostname: &str) -> Result<Self> {
         install_crypto_provider();
+        Self::from_key_pair(rcgen::KeyPair::generate()?, hostname)
+    }
+
+    /// 从持久化 PKCS#8 私钥重建自签证书，SPKI 指纹不随重启变化。
+    pub fn from_pkcs8(key_der: &[u8], hostname: &str) -> Result<Self> {
+        install_crypto_provider();
+        let key = PrivateKeyDer::try_from(key_der)
+            .map_err(|_| anyhow::anyhow!("设备身份不是有效 PKCS#8 私钥"))?;
+        let key_pair = rcgen::KeyPair::try_from(&key).context("解析设备身份私钥失败")?;
+        Self::from_key_pair(key_pair, hostname)
+    }
+
+    fn from_key_pair(key_pair: rcgen::KeyPair, hostname: &str) -> Result<Self> {
         let mut names = vec![hostname.to_string()];
         for extra in ["localhost", "dfy.local"] {
             if !names.iter().any(|n| n == extra) {
                 names.push(extra.to_string());
             }
         }
-        let certified =
-            rcgen::generate_simple_self_signed(names).context("生成自签证书失败（rcgen）")?;
-        let spki_der = certified.key_pair.public_key_der();
+        let params = rcgen::CertificateParams::new(names).context("创建设备证书参数失败")?;
+        let certificate = params.self_signed(&key_pair).context("签建设备证书失败")?;
+        let spki_der = key_pair.public_key_der();
         let fingerprint = sha256(&spki_der);
-        let key_der =
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()));
+        let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
         Ok(Self {
-            cert_der: certified.cert.der().clone(),
+            cert_der: certificate.der().clone(),
             key_der,
             spki_der,
             fingerprint,
@@ -147,7 +159,7 @@ pub fn server_config(identity: &TlsIdentity) -> Result<quinn::ServerConfig> {
     Ok(server_cfg)
 }
 
-/// 客户端 TLS 侧信息：QUIC 配置 + 实际观察到的服务端指纹（TOFU 记录）。
+/// 客户端 TLS 侧信息：QUIC 配置 + 实际观察到的服务端指纹（不持久保存）。
 #[derive(Clone)]
 pub struct ClientTls {
     /// quinn 客户端配置。
@@ -205,7 +217,7 @@ fn provider_algorithms() -> WebPkiSupportedAlgorithms {
     rustls::crypto::ring::default_provider().signature_verification_algorithms
 }
 
-/// 基于 SPKI 指纹的证书校验器（TOFU）。
+/// 基于可选 SPKI pin 的证书校验器；无 pin 时仅观察，不保存信任关系。
 #[derive(Debug)]
 struct FingerprintVerifier {
     expect: Option<[u8; 32]>,
@@ -271,6 +283,20 @@ mod tests {
         assert_eq!(from_cert, id.fingerprint);
         // SPKI DER 结构：至少是 32 字节公钥 + 头部
         assert!(id.spki_der.len() > 32);
+    }
+
+    #[test]
+    fn persisted_key_rebuilds_the_same_identity() {
+        let first = TlsIdentity::generate("test-agent").expect("生成身份");
+        let restored = TlsIdentity::from_pkcs8(first.key_der.secret_der(), "dfy-agent")
+            .expect("从私钥恢复身份");
+        assert_eq!(first.fingerprint, restored.fingerprint);
+        assert_eq!(first.spki_der, restored.spki_der);
+        assert_eq!(
+            fingerprint_of_cert(&restored.cert_der).unwrap(),
+            first.fingerprint
+        );
+        let _ = server_config(&restored).expect("恢复后的服务端配置");
     }
 
     #[test]

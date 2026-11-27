@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! 剪贴板**同步状态机**（拉模式，`spec/DFYP-v1.md` §8）。
@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 
 use crate::{ClipKind, ClipboardBackend, DataBlock, FormatList, LoopGuard};
 
@@ -141,6 +141,7 @@ fn kind_priority(kind: &ClipKind) -> u8 {
 
 /// 正在组装的远端对象。
 struct Assembling {
+    hash: [u8; 32],
     buffer: Vec<u8>,
     expect_offset: u64,
     name: String,
@@ -180,6 +181,13 @@ impl ClipboardSync {
             assembling: None,
             last_seq: None,
         }
+    }
+
+    /// 为真实会话创建状态机，并把会话开始前的剪贴板内容作为基线，不主动上传。
+    pub fn for_session(backend: Box<dyn ClipboardBackend>) -> Result<Self> {
+        let mut sync = Self::new(backend);
+        sync.last_seq = Some(sync.backend.sequence()?);
+        Ok(sync)
     }
 
     /// 后端引用（测试/诊断用）。
@@ -281,6 +289,8 @@ impl ClipboardSync {
             return Ok(Vec::new());
         }
         self.remote_seq = seq;
+        self.remote_items.clear();
+        self.assembling = None;
         for it in items.iter().filter(|it| it.is_supported()) {
             self.remote_items.insert(it.hash, it.name.clone());
         }
@@ -367,21 +377,47 @@ impl ClipboardSync {
             .remote_items
             .get(&hash)
             .cloned()
-            .unwrap_or_else(|| "CF_UNICODETEXT".to_string());
-        match &mut self.assembling {
-            Some(asm) if asm.expect_offset == offset && asm.name == name => {
-                asm.expect_offset = offset + data.len() as u64;
-                asm.buffer.extend_from_slice(data);
-            }
-            _ => {
-                let mut buffer = Vec::with_capacity(data.len());
-                buffer.extend_from_slice(data);
-                self.assembling = Some(Assembling {
-                    buffer,
-                    expect_offset: offset + data.len() as u64,
-                    name,
-                });
-            }
+            .with_context(|| "远端剪贴板数据未在格式清单中声明")?;
+        ensure!(
+            kind_from_name(&name).is_some(),
+            "远端剪贴板格式不受支持：{name}"
+        );
+        ensure!(
+            data.len() as u64 <= MAX_SYNC_BYTES,
+            "远端剪贴板分块超过 v1 上限"
+        );
+
+        let same_object = self
+            .assembling
+            .as_ref()
+            .is_some_and(|asm| asm.hash == hash && asm.name == name);
+        if same_object {
+            let asm = self.assembling.as_mut().expect("same_object");
+            ensure!(
+                offset == asm.expect_offset,
+                "远端剪贴板分块偏移不连续：期望 {}，实际 {offset}",
+                asm.expect_offset
+            );
+            let new_len = (asm.buffer.len() as u64)
+                .checked_add(data.len() as u64)
+                .context("远端剪贴板对象长度溢出")?;
+            ensure!(new_len <= MAX_SYNC_BYTES, "远端剪贴板对象超过 v1 上限");
+            asm.expect_offset = offset
+                .checked_add(data.len() as u64)
+                .context("远端剪贴板分块偏移溢出")?;
+            asm.buffer.extend_from_slice(data);
+        } else {
+            self.assembling = None;
+            ensure!(offset == 0, "远端剪贴板新对象必须从偏移 0 开始");
+            let expect_offset = offset
+                .checked_add(data.len() as u64)
+                .context("远端剪贴板分块偏移溢出")?;
+            self.assembling = Some(Assembling {
+                hash,
+                buffer: data.to_vec(),
+                expect_offset,
+                name,
+            });
         }
         if !last {
             return Ok(Vec::new());
@@ -389,11 +425,9 @@ impl ClipboardSync {
         let Some(asm) = self.assembling.take() else {
             return Ok(Vec::new());
         };
-        if asm.buffer.len() as u64 > MAX_SYNC_BYTES {
-            bail!("远端剪贴板对象超过 v1 上限");
-        }
+        ensure!(hash_bytes(&asm.buffer) == hash, "远端剪贴板对象哈希不匹配");
         self.write_remote(&asm.name, &asm.buffer)?;
-        self.guard.note_write();
+        self.guard.set_last_written_seq(self.backend.sequence()?);
         self.applied.insert(hash, ());
         Ok(vec![SyncMessage::Applied { hash }])
     }
@@ -593,6 +627,154 @@ mod tests {
         }
         assert_eq!(applier.len(), 1, "最后一块应回 Applied");
         assert!(matches!(applier[0], SyncMessage::Applied { .. }));
+    }
+
+    #[test]
+    fn remote_write_records_the_actual_backend_sequence() {
+        let bytes = b"remote";
+        let hash = hash_bytes(bytes);
+        let mut backend = MemBackend::empty();
+        backend.set_text("previous local contents");
+        let mut sync = ClipboardSync::new(Box::new(backend));
+        sync.on_remote(&SyncMessage::FormatList {
+            seq: 1,
+            items: vec![ClipFormatItem {
+                id: 13,
+                hash,
+                size_hint: bytes.len() as u64,
+                name: "CF_UNICODETEXT".into(),
+            }],
+        })
+        .unwrap();
+        sync.on_remote(&SyncMessage::DataChunk {
+            hash,
+            offset: 0,
+            data: bytes.to_vec(),
+            last: true,
+        })
+        .unwrap();
+        assert_eq!(sync.backend.sequence().unwrap(), 2);
+        assert!(sync.guard.should_ignore(2));
+        assert!(sync.poll_local().unwrap().is_none());
+    }
+
+    #[test]
+    fn session_baseline_does_not_upload_existing_clipboard_contents() {
+        let mut backend = MemBackend::empty();
+        backend.set_text("existing sensitive contents");
+        let mut sync = ClipboardSync::for_session(Box::new(backend)).unwrap();
+        assert!(sync.poll_local().unwrap().is_none());
+    }
+
+    #[test]
+    fn unannounced_clipboard_hash_is_rejected_without_writing() {
+        let hash = hash_bytes(b"unannounced");
+        let mut sync = ClipboardSync::new(Box::new(MemBackend::empty()));
+        let result = sync.on_remote(&SyncMessage::DataChunk {
+            hash,
+            offset: 0,
+            data: b"unannounced".to_vec(),
+            last: true,
+        });
+        assert!(result.is_err());
+        assert_eq!(sync.backend.sequence().unwrap(), 0);
+        assert!(!sync.applied.contains_key(&hash));
+    }
+
+    #[test]
+    fn discontinuous_clipboard_chunks_are_rejected_without_writing() {
+        let bytes = b"abcd";
+        let hash = hash_bytes(bytes);
+        let mut sync = ClipboardSync::new(Box::new(MemBackend::empty()));
+        sync.on_remote(&SyncMessage::FormatList {
+            seq: 1,
+            items: vec![ClipFormatItem {
+                id: 13,
+                hash,
+                size_hint: bytes.len() as u64,
+                name: "CF_UNICODETEXT".into(),
+            }],
+        })
+        .unwrap();
+        assert!(sync
+            .on_remote(&SyncMessage::DataChunk {
+                hash,
+                offset: 0,
+                data: b"ab".to_vec(),
+                last: false,
+            })
+            .unwrap()
+            .is_empty());
+        assert!(sync
+            .on_remote(&SyncMessage::DataChunk {
+                hash,
+                offset: 3,
+                data: b"cd".to_vec(),
+                last: true,
+            })
+            .is_err());
+        assert_eq!(sync.backend.sequence().unwrap(), 0);
+        assert!(!sync.applied.contains_key(&hash));
+    }
+
+    #[test]
+    fn clipboard_hash_is_verified_before_write_and_ack() {
+        let announced = hash_bytes(b"expected");
+        let mut sync = ClipboardSync::new(Box::new(MemBackend::empty()));
+        sync.on_remote(&SyncMessage::FormatList {
+            seq: 1,
+            items: vec![ClipFormatItem {
+                id: 13,
+                hash: announced,
+                size_hint: 8,
+                name: "CF_UNICODETEXT".into(),
+            }],
+        })
+        .unwrap();
+        assert!(sync
+            .on_remote(&SyncMessage::DataChunk {
+                hash: announced,
+                offset: 0,
+                data: b"tampered".to_vec(),
+                last: true,
+            })
+            .is_err());
+        assert_eq!(sync.backend.sequence().unwrap(), 0);
+        assert!(!sync.applied.contains_key(&announced));
+    }
+
+    #[test]
+    fn clipboard_size_limit_is_enforced_before_append() {
+        let hash = [7u8; 32];
+        let mut sync = ClipboardSync::new(Box::new(MemBackend::empty()));
+        sync.on_remote(&SyncMessage::FormatList {
+            seq: 1,
+            items: vec![ClipFormatItem {
+                id: 13,
+                hash,
+                size_hint: MAX_SYNC_BYTES,
+                name: "CF_UNICODETEXT".into(),
+            }],
+        })
+        .unwrap();
+        assert!(sync
+            .on_remote(&SyncMessage::DataChunk {
+                hash,
+                offset: 0,
+                data: vec![0; MAX_SYNC_BYTES as usize],
+                last: false,
+            })
+            .unwrap()
+            .is_empty());
+        assert!(sync
+            .on_remote(&SyncMessage::DataChunk {
+                hash,
+                offset: MAX_SYNC_BYTES,
+                data: vec![0],
+                last: true,
+            })
+            .is_err());
+        assert_eq!(sync.backend.sequence().unwrap(), 0);
     }
 
     #[test]

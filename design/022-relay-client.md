@@ -71,9 +71,8 @@ v1 先实现"选择路径"（P2P 直连 or relay），**迁移**作为下一步�
 ## 5. CLI 接入（v0.1 已完成）
 
 - `dfy-cli agent|view` 新增：`--relay <ADDR>`、`--relay-key <KEY>`（`hex:…`/`base64:…`/裸 hex）、
-  `--relay-tag <HEX>`（可选）。只给 tag/key 不给 addr 会直接报错。
-- 默认 tag 派生：`tag = BLAKE3(password ‖ "\0dfy-relay-tag\0" ‖ relay_addr)[:16]`。
-  两端口令相同即可自动配对；需要显式控制时用 `--relay-tag`。
+  `--relay-tag <HEX>`（使用 `--relay` 时必填）。只给 tag/key 不给 addr 会直接报错。
+- tag 由两端显式共享，不再从会话口令派生；CLI 支持主机名并在连接前解析为 `SocketAddr`。
 - `crates/dfy-cli/src/relay_bridge.rs`：`RelayOptions{addr,tag,key}` + `bind(role)`；
 - `crates/dfy-transport/src/endpoint.rs`：`agent_endpoint_on_socket(socket, identity)` 与
   `connect_on_socket(socket, tls, peer)`，把 `RelaySocket::try_clone_socket()` 交还给 quinn。
@@ -92,9 +91,9 @@ v1 先实现"选择路径"（P2P 直连 or relay），**迁移**作为下一步�
 # 1) 中继
 dfy-relay serve --config .tmp/relay.toml
 # 2) 被控端（经中继）
-dfy agent --port 21116 --relay 127.0.0.1:21117 --relay-key 'base64:…' --fps 30 --bitrate 4000
+dfy agent --port 21116 --relay 127.0.0.1:21117 --relay-key 'base64:…' --relay-tag 'fa423018cf1e7bbec2862f45f3dd07d2' --fps 30 --bitrate 4000
 # 3) 主控端（经中继，开启剪贴板）
-dfy view --relay 127.0.0.1:21117 --relay-key 'base64:…' --seconds 5 --clipboard
+dfy view --relay 127.0.0.1:21117 --relay-key 'base64:…' --relay-tag 'fa423018cf1e7bbec2862f45f3dd07d2' --seconds 5 --clipboard
 ```
 
 结果：
@@ -106,7 +105,7 @@ dfy view --relay 127.0.0.1:21117 --relay-key 'base64:…' --seconds 5 --clipboar
 | 重组帧 | 60 | 60 |
 | 关键帧 / 解析失败 | 1 / 0 | 1 / 0 |
 | 心跳 RTT | 0.571 ms | 0.41–0.51 ms（agent 侧 29.55 ms 为会话结束快照） |
-| 输入注入 | 16/16 | 本用例未注入（`--no-input` 对照） |
+| 输入注入 | 16/16 | 本用例未注入（当时默认开启；当前需 `--allow-input`） |
 | 剪贴板 | 20 B 文本闭环 | **24.55 KiB 分块闭环**（1 清单 / 1 拉取 / 1 分块 / 1 确认） |
 
 结论：**中继模式端到端可用**——视频、心跳、剪贴板全部经中继转发，两端代码路径与直连完全一致

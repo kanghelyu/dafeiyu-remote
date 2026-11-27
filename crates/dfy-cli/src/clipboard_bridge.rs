@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use dfy_clipboard::{message_from_envelope, message_to_envelope, ClipboardSync, SyncMessage};
+use dfy_proto::consts::{PERM_CLIPBOARD, PERM_CONTROL, PERM_FILE, PERM_VIEW};
 use dfy_proto::Envelope;
 use dfy_session::CtrlHandler;
 use tracing::{debug, warn};
@@ -77,7 +78,13 @@ impl ClipboardStats {
 /// 创建本地剪贴板同步状态机；平台不支持时返回 `None` 并打印一行原因（不中断会话）。
 pub fn open_clipboard() -> Option<ClipboardSync> {
     match dfy_clipboard::create_backend() {
-        Ok(backend) => Some(ClipboardSync::new(backend)),
+        Ok(backend) => match ClipboardSync::for_session(backend) {
+            Ok(sync) => Some(sync),
+            Err(err) => {
+                println!("[clipboard] 无法建立剪贴板会话基线：{err:#}；本次会话不同步剪贴板");
+                None
+            }
+        },
         Err(err) => {
             println!("[clipboard] 本地剪贴板后端不可用：{err:#}；本次会话不同步剪贴板");
             None
@@ -106,8 +113,59 @@ impl AgentHandler {
     /// `allow_input` / `allow_clipboard` 为 `false` 时对应功能降级为关闭；
     /// `recv_dir` 为 `Some` 时启用文件接收。
     pub fn new(allow_input: bool, allow_clipboard: bool, recv_dir: Option<PathBuf>) -> Self {
+        Self::build(allow_input, allow_clipboard, recv_dir, None)
+    }
+
+    /// Creates a handler whose input backend follows the latest isolated X11 display.
+    /// Physical clipboard access is deliberately not inherited by a virtual desktop.
+    #[cfg(target_os = "linux")]
+    pub fn new_on_display_shared(
+        allow_input: bool,
+        allow_clipboard: bool,
+        recv_dir: Option<PathBuf>,
+        endpoint: Arc<Mutex<String>>,
+    ) -> Self {
+        if allow_clipboard {
+            warn!("虚拟显示使用独立剪贴板；未继承物理桌面剪贴板同步");
+        }
         let input = if allow_input {
-            match InjectHandler::new() {
+            match InjectHandler::on_display_shared(endpoint) {
+                Ok(handler) => handler,
+                Err(err) => {
+                    warn!(error = %err, "输入注入后端不可用，本次会话只串流");
+                    InjectHandler::disabled()
+                }
+            }
+        } else {
+            InjectHandler::disabled()
+        };
+        let mut handler = Self::build(false, false, recv_dir, None);
+        handler.input = input;
+        handler
+    }
+
+    fn build(
+        allow_input: bool,
+        allow_clipboard: bool,
+        recv_dir: Option<PathBuf>,
+        #[allow(unused_variables)] display: Option<&str>,
+    ) -> Self {
+        let input = if allow_input {
+            let created = {
+                #[cfg(target_os = "linux")]
+                {
+                    display.map_or_else(
+                        || InjectHandler::new().map_err(|err| err.context("创建输入注入后端失败")),
+                        |value| InjectHandler::on_display(value),
+                    )
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = display;
+                    InjectHandler::new()
+                }
+            };
+            match created {
                 Ok(handler) => handler,
                 Err(err) => {
                     warn!(error = %err, "输入注入后端不可用，本次会话只串流");
@@ -151,6 +209,21 @@ impl AgentHandler {
     /// 剪贴板同步是否可用。
     pub fn clipboard_enabled(&self) -> bool {
         self.clipboard.lock().map(|c| c.is_some()).unwrap_or(false)
+    }
+
+    /// 本连接实际启用的权限位。
+    pub fn permission_bitmap(&self) -> u32 {
+        let mut permissions = PERM_VIEW;
+        if self.is_enabled() {
+            permissions |= PERM_CONTROL;
+        }
+        if self.clipboard_enabled() {
+            permissions |= PERM_CLIPBOARD;
+        }
+        if self.files_enabled() {
+            permissions |= PERM_FILE;
+        }
+        permissions
     }
 
     /// 输入注入统计快照。
@@ -362,5 +435,6 @@ mod tests {
         assert!(!handler.is_enabled());
         assert!(!handler.clipboard_enabled());
         assert!(!handler.files_enabled());
+        assert_eq!(handler.permission_bitmap(), PERM_VIEW);
     }
 }

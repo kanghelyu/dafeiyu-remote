@@ -1,0 +1,26 @@
+[package]
+name = "dfy-manager"
+description = "Desktop manager UI for Dafeiyu Remote relay profiles and virtual displays"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "dfy-manager"
+path = "src/main.rs"
+
+[dependencies]
+ab_glyph = "0.2"
+anyhow.workspace = true
+clap.workspace = true
+dfy-relay = { path = "../dfy-relay" }
+dfy-relay-profiles = { path = "../dfy-relay-profiles" }
+dfy-transport = { path = "../dfy-transport" }
+dfy-vdisplay = { path = "../dfy-vdisplay" }
+rand.workspace = true
+softbuffer = "0.4"
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+winit = "0.30"

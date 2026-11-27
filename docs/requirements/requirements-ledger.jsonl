@@ -1,0 +1,825 @@
+{"id": "L0001", "sourceLine": 1, "module": "modules/001-positioning.md", "kind": "paragraph", "text": "我建议把这个项目定位为：**开源、跨平台、支持自建中继集群的高性能远程桌面系统**，而不只是一个远程控制软件。你可以自己装wsl和wsa调试跑通，mac端pkg和安卓端apk已经放在下载目录供你解包了，Linux端我没找到，你自己找找好像可以用这个wget -O install.sh https://uuyc.163.com/install.sh && sudo sh install.sh"}
+{"id": "L0002", "sourceLine": 2, "module": "modules/001-positioning.md", "kind": "paragraph", "text": "下面的prompt很长，你必须全部读完全部遵守，一次读不完就分多次，然后模块化保存，做对应部分的时候对应去文件里查看，不要只存在上下文里，太长会丢失信息"}
+{"id": "L0003", "sourceLine": 3, "module": "modules/001-positioning.md", "kind": "blank", "text": ""}
+{"id": "L0004", "sourceLine": 4, "module": "modules/001-positioning.md", "kind": "paragraph", "text": "你的核心想法有三个真正值得重点投入的地方："}
+{"id": "L0005", "sourceLine": 5, "module": "modules/001-positioning.md", "kind": "blank", "text": ""}
+{"id": "L0006", "sourceLine": 6, "module": "modules/001-positioning.md", "kind": "list-item", "text": "1. **功能体验对标 UU 远程**：尤其是虚拟屏、跨平台快捷键映射、剪贴板同步、多显示器、远程输入和文件传输。"}
+{"id": "L0007", "sourceLine": 7, "module": "modules/001-positioning.md", "kind": "list-item", "text": "2. **网络架构自主可控**：优先 P2P，连接失败或质量不佳时自动切换到用户指定的中继服务器。"}
+{"id": "L0008", "sourceLine": 8, "module": "modules/001-positioning.md", "kind": "list-item", "text": "3. **中继服务器极简化**：用户不需要懂 NAT、端口转发、TURN、网络穿透等技术，只需要添加服务器地址、配置密钥，客户端就能使用。"}
+{"id": "L0009", "sourceLine": 9, "module": "modules/001-positioning.md", "kind": "blank", "text": ""}
+{"id": "L0010", "sourceLine": 10, "module": "modules/001-positioning.md", "kind": "paragraph", "text": "我还补充了几个容易被忽略的关键点：动态码率、弱网恢复、远程唤醒、Android 端特殊权限、Linux 虚拟显示驱动、服务器集群管理、端到端加密，以及开源许可证合规。"}
+{"id": "L0011", "sourceLine": 11, "module": "modules/001-positioning.md", "kind": "blank", "text": ""}
+{"id": "L0012", "sourceLine": 12, "module": "modules/001-positioning.md", "kind": "paragraph", "text": "下面是一份可以直接交给 Codex、Dot 或其他自主编程 Agent 的完整项目 Prompt。"}
+{"id": "L0013", "sourceLine": 13, "module": "modules/001-positioning.md", "kind": "blank", "text": ""}
+{"id": "L0014", "sourceLine": 14, "module": "modules/001-positioning.md", "kind": "heading", "text": "# Project: 大肥鱼远程 (Big Fat Fish Remote)"}
+{"id": "L0015", "sourceLine": 15, "module": "modules/001-positioning.md", "kind": "blank", "text": ""}
+{"id": "L0016", "sourceLine": 16, "module": "modules/002-mission.md", "kind": "heading", "text": "## 1. Mission"}
+{"id": "L0017", "sourceLine": 17, "module": "modules/002-mission.md", "kind": "blank", "text": ""}
+{"id": "L0018", "sourceLine": 18, "module": "modules/002-mission.md", "kind": "paragraph", "text": "Build a production-quality, fully open-source, cross-platform remote desktop and remote control system named **大肥鱼远程 (Big Fat Fish Remote)**."}
+{"id": "L0019", "sourceLine": 19, "module": "modules/002-mission.md", "kind": "blank", "text": ""}
+{"id": "L0020", "sourceLine": 20, "module": "modules/002-mission.md", "kind": "paragraph", "text": "The goal is to achieve functional competitiveness with UU Remote and other leading remote desktop products, while improving their architecture, extensibility, networking flexibility, and self-hosting experience."}
+{"id": "L0021", "sourceLine": 21, "module": "modules/002-mission.md", "kind": "blank", "text": ""}
+{"id": "L0022", "sourceLine": 22, "module": "modules/002-mission.md", "kind": "paragraph", "text": "This is not a simple prototype or a demonstration project."}
+{"id": "L0023", "sourceLine": 23, "module": "modules/002-mission.md", "kind": "blank", "text": ""}
+{"id": "L0024", "sourceLine": 24, "module": "modules/002-mission.md", "kind": "paragraph", "text": "The final product must be usable in real-world environments, with reliable connections, excellent responsiveness, strong security, and a polished user experience."}
+{"id": "L0025", "sourceLine": 25, "module": "modules/002-mission.md", "kind": "blank", "text": ""}
+{"id": "L0026", "sourceLine": 26, "module": "modules/002-mission.md", "kind": "paragraph", "text": "Develop the complete ecosystem:"}
+{"id": "L0027", "sourceLine": 27, "module": "modules/002-mission.md", "kind": "blank", "text": ""}
+{"id": "L0028", "sourceLine": 28, "module": "modules/002-mission.md", "kind": "list-item", "text": "- Desktop controller applications."}
+{"id": "L0029", "sourceLine": 29, "module": "modules/002-mission.md", "kind": "list-item", "text": "- Desktop host applications."}
+{"id": "L0030", "sourceLine": 30, "module": "modules/002-mission.md", "kind": "list-item", "text": "- Android applications."}
+{"id": "L0031", "sourceLine": 31, "module": "modules/002-mission.md", "kind": "list-item", "text": "- Linux relay server."}
+{"id": "L0032", "sourceLine": 32, "module": "modules/002-mission.md", "kind": "list-item", "text": "- Cross-platform networking and communication infrastructure."}
+{"id": "L0033", "sourceLine": 33, "module": "modules/002-mission.md", "kind": "list-item", "text": "- Installation, configuration, deployment, and update systems."}
+{"id": "L0034", "sourceLine": 34, "module": "modules/002-mission.md", "kind": "blank", "text": ""}
+{"id": "L0035", "sourceLine": 35, "module": "modules/002-mission.md", "kind": "paragraph", "text": "Publish the finished project on GitHub under an appropriate open-source license."}
+{"id": "L0036", "sourceLine": 36, "module": "modules/002-mission.md", "kind": "blank", "text": ""}
+{"id": "L0037", "sourceLine": 37, "module": "modules/003-research.md", "kind": "heading", "text": "## 2. Research and Competitive Analysis"}
+{"id": "L0038", "sourceLine": 38, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0039", "sourceLine": 39, "module": "modules/003-research.md", "kind": "paragraph", "text": "Before implementation, conduct a systematic functional analysis of UU Remote and other leading remote desktop applications."}
+{"id": "L0040", "sourceLine": 40, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0041", "sourceLine": 41, "module": "modules/003-research.md", "kind": "paragraph", "text": "Use legitimate methods such as:"}
+{"id": "L0042", "sourceLine": 42, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0043", "sourceLine": 43, "module": "modules/003-research.md", "kind": "list-item", "text": "- Public documentation and product demonstrations."}
+{"id": "L0044", "sourceLine": 44, "module": "modules/003-research.md", "kind": "list-item", "text": "- Observable application behavior."}
+{"id": "L0045", "sourceLine": 45, "module": "modules/003-research.md", "kind": "list-item", "text": "- Authorized interoperability testing."}
+{"id": "L0046", "sourceLine": 46, "module": "modules/003-research.md", "kind": "list-item", "text": "- Publicly available technical information."}
+{"id": "L0047", "sourceLine": 47, "module": "modules/003-research.md", "kind": "list-item", "text": "- Open-source implementations of equivalent functionality."}
+{"id": "L0048", "sourceLine": 48, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0049", "sourceLine": 49, "module": "modules/003-research.md", "kind": "paragraph", "text": "Study the implementation approaches of:"}
+{"id": "L0050", "sourceLine": 50, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0051", "sourceLine": 51, "module": "modules/003-research.md", "kind": "list-item", "text": "- RustDesk."}
+{"id": "L0052", "sourceLine": 52, "module": "modules/003-research.md", "kind": "list-item", "text": "- Sunshine / Moonlight."}
+{"id": "L0053", "sourceLine": 53, "module": "modules/003-research.md", "kind": "list-item", "text": "- Apache Guacamole."}
+{"id": "L0054", "sourceLine": 54, "module": "modules/003-research.md", "kind": "list-item", "text": "- NoMachine."}
+{"id": "L0055", "sourceLine": 55, "module": "modules/003-research.md", "kind": "list-item", "text": "- Other relevant open-source remote desktop projects."}
+{"id": "L0056", "sourceLine": 56, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0057", "sourceLine": 57, "module": "modules/003-research.md", "kind": "paragraph", "text": "Do not blindly copy existing implementations."}
+{"id": "L0058", "sourceLine": 58, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0059", "sourceLine": 59, "module": "modules/003-research.md", "kind": "paragraph", "text": "Use the best available open-source components as foundations where appropriate, while designing a better integrated architecture."}
+{"id": "L0060", "sourceLine": 60, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0061", "sourceLine": 61, "module": "modules/003-research.md", "kind": "paragraph", "text": "Respect intellectual property, software licenses, and applicable laws. Do not extract proprietary source code, bypass authentication, or redistribute proprietary components."}
+{"id": "L0062", "sourceLine": 62, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0063", "sourceLine": 63, "module": "modules/003-research.md", "kind": "heading", "text": "### Produce a feature comparison matrix"}
+{"id": "L0064", "sourceLine": 64, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0065", "sourceLine": 65, "module": "modules/003-research.md", "kind": "paragraph", "text": "Identify every observable feature, including:"}
+{"id": "L0066", "sourceLine": 66, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0067", "sourceLine": 67, "module": "modules/003-research.md", "kind": "list-item", "text": "1. Remote desktop streaming."}
+{"id": "L0068", "sourceLine": 68, "module": "modules/003-research.md", "kind": "list-item", "text": "2. Virtual display creation and management."}
+{"id": "L0069", "sourceLine": 69, "module": "modules/003-research.md", "kind": "list-item", "text": "3. Multi-monitor support."}
+{"id": "L0070", "sourceLine": 70, "module": "modules/003-research.md", "kind": "list-item", "text": "4. Resolution and refresh-rate management."}
+{"id": "L0071", "sourceLine": 71, "module": "modules/003-research.md", "kind": "list-item", "text": "5. Keyboard and mouse input."}
+{"id": "L0072", "sourceLine": 72, "module": "modules/003-research.md", "kind": "list-item", "text": "6. Cross-platform keyboard shortcut translation."}
+{"id": "L0073", "sourceLine": 73, "module": "modules/003-research.md", "kind": "list-item", "text": "7. Clipboard synchronization."}
+{"id": "L0074", "sourceLine": 74, "module": "modules/003-research.md", "kind": "list-item", "text": "8. File transfer."}
+{"id": "L0075", "sourceLine": 75, "module": "modules/003-research.md", "kind": "list-item", "text": "9. Audio transmission."}
+{"id": "L0076", "sourceLine": 76, "module": "modules/003-research.md", "kind": "list-item", "text": "10. Multiple simultaneous sessions."}
+{"id": "L0077", "sourceLine": 77, "module": "modules/003-research.md", "kind": "list-item", "text": "11. Remote reboot and reconnection."}
+{"id": "L0078", "sourceLine": 78, "module": "modules/003-research.md", "kind": "list-item", "text": "12. Unattended access."}
+{"id": "L0079", "sourceLine": 79, "module": "modules/003-research.md", "kind": "list-item", "text": "13. Remote device management."}
+{"id": "L0080", "sourceLine": 80, "module": "modules/003-research.md", "kind": "list-item", "text": "14. Connection quality adaptation."}
+{"id": "L0081", "sourceLine": 81, "module": "modules/003-research.md", "kind": "list-item", "text": "15. NAT traversal."}
+{"id": "L0082", "sourceLine": 82, "module": "modules/003-research.md", "kind": "list-item", "text": "16. P2P connections."}
+{"id": "L0083", "sourceLine": 83, "module": "modules/003-research.md", "kind": "list-item", "text": "17. Relay connections."}
+{"id": "L0084", "sourceLine": 84, "module": "modules/003-research.md", "kind": "list-item", "text": "18. Connection security."}
+{"id": "L0085", "sourceLine": 85, "module": "modules/003-research.md", "kind": "list-item", "text": "19. Android remote control."}
+{"id": "L0086", "sourceLine": 86, "module": "modules/003-research.md", "kind": "list-item", "text": "20. Session management and permissions."}
+{"id": "L0087", "sourceLine": 87, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0088", "sourceLine": 88, "module": "modules/003-research.md", "kind": "paragraph", "text": "Identify missing features and opportunities to improve them."}
+{"id": "L0089", "sourceLine": 89, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0090", "sourceLine": 90, "module": "modules/003-research.md", "kind": "paragraph", "text": "Maintain a feature implementation matrix throughout development. Never claim a feature is complete without testing it."}
+{"id": "L0091", "sourceLine": 91, "module": "modules/003-research.md", "kind": "blank", "text": ""}
+{"id": "L0092", "sourceLine": 92, "module": "modules/004-platforms.md", "kind": "heading", "text": "## 3. Supported Platforms"}
+{"id": "L0093", "sourceLine": 93, "module": "modules/004-platforms.md", "kind": "blank", "text": ""}
+{"id": "L0094", "sourceLine": 94, "module": "modules/004-platforms.md", "kind": "paragraph", "text": "Support the following platforms."}
+{"id": "L0095", "sourceLine": 95, "module": "modules/004-platforms.md", "kind": "blank", "text": ""}
+{"id": "L0096", "sourceLine": 96, "module": "modules/004-platforms.md", "kind": "table-row", "text": "| Platform      | Controller | Host |"}
+{"id": "L0097", "sourceLine": 97, "module": "modules/004-platforms.md", "kind": "table-row", "text": "| ------------- | ---------- | ---- |"}
+{"id": "L0098", "sourceLine": 98, "module": "modules/004-platforms.md", "kind": "table-row", "text": "| Windows 10/11 | Yes        | Yes  |"}
+{"id": "L0099", "sourceLine": 99, "module": "modules/004-platforms.md", "kind": "table-row", "text": "| Linux         | Yes        | Yes  |"}
+{"id": "L0100", "sourceLine": 100, "module": "modules/004-platforms.md", "kind": "table-row", "text": "| macOS         | Yes        | Yes  |"}
+{"id": "L0101", "sourceLine": 101, "module": "modules/004-platforms.md", "kind": "table-row", "text": "| Android       | Yes        | Yes  |"}
+{"id": "L0102", "sourceLine": 102, "module": "modules/004-platforms.md", "kind": "blank", "text": ""}
+{"id": "L0103", "sourceLine": 103, "module": "modules/004-platforms.md", "kind": "paragraph", "text": "Linux is also the only required platform for the initial relay server."}
+{"id": "L0104", "sourceLine": 104, "module": "modules/004-platforms.md", "kind": "blank", "text": ""}
+{"id": "L0105", "sourceLine": 105, "module": "modules/004-platforms.md", "kind": "paragraph", "text": "Design the architecture so that additional platforms can be supported later."}
+{"id": "L0106", "sourceLine": 106, "module": "modules/004-platforms.md", "kind": "blank", "text": ""}
+{"id": "L0107", "sourceLine": 107, "module": "modules/004-platforms.md", "kind": "paragraph", "text": "The desktop applications should share as much code as possible."}
+{"id": "L0108", "sourceLine": 108, "module": "modules/004-platforms.md", "kind": "blank", "text": ""}
+{"id": "L0109", "sourceLine": 109, "module": "modules/004-platforms.md", "kind": "paragraph", "text": "Android must have a proper native user experience and account for Android-specific permissions and restrictions."}
+{"id": "L0110", "sourceLine": 110, "module": "modules/004-platforms.md", "kind": "blank", "text": ""}
+{"id": "L0111", "sourceLine": 111, "module": "modules/005-core-introduction.md", "kind": "heading", "text": "## 4. Core Remote Desktop Features"}
+{"id": "L0112", "sourceLine": 112, "module": "modules/005-core-introduction.md", "kind": "blank", "text": ""}
+{"id": "L0113", "sourceLine": 113, "module": "modules/006-virtual-display.md", "kind": "heading", "text": "### 4.1 Virtual Display Technology — Highest Priority"}
+{"id": "L0114", "sourceLine": 114, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0115", "sourceLine": 115, "module": "modules/006-virtual-display.md", "kind": "paragraph", "text": "Virtual display support is one of the most important features."}
+{"id": "L0116", "sourceLine": 116, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0117", "sourceLine": 117, "module": "modules/006-virtual-display.md", "kind": "paragraph", "text": "Implement a robust virtual monitor system."}
+{"id": "L0118", "sourceLine": 118, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0119", "sourceLine": 119, "module": "modules/006-virtual-display.md", "kind": "paragraph", "text": "Requirements:"}
+{"id": "L0120", "sourceLine": 120, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0121", "sourceLine": 121, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Create virtual displays without requiring a physical monitor."}
+{"id": "L0122", "sourceLine": 122, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Support multiple virtual displays."}
+{"id": "L0123", "sourceLine": 123, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Dynamically change resolution."}
+{"id": "L0124", "sourceLine": 124, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Dynamically change refresh rate where supported."}
+{"id": "L0125", "sourceLine": 125, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Support common resolutions, including 1080p, 1440p, and 4K."}
+{"id": "L0126", "sourceLine": 126, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Support portrait and landscape orientations."}
+{"id": "L0127", "sourceLine": 127, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Manage virtual display creation and destruction."}
+{"id": "L0128", "sourceLine": 128, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Support headless operation."}
+{"id": "L0129", "sourceLine": 129, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Allow remote control when the physical monitor is disconnected."}
+{"id": "L0130", "sourceLine": 130, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Support independent display sessions."}
+{"id": "L0131", "sourceLine": 131, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Provide reliable recovery after display driver failures."}
+{"id": "L0132", "sourceLine": 132, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Avoid unnecessary modification of physical monitor settings."}
+{"id": "L0133", "sourceLine": 133, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0134", "sourceLine": 134, "module": "modules/006-virtual-display.md", "kind": "paragraph", "text": "Platform-specific implementation:"}
+{"id": "L0135", "sourceLine": 135, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0136", "sourceLine": 136, "module": "modules/006-virtual-display.md", "kind": "paragraph", "text": "**Windows**"}
+{"id": "L0137", "sourceLine": 137, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0138", "sourceLine": 138, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Investigate Windows Indirect Display Driver (IDD)."}
+{"id": "L0139", "sourceLine": 139, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Support virtual monitors and headless operation."}
+{"id": "L0140", "sourceLine": 140, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Handle display enumeration and resolution changes."}
+{"id": "L0141", "sourceLine": 141, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0142", "sourceLine": 142, "module": "modules/006-virtual-display.md", "kind": "paragraph", "text": "**Linux**"}
+{"id": "L0143", "sourceLine": 143, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0144", "sourceLine": 144, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Investigate DRM/KMS, VKMS, Wayland virtual outputs, and X11 virtual displays."}
+{"id": "L0145", "sourceLine": 145, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Support headless virtual desktop environments."}
+{"id": "L0146", "sourceLine": 146, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Avoid requiring a physical display."}
+{"id": "L0147", "sourceLine": 147, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0148", "sourceLine": 148, "module": "modules/006-virtual-display.md", "kind": "paragraph", "text": "**macOS**"}
+{"id": "L0149", "sourceLine": 149, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0150", "sourceLine": 150, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Investigate supported virtual display APIs and appropriate system extensions."}
+{"id": "L0151", "sourceLine": 151, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Respect macOS security and permission requirements."}
+{"id": "L0152", "sourceLine": 152, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0153", "sourceLine": 153, "module": "modules/006-virtual-display.md", "kind": "paragraph", "text": "**Android**"}
+{"id": "L0154", "sourceLine": 154, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0155", "sourceLine": 155, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Support remote screen capture through MediaProjection."}
+{"id": "L0156", "sourceLine": 156, "module": "modules/006-virtual-display.md", "kind": "list-item", "text": "- Clearly handle user authorization and background restrictions."}
+{"id": "L0157", "sourceLine": 157, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0158", "sourceLine": 158, "module": "modules/006-virtual-display.md", "kind": "paragraph", "text": "Provide a unified virtual display management interface across platforms."}
+{"id": "L0159", "sourceLine": 159, "module": "modules/006-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0160", "sourceLine": 160, "module": "modules/007-input.md", "kind": "heading", "text": "### 4.2 Keyboard and Mouse"}
+{"id": "L0161", "sourceLine": 161, "module": "modules/007-input.md", "kind": "blank", "text": ""}
+{"id": "L0162", "sourceLine": 162, "module": "modules/007-input.md", "kind": "paragraph", "text": "Implement a complete cross-platform input translation layer."}
+{"id": "L0163", "sourceLine": 163, "module": "modules/007-input.md", "kind": "blank", "text": ""}
+{"id": "L0164", "sourceLine": 164, "module": "modules/007-input.md", "kind": "paragraph", "text": "Requirements:"}
+{"id": "L0165", "sourceLine": 165, "module": "modules/007-input.md", "kind": "blank", "text": ""}
+{"id": "L0166", "sourceLine": 166, "module": "modules/007-input.md", "kind": "list-item", "text": "- Keyboard input."}
+{"id": "L0167", "sourceLine": 167, "module": "modules/007-input.md", "kind": "list-item", "text": "- Mouse movement."}
+{"id": "L0168", "sourceLine": 168, "module": "modules/007-input.md", "kind": "list-item", "text": "- Mouse buttons."}
+{"id": "L0169", "sourceLine": 169, "module": "modules/007-input.md", "kind": "list-item", "text": "- Scroll wheel."}
+{"id": "L0170", "sourceLine": 170, "module": "modules/007-input.md", "kind": "list-item", "text": "- Keyboard combinations."}
+{"id": "L0171", "sourceLine": 171, "module": "modules/007-input.md", "kind": "list-item", "text": "- Function keys."}
+{"id": "L0172", "sourceLine": 172, "module": "modules/007-input.md", "kind": "list-item", "text": "- Multimedia keys where supported."}
+{"id": "L0173", "sourceLine": 173, "module": "modules/007-input.md", "kind": "list-item", "text": "- International keyboard layouts."}
+{"id": "L0174", "sourceLine": 174, "module": "modules/007-input.md", "kind": "list-item", "text": "- IME and non-English input."}
+{"id": "L0175", "sourceLine": 175, "module": "modules/007-input.md", "kind": "list-item", "text": "- Different keyboard layouts between controller and host."}
+{"id": "L0176", "sourceLine": 176, "module": "modules/007-input.md", "kind": "list-item", "text": "- Modifier key translation."}
+{"id": "L0177", "sourceLine": 177, "module": "modules/007-input.md", "kind": "blank", "text": ""}
+{"id": "L0178", "sourceLine": 178, "module": "modules/007-input.md", "kind": "paragraph", "text": "Special attention must be paid to:"}
+{"id": "L0179", "sourceLine": 179, "module": "modules/007-input.md", "kind": "blank", "text": ""}
+{"id": "L0180", "sourceLine": 180, "module": "modules/007-input.md", "kind": "list-item", "text": "- Ctrl / Command differences."}
+{"id": "L0181", "sourceLine": 181, "module": "modules/007-input.md", "kind": "list-item", "text": "- Alt / Option differences."}
+{"id": "L0182", "sourceLine": 182, "module": "modules/007-input.md", "kind": "list-item", "text": "- Windows key / Super key differences."}
+{"id": "L0183", "sourceLine": 183, "module": "modules/007-input.md", "kind": "list-item", "text": "- Ctrl+C, Ctrl+V, Ctrl+Alt+Del and other system shortcuts."}
+{"id": "L0184", "sourceLine": 184, "module": "modules/007-input.md", "kind": "list-item", "text": "- macOS Command-based shortcuts."}
+{"id": "L0185", "sourceLine": 185, "module": "modules/007-input.md", "kind": "list-item", "text": "- Linux desktop environment shortcuts."}
+{"id": "L0186", "sourceLine": 186, "module": "modules/007-input.md", "kind": "list-item", "text": "- Special keys and key combinations."}
+{"id": "L0187", "sourceLine": 187, "module": "modules/007-input.md", "kind": "blank", "text": ""}
+{"id": "L0188", "sourceLine": 188, "module": "modules/007-input.md", "kind": "paragraph", "text": "Design a configurable keyboard mapping system."}
+{"id": "L0189", "sourceLine": 189, "module": "modules/007-input.md", "kind": "blank", "text": ""}
+{"id": "L0190", "sourceLine": 190, "module": "modules/007-input.md", "kind": "paragraph", "text": "Users should be able to create, modify, export, and import shortcut mappings."}
+{"id": "L0191", "sourceLine": 191, "module": "modules/007-input.md", "kind": "blank", "text": ""}
+{"id": "L0192", "sourceLine": 192, "module": "modules/007-input.md", "kind": "paragraph", "text": "Prevent stuck keys and ensure modifier states are correctly released after disconnection."}
+{"id": "L0193", "sourceLine": 193, "module": "modules/007-input.md", "kind": "blank", "text": ""}
+{"id": "L0194", "sourceLine": 194, "module": "modules/008-clipboard.md", "kind": "heading", "text": "### 4.3 Clipboard Synchronization"}
+{"id": "L0195", "sourceLine": 195, "module": "modules/008-clipboard.md", "kind": "blank", "text": ""}
+{"id": "L0196", "sourceLine": 196, "module": "modules/008-clipboard.md", "kind": "paragraph", "text": "Implement bidirectional clipboard synchronization."}
+{"id": "L0197", "sourceLine": 197, "module": "modules/008-clipboard.md", "kind": "blank", "text": ""}
+{"id": "L0198", "sourceLine": 198, "module": "modules/008-clipboard.md", "kind": "paragraph", "text": "Support:"}
+{"id": "L0199", "sourceLine": 199, "module": "modules/008-clipboard.md", "kind": "blank", "text": ""}
+{"id": "L0200", "sourceLine": 200, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- Plain text."}
+{"id": "L0201", "sourceLine": 201, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- Unicode."}
+{"id": "L0202", "sourceLine": 202, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- Rich text where practical."}
+{"id": "L0203", "sourceLine": 203, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- Images."}
+{"id": "L0204", "sourceLine": 204, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- File references where supported."}
+{"id": "L0205", "sourceLine": 205, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- Large clipboard contents."}
+{"id": "L0206", "sourceLine": 206, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- Clipboard synchronization between different operating systems."}
+{"id": "L0207", "sourceLine": 207, "module": "modules/008-clipboard.md", "kind": "blank", "text": ""}
+{"id": "L0208", "sourceLine": 208, "module": "modules/008-clipboard.md", "kind": "paragraph", "text": "Requirements:"}
+{"id": "L0209", "sourceLine": 209, "module": "modules/008-clipboard.md", "kind": "blank", "text": ""}
+{"id": "L0210", "sourceLine": 210, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- Configurable synchronization direction."}
+{"id": "L0211", "sourceLine": 211, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- Automatic synchronization."}
+{"id": "L0212", "sourceLine": 212, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- Manual synchronization."}
+{"id": "L0213", "sourceLine": 213, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- Conflict handling."}
+{"id": "L0214", "sourceLine": 214, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- Size limits."}
+{"id": "L0215", "sourceLine": 215, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- Security restrictions."}
+{"id": "L0216", "sourceLine": 216, "module": "modules/008-clipboard.md", "kind": "list-item", "text": "- Clear user notifications."}
+{"id": "L0217", "sourceLine": 217, "module": "modules/008-clipboard.md", "kind": "blank", "text": ""}
+{"id": "L0218", "sourceLine": 218, "module": "modules/008-clipboard.md", "kind": "paragraph", "text": "Clipboard synchronization must be independently configurable for every connection."}
+{"id": "L0219", "sourceLine": 219, "module": "modules/008-clipboard.md", "kind": "blank", "text": ""}
+{"id": "L0220", "sourceLine": 220, "module": "modules/008-clipboard.md", "kind": "paragraph", "text": "Never silently transfer sensitive clipboard contents without the user's configured permission."}
+{"id": "L0221", "sourceLine": 221, "module": "modules/008-clipboard.md", "kind": "blank", "text": ""}
+{"id": "L0222", "sourceLine": 222, "module": "modules/009-streaming.md", "kind": "heading", "text": "### 4.4 Streaming and Performance"}
+{"id": "L0223", "sourceLine": 223, "module": "modules/009-streaming.md", "kind": "blank", "text": ""}
+{"id": "L0224", "sourceLine": 224, "module": "modules/009-streaming.md", "kind": "paragraph", "text": "Implement a high-performance remote desktop streaming pipeline."}
+{"id": "L0225", "sourceLine": 225, "module": "modules/009-streaming.md", "kind": "blank", "text": ""}
+{"id": "L0226", "sourceLine": 226, "module": "modules/009-streaming.md", "kind": "paragraph", "text": "Investigate:"}
+{"id": "L0227", "sourceLine": 227, "module": "modules/009-streaming.md", "kind": "blank", "text": ""}
+{"id": "L0228", "sourceLine": 228, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Hardware encoding and decoding."}
+{"id": "L0229", "sourceLine": 229, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- H.264."}
+{"id": "L0230", "sourceLine": 230, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- H.265 / HEVC."}
+{"id": "L0231", "sourceLine": 231, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- AV1 where hardware and software support permit."}
+{"id": "L0232", "sourceLine": 232, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Adaptive bitrate."}
+{"id": "L0233", "sourceLine": 233, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Dynamic resolution."}
+{"id": "L0234", "sourceLine": 234, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Frame-rate adaptation."}
+{"id": "L0235", "sourceLine": 235, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Network congestion control."}
+{"id": "L0236", "sourceLine": 236, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Low-latency transport."}
+{"id": "L0237", "sourceLine": 237, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Region-based updates."}
+{"id": "L0238", "sourceLine": 238, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Efficient screen capture."}
+{"id": "L0239", "sourceLine": 239, "module": "modules/009-streaming.md", "kind": "blank", "text": ""}
+{"id": "L0240", "sourceLine": 240, "module": "modules/009-streaming.md", "kind": "paragraph", "text": "Prioritize responsiveness and visual quality."}
+{"id": "L0241", "sourceLine": 241, "module": "modules/009-streaming.md", "kind": "blank", "text": ""}
+{"id": "L0242", "sourceLine": 242, "module": "modules/009-streaming.md", "kind": "paragraph", "text": "Provide configurable performance profiles:"}
+{"id": "L0243", "sourceLine": 243, "module": "modules/009-streaming.md", "kind": "blank", "text": ""}
+{"id": "L0244", "sourceLine": 244, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Low latency."}
+{"id": "L0245", "sourceLine": 245, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Balanced."}
+{"id": "L0246", "sourceLine": 246, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- High quality."}
+{"id": "L0247", "sourceLine": 247, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Low bandwidth."}
+{"id": "L0248", "sourceLine": 248, "module": "modules/009-streaming.md", "kind": "blank", "text": ""}
+{"id": "L0249", "sourceLine": 249, "module": "modules/009-streaming.md", "kind": "paragraph", "text": "Display connection statistics:"}
+{"id": "L0250", "sourceLine": 250, "module": "modules/009-streaming.md", "kind": "blank", "text": ""}
+{"id": "L0251", "sourceLine": 251, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Round-trip latency."}
+{"id": "L0252", "sourceLine": 252, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Packet loss."}
+{"id": "L0253", "sourceLine": 253, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Bitrate."}
+{"id": "L0254", "sourceLine": 254, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Frame rate."}
+{"id": "L0255", "sourceLine": 255, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Resolution."}
+{"id": "L0256", "sourceLine": 256, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Encoding and decoding latency."}
+{"id": "L0257", "sourceLine": 257, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Transport mode."}
+{"id": "L0258", "sourceLine": 258, "module": "modules/009-streaming.md", "kind": "list-item", "text": "- Current relay server."}
+{"id": "L0259", "sourceLine": 259, "module": "modules/009-streaming.md", "kind": "blank", "text": ""}
+{"id": "L0260", "sourceLine": 260, "module": "modules/010-networking.md", "kind": "heading", "text": "## 5. Networking Architecture"}
+{"id": "L0261", "sourceLine": 261, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0262", "sourceLine": 262, "module": "modules/010-networking.md", "kind": "paragraph", "text": "This is one of the most important architectural requirements."}
+{"id": "L0263", "sourceLine": 263, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0264", "sourceLine": 264, "module": "modules/010-networking.md", "kind": "paragraph", "text": "The system must support three connection modes."}
+{"id": "L0265", "sourceLine": 265, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0266", "sourceLine": 266, "module": "modules/010-networking.md", "kind": "heading", "text": "### Mode A: Direct P2P"}
+{"id": "L0267", "sourceLine": 267, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0268", "sourceLine": 268, "module": "modules/010-networking.md", "kind": "paragraph", "text": "Attempt direct peer-to-peer connectivity first."}
+{"id": "L0269", "sourceLine": 269, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0270", "sourceLine": 270, "module": "modules/010-networking.md", "kind": "paragraph", "text": "Investigate:"}
+{"id": "L0271", "sourceLine": 271, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0272", "sourceLine": 272, "module": "modules/010-networking.md", "kind": "list-item", "text": "- STUN."}
+{"id": "L0273", "sourceLine": 273, "module": "modules/010-networking.md", "kind": "list-item", "text": "- ICE."}
+{"id": "L0274", "sourceLine": 274, "module": "modules/010-networking.md", "kind": "list-item", "text": "- UDP hole punching."}
+{"id": "L0275", "sourceLine": 275, "module": "modules/010-networking.md", "kind": "list-item", "text": "- QUIC."}
+{"id": "L0276", "sourceLine": 276, "module": "modules/010-networking.md", "kind": "list-item", "text": "- Other suitable NAT traversal mechanisms."}
+{"id": "L0277", "sourceLine": 277, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0278", "sourceLine": 278, "module": "modules/010-networking.md", "kind": "heading", "text": "### Mode B: Automatic Relay Fallback"}
+{"id": "L0279", "sourceLine": 279, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0280", "sourceLine": 280, "module": "modules/010-networking.md", "kind": "paragraph", "text": "If direct P2P cannot be established, or the connection quality is unacceptable, automatically switch to a relay server."}
+{"id": "L0281", "sourceLine": 281, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0282", "sourceLine": 282, "module": "modules/010-networking.md", "kind": "paragraph", "text": "The transition must be transparent to users."}
+{"id": "L0283", "sourceLine": 283, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0284", "sourceLine": 284, "module": "modules/010-networking.md", "kind": "paragraph", "text": "Avoid unnecessary session interruption."}
+{"id": "L0285", "sourceLine": 285, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0286", "sourceLine": 286, "module": "modules/010-networking.md", "kind": "heading", "text": "### Mode C: User-Selected Relay"}
+{"id": "L0287", "sourceLine": 287, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0288", "sourceLine": 288, "module": "modules/010-networking.md", "kind": "paragraph", "text": "Users must be able to configure their own relay servers."}
+{"id": "L0289", "sourceLine": 289, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0290", "sourceLine": 290, "module": "modules/010-networking.md", "kind": "paragraph", "text": "This feature is a major product differentiator."}
+{"id": "L0291", "sourceLine": 291, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0292", "sourceLine": 292, "module": "modules/010-networking.md", "kind": "paragraph", "text": "The relay server must not be hardcoded into the client."}
+{"id": "L0293", "sourceLine": 293, "module": "modules/010-networking.md", "kind": "blank", "text": ""}
+{"id": "L0294", "sourceLine": 294, "module": "modules/011-relay-server.md", "kind": "heading", "text": "## 6. Relay Server System"}
+{"id": "L0295", "sourceLine": 295, "module": "modules/011-relay-server.md", "kind": "blank", "text": ""}
+{"id": "L0296", "sourceLine": 296, "module": "modules/011-relay-server.md", "kind": "paragraph", "text": "Develop a standalone Linux relay server."}
+{"id": "L0297", "sourceLine": 297, "module": "modules/011-relay-server.md", "kind": "blank", "text": ""}
+{"id": "L0298", "sourceLine": 298, "module": "modules/011-relay-server.md", "kind": "paragraph", "text": "The server must be easy to deploy, configure, upgrade, and maintain."}
+{"id": "L0299", "sourceLine": 299, "module": "modules/011-relay-server.md", "kind": "blank", "text": ""}
+{"id": "L0300", "sourceLine": 300, "module": "modules/011-relay-server.md", "kind": "heading", "text": "### Server requirements"}
+{"id": "L0301", "sourceLine": 301, "module": "modules/011-relay-server.md", "kind": "blank", "text": ""}
+{"id": "L0302", "sourceLine": 302, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Linux x86_64 initially."}
+{"id": "L0303", "sourceLine": 303, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- ARM64 support where practical."}
+{"id": "L0304", "sourceLine": 304, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Single-binary deployment if feasible."}
+{"id": "L0305", "sourceLine": 305, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Docker deployment."}
+{"id": "L0306", "sourceLine": 306, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Simple configuration."}
+{"id": "L0307", "sourceLine": 307, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Automatic startup."}
+{"id": "L0308", "sourceLine": 308, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Systemd integration."}
+{"id": "L0309", "sourceLine": 309, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- TLS support."}
+{"id": "L0310", "sourceLine": 310, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Secure authentication."}
+{"id": "L0311", "sourceLine": 311, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Connection management."}
+{"id": "L0312", "sourceLine": 312, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Concurrent sessions."}
+{"id": "L0313", "sourceLine": 313, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Bandwidth monitoring."}
+{"id": "L0314", "sourceLine": 314, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Resource monitoring."}
+{"id": "L0315", "sourceLine": 315, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Structured logging."}
+{"id": "L0316", "sourceLine": 316, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Health checks."}
+{"id": "L0317", "sourceLine": 317, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Graceful shutdown."}
+{"id": "L0318", "sourceLine": 318, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Automatic restart."}
+{"id": "L0319", "sourceLine": 319, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Rate limiting."}
+{"id": "L0320", "sourceLine": 320, "module": "modules/011-relay-server.md", "kind": "list-item", "text": "- Abuse prevention."}
+{"id": "L0321", "sourceLine": 321, "module": "modules/011-relay-server.md", "kind": "blank", "text": ""}
+{"id": "L0322", "sourceLine": 322, "module": "modules/011-relay-server.md", "kind": "paragraph", "text": "The relay server should primarily forward encrypted traffic."}
+{"id": "L0323", "sourceLine": 323, "module": "modules/011-relay-server.md", "kind": "blank", "text": ""}
+{"id": "L0324", "sourceLine": 324, "module": "modules/011-relay-server.md", "kind": "paragraph", "text": "It must not require access to users' desktop contents or plaintext session data."}
+{"id": "L0325", "sourceLine": 325, "module": "modules/011-relay-server.md", "kind": "blank", "text": ""}
+{"id": "L0326", "sourceLine": 326, "module": "modules/012-relay-deployment.md", "kind": "heading", "text": "### 6.1 Extremely Simple Deployment"}
+{"id": "L0327", "sourceLine": 327, "module": "modules/012-relay-deployment.md", "kind": "blank", "text": ""}
+{"id": "L0328", "sourceLine": 328, "module": "modules/012-relay-deployment.md", "kind": "paragraph", "text": "The installation experience is critical."}
+{"id": "L0329", "sourceLine": 329, "module": "modules/012-relay-deployment.md", "kind": "blank", "text": ""}
+{"id": "L0330", "sourceLine": 330, "module": "modules/012-relay-deployment.md", "kind": "paragraph", "text": "A typical deployment should require only:"}
+{"id": "L0331", "sourceLine": 331, "module": "modules/012-relay-deployment.md", "kind": "blank", "text": ""}
+{"id": "L0332", "sourceLine": 332, "module": "modules/012-relay-deployment.md", "kind": "list-item", "text": "1. Obtain a Linux server."}
+{"id": "L0333", "sourceLine": 333, "module": "modules/012-relay-deployment.md", "kind": "list-item", "text": "2. Run one installation command."}
+{"id": "L0334", "sourceLine": 334, "module": "modules/012-relay-deployment.md", "kind": "list-item", "text": "3. Configure the server address and authentication secret."}
+{"id": "L0335", "sourceLine": 335, "module": "modules/012-relay-deployment.md", "kind": "list-item", "text": "4. Start the service."}
+{"id": "L0336", "sourceLine": 336, "module": "modules/012-relay-deployment.md", "kind": "list-item", "text": "5. Add the server to the client."}
+{"id": "L0337", "sourceLine": 337, "module": "modules/012-relay-deployment.md", "kind": "blank", "text": ""}
+{"id": "L0338", "sourceLine": 338, "module": "modules/012-relay-deployment.md", "kind": "paragraph", "text": "Provide:"}
+{"id": "L0339", "sourceLine": 339, "module": "modules/012-relay-deployment.md", "kind": "blank", "text": ""}
+{"id": "L0340", "sourceLine": 340, "module": "modules/012-relay-deployment.md", "kind": "list-item", "text": "- One-command installation."}
+{"id": "L0341", "sourceLine": 341, "module": "modules/012-relay-deployment.md", "kind": "list-item", "text": "- Interactive setup wizard."}
+{"id": "L0342", "sourceLine": 342, "module": "modules/012-relay-deployment.md", "kind": "list-item", "text": "- Automatic configuration generation."}
+{"id": "L0343", "sourceLine": 343, "module": "modules/012-relay-deployment.md", "kind": "list-item", "text": "- Automatic TLS certificate management where applicable."}
+{"id": "L0344", "sourceLine": 344, "module": "modules/012-relay-deployment.md", "kind": "list-item", "text": "- Firewall and port diagnostics."}
+{"id": "L0345", "sourceLine": 345, "module": "modules/012-relay-deployment.md", "kind": "list-item", "text": "- Installation verification."}
+{"id": "L0346", "sourceLine": 346, "module": "modules/012-relay-deployment.md", "kind": "list-item", "text": "- One-command upgrade."}
+{"id": "L0347", "sourceLine": 347, "module": "modules/012-relay-deployment.md", "kind": "list-item", "text": "- One-command uninstall."}
+{"id": "L0348", "sourceLine": 348, "module": "modules/012-relay-deployment.md", "kind": "blank", "text": ""}
+{"id": "L0349", "sourceLine": 349, "module": "modules/012-relay-deployment.md", "kind": "paragraph", "text": "Provide Docker Compose as an alternative deployment method."}
+{"id": "L0350", "sourceLine": 350, "module": "modules/012-relay-deployment.md", "kind": "blank", "text": ""}
+{"id": "L0351", "sourceLine": 351, "module": "modules/012-relay-deployment.md", "kind": "paragraph", "text": "Document the exact ports, protocols, firewall rules, and resource requirements."}
+{"id": "L0352", "sourceLine": 352, "module": "modules/012-relay-deployment.md", "kind": "blank", "text": ""}
+{"id": "L0353", "sourceLine": 353, "module": "modules/012-relay-deployment.md", "kind": "paragraph", "text": "Never expose management interfaces or administrative credentials unnecessarily."}
+{"id": "L0354", "sourceLine": 354, "module": "modules/012-relay-deployment.md", "kind": "blank", "text": ""}
+{"id": "L0355", "sourceLine": 355, "module": "modules/013-relay-profiles.md", "kind": "heading", "text": "### 6.2 Multiple Relay Servers"}
+{"id": "L0356", "sourceLine": 356, "module": "modules/013-relay-profiles.md", "kind": "blank", "text": ""}
+{"id": "L0357", "sourceLine": 357, "module": "modules/013-relay-profiles.md", "kind": "paragraph", "text": "A user must be able to add an unlimited number of relay server profiles in the client."}
+{"id": "L0358", "sourceLine": 358, "module": "modules/013-relay-profiles.md", "kind": "blank", "text": ""}
+{"id": "L0359", "sourceLine": 359, "module": "modules/013-relay-profiles.md", "kind": "paragraph", "text": "Each profile should contain:"}
+{"id": "L0360", "sourceLine": 360, "module": "modules/013-relay-profiles.md", "kind": "blank", "text": ""}
+{"id": "L0361", "sourceLine": 361, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Display name."}
+{"id": "L0362", "sourceLine": 362, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Server address."}
+{"id": "L0363", "sourceLine": 363, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Port."}
+{"id": "L0364", "sourceLine": 364, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Authentication information."}
+{"id": "L0365", "sourceLine": 365, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- TLS configuration."}
+{"id": "L0366", "sourceLine": 366, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Optional region."}
+{"id": "L0367", "sourceLine": 367, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Connection priority."}
+{"id": "L0368", "sourceLine": 368, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Health status."}
+{"id": "L0369", "sourceLine": 369, "module": "modules/013-relay-profiles.md", "kind": "blank", "text": ""}
+{"id": "L0370", "sourceLine": 370, "module": "modules/013-relay-profiles.md", "kind": "paragraph", "text": "Users must be able to:"}
+{"id": "L0371", "sourceLine": 371, "module": "modules/013-relay-profiles.md", "kind": "blank", "text": ""}
+{"id": "L0372", "sourceLine": 372, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Add servers."}
+{"id": "L0373", "sourceLine": 373, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Delete servers."}
+{"id": "L0374", "sourceLine": 374, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Edit servers."}
+{"id": "L0375", "sourceLine": 375, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Test connectivity."}
+{"id": "L0376", "sourceLine": 376, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Switch servers manually."}
+{"id": "L0377", "sourceLine": 377, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Select automatic server selection."}
+{"id": "L0378", "sourceLine": 378, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Set a preferred server."}
+{"id": "L0379", "sourceLine": 379, "module": "modules/013-relay-profiles.md", "kind": "list-item", "text": "- Import and export server configurations."}
+{"id": "L0380", "sourceLine": 380, "module": "modules/013-relay-profiles.md", "kind": "blank", "text": ""}
+{"id": "L0381", "sourceLine": 381, "module": "modules/013-relay-profiles.md", "kind": "paragraph", "text": "The client must clearly show which server is currently being used."}
+{"id": "L0382", "sourceLine": 382, "module": "modules/013-relay-profiles.md", "kind": "blank", "text": ""}
+{"id": "L0383", "sourceLine": 383, "module": "modules/013-relay-profiles.md", "kind": "paragraph", "text": "Do not force users to use a centralized official server."}
+{"id": "L0384", "sourceLine": 384, "module": "modules/013-relay-profiles.md", "kind": "blank", "text": ""}
+{"id": "L0385", "sourceLine": 385, "module": "modules/014-relay-selection.md", "kind": "heading", "text": "### 6.3 Relay Selection and Failover"}
+{"id": "L0386", "sourceLine": 386, "module": "modules/014-relay-selection.md", "kind": "blank", "text": ""}
+{"id": "L0387", "sourceLine": 387, "module": "modules/014-relay-selection.md", "kind": "paragraph", "text": "Implement intelligent relay selection."}
+{"id": "L0388", "sourceLine": 388, "module": "modules/014-relay-selection.md", "kind": "blank", "text": ""}
+{"id": "L0389", "sourceLine": 389, "module": "modules/014-relay-selection.md", "kind": "paragraph", "text": "Consider:"}
+{"id": "L0390", "sourceLine": 390, "module": "modules/014-relay-selection.md", "kind": "blank", "text": ""}
+{"id": "L0391", "sourceLine": 391, "module": "modules/014-relay-selection.md", "kind": "list-item", "text": "- Latency."}
+{"id": "L0392", "sourceLine": 392, "module": "modules/014-relay-selection.md", "kind": "list-item", "text": "- Packet loss."}
+{"id": "L0393", "sourceLine": 393, "module": "modules/014-relay-selection.md", "kind": "list-item", "text": "- Bandwidth."}
+{"id": "L0394", "sourceLine": 394, "module": "modules/014-relay-selection.md", "kind": "list-item", "text": "- Geographic location."}
+{"id": "L0395", "sourceLine": 395, "module": "modules/014-relay-selection.md", "kind": "list-item", "text": "- Server availability."}
+{"id": "L0396", "sourceLine": 396, "module": "modules/014-relay-selection.md", "kind": "list-item", "text": "- User preference."}
+{"id": "L0397", "sourceLine": 397, "module": "modules/014-relay-selection.md", "kind": "blank", "text": ""}
+{"id": "L0398", "sourceLine": 398, "module": "modules/014-relay-selection.md", "kind": "paragraph", "text": "Provide configurable selection strategies:"}
+{"id": "L0399", "sourceLine": 399, "module": "modules/014-relay-selection.md", "kind": "blank", "text": ""}
+{"id": "L0400", "sourceLine": 400, "module": "modules/014-relay-selection.md", "kind": "list-item", "text": "- Manual."}
+{"id": "L0401", "sourceLine": 401, "module": "modules/014-relay-selection.md", "kind": "list-item", "text": "- Lowest latency."}
+{"id": "L0402", "sourceLine": 402, "module": "modules/014-relay-selection.md", "kind": "list-item", "text": "- Preferred server first."}
+{"id": "L0403", "sourceLine": 403, "module": "modules/014-relay-selection.md", "kind": "list-item", "text": "- Automatic failover."}
+{"id": "L0404", "sourceLine": 404, "module": "modules/014-relay-selection.md", "kind": "blank", "text": ""}
+{"id": "L0405", "sourceLine": 405, "module": "modules/014-relay-selection.md", "kind": "paragraph", "text": "If the selected relay fails, attempt another configured relay."}
+{"id": "L0406", "sourceLine": 406, "module": "modules/014-relay-selection.md", "kind": "blank", "text": ""}
+{"id": "L0407", "sourceLine": 407, "module": "modules/014-relay-selection.md", "kind": "paragraph", "text": "Maintain secure session establishment and avoid exposing credentials during server switching."}
+{"id": "L0408", "sourceLine": 408, "module": "modules/014-relay-selection.md", "kind": "blank", "text": ""}
+{"id": "L0409", "sourceLine": 409, "module": "modules/014-relay-selection.md", "kind": "paragraph", "text": "Design the system so that relay servers can eventually form a distributed infrastructure."}
+{"id": "L0410", "sourceLine": 410, "module": "modules/014-relay-selection.md", "kind": "blank", "text": ""}
+{"id": "L0411", "sourceLine": 411, "module": "modules/015-android.md", "kind": "heading", "text": "## 7. Android Requirements"}
+{"id": "L0412", "sourceLine": 412, "module": "modules/015-android.md", "kind": "blank", "text": ""}
+{"id": "L0413", "sourceLine": 413, "module": "modules/015-android.md", "kind": "paragraph", "text": "Android is a first-class platform, not an afterthought."}
+{"id": "L0414", "sourceLine": 414, "module": "modules/015-android.md", "kind": "blank", "text": ""}
+{"id": "L0415", "sourceLine": 415, "module": "modules/015-android.md", "kind": "paragraph", "text": "Implement:"}
+{"id": "L0416", "sourceLine": 416, "module": "modules/015-android.md", "kind": "blank", "text": ""}
+{"id": "L0417", "sourceLine": 417, "module": "modules/015-android.md", "kind": "list-item", "text": "- Remote desktop viewing."}
+{"id": "L0418", "sourceLine": 418, "module": "modules/015-android.md", "kind": "list-item", "text": "- Touch input."}
+{"id": "L0419", "sourceLine": 419, "module": "modules/015-android.md", "kind": "list-item", "text": "- Mouse emulation."}
+{"id": "L0420", "sourceLine": 420, "module": "modules/015-android.md", "kind": "list-item", "text": "- External keyboard support."}
+{"id": "L0421", "sourceLine": 421, "module": "modules/015-android.md", "kind": "list-item", "text": "- Clipboard synchronization."}
+{"id": "L0422", "sourceLine": 422, "module": "modules/015-android.md", "kind": "list-item", "text": "- File transfer."}
+{"id": "L0423", "sourceLine": 423, "module": "modules/015-android.md", "kind": "list-item", "text": "- Virtual keyboard."}
+{"id": "L0424", "sourceLine": 424, "module": "modules/015-android.md", "kind": "list-item", "text": "- Landscape and portrait support."}
+{"id": "L0425", "sourceLine": 425, "module": "modules/015-android.md", "kind": "list-item", "text": "- Adaptive resolution."}
+{"id": "L0426", "sourceLine": 426, "module": "modules/015-android.md", "kind": "list-item", "text": "- Connection management."}
+{"id": "L0427", "sourceLine": 427, "module": "modules/015-android.md", "kind": "list-item", "text": "- Relay server selection."}
+{"id": "L0428", "sourceLine": 428, "module": "modules/015-android.md", "kind": "list-item", "text": "- Session security."}
+{"id": "L0429", "sourceLine": 429, "module": "modules/015-android.md", "kind": "blank", "text": ""}
+{"id": "L0430", "sourceLine": 430, "module": "modules/015-android.md", "kind": "paragraph", "text": "Investigate Android's limitations on background execution, screen capture, accessibility, and input injection."}
+{"id": "L0431", "sourceLine": 431, "module": "modules/015-android.md", "kind": "blank", "text": ""}
+{"id": "L0432", "sourceLine": 432, "module": "modules/015-android.md", "kind": "paragraph", "text": "Clearly distinguish features that require explicit user authorization or accessibility permissions."}
+{"id": "L0433", "sourceLine": 433, "module": "modules/015-android.md", "kind": "blank", "text": ""}
+{"id": "L0434", "sourceLine": 434, "module": "modules/015-android.md", "kind": "paragraph", "text": "Do not promise unrestricted control when the operating system does not permit it."}
+{"id": "L0435", "sourceLine": 435, "module": "modules/015-android.md", "kind": "blank", "text": ""}
+{"id": "L0436", "sourceLine": 436, "module": "modules/016-security.md", "kind": "heading", "text": "## 8. Security Architecture"}
+{"id": "L0437", "sourceLine": 437, "module": "modules/016-security.md", "kind": "blank", "text": ""}
+{"id": "L0438", "sourceLine": 438, "module": "modules/016-security.md", "kind": "paragraph", "text": "Security must be designed from the beginning."}
+{"id": "L0439", "sourceLine": 439, "module": "modules/016-security.md", "kind": "blank", "text": ""}
+{"id": "L0440", "sourceLine": 440, "module": "modules/016-security.md", "kind": "paragraph", "text": "Requirements:"}
+{"id": "L0441", "sourceLine": 441, "module": "modules/016-security.md", "kind": "blank", "text": ""}
+{"id": "L0442", "sourceLine": 442, "module": "modules/016-security.md", "kind": "list-item", "text": "- End-to-end encryption."}
+{"id": "L0443", "sourceLine": 443, "module": "modules/016-security.md", "kind": "list-item", "text": "- Mutual authentication."}
+{"id": "L0444", "sourceLine": 444, "module": "modules/016-security.md", "kind": "list-item", "text": "- Device identity."}
+{"id": "L0445", "sourceLine": 445, "module": "modules/016-security.md", "kind": "list-item", "text": "- Secure key exchange."}
+{"id": "L0446", "sourceLine": 446, "module": "modules/016-security.md", "kind": "list-item", "text": "- Secure credential storage."}
+{"id": "L0447", "sourceLine": 447, "module": "modules/016-security.md", "kind": "list-item", "text": "- Session authorization."}
+{"id": "L0448", "sourceLine": 448, "module": "modules/016-security.md", "kind": "list-item", "text": "- Optional two-factor authentication."}
+{"id": "L0449", "sourceLine": 449, "module": "modules/016-security.md", "kind": "list-item", "text": "- Device pairing."}
+{"id": "L0450", "sourceLine": 450, "module": "modules/016-security.md", "kind": "list-item", "text": "- Access control."}
+{"id": "L0451", "sourceLine": 451, "module": "modules/016-security.md", "kind": "list-item", "text": "- Session expiration."}
+{"id": "L0452", "sourceLine": 452, "module": "modules/016-security.md", "kind": "list-item", "text": "- Replay protection."}
+{"id": "L0453", "sourceLine": 453, "module": "modules/016-security.md", "kind": "list-item", "text": "- Protection against unauthorized relay impersonation."}
+{"id": "L0454", "sourceLine": 454, "module": "modules/016-security.md", "kind": "list-item", "text": "- Secure update mechanism."}
+{"id": "L0455", "sourceLine": 455, "module": "modules/016-security.md", "kind": "list-item", "text": "- Audit logs."}
+{"id": "L0456", "sourceLine": 456, "module": "modules/016-security.md", "kind": "blank", "text": ""}
+{"id": "L0457", "sourceLine": 457, "module": "modules/016-security.md", "kind": "paragraph", "text": "The relay server must not be able to decrypt remote desktop sessions."}
+{"id": "L0458", "sourceLine": 458, "module": "modules/016-security.md", "kind": "blank", "text": ""}
+{"id": "L0459", "sourceLine": 459, "module": "modules/016-security.md", "kind": "paragraph", "text": "Do not store passwords or authentication secrets in plaintext."}
+{"id": "L0460", "sourceLine": 460, "module": "modules/016-security.md", "kind": "blank", "text": ""}
+{"id": "L0461", "sourceLine": 461, "module": "modules/016-security.md", "kind": "paragraph", "text": "Provide clear controls for revoking trusted devices and terminating active sessions."}
+{"id": "L0462", "sourceLine": 462, "module": "modules/016-security.md", "kind": "blank", "text": ""}
+{"id": "L0463", "sourceLine": 463, "module": "modules/016-security.md", "kind": "paragraph", "text": "Implement security testing before public release."}
+{"id": "L0464", "sourceLine": 464, "module": "modules/016-security.md", "kind": "blank", "text": ""}
+{"id": "L0465", "sourceLine": 465, "module": "modules/017-ui.md", "kind": "heading", "text": "## 9. User Interface"}
+{"id": "L0466", "sourceLine": 466, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0467", "sourceLine": 467, "module": "modules/017-ui.md", "kind": "paragraph", "text": "The product should look and feel like a polished commercial remote desktop application."}
+{"id": "L0468", "sourceLine": 468, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0469", "sourceLine": 469, "module": "modules/017-ui.md", "kind": "paragraph", "text": "Avoid a developer-oriented interface."}
+{"id": "L0470", "sourceLine": 470, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0471", "sourceLine": 471, "module": "modules/017-ui.md", "kind": "heading", "text": "### Main interface"}
+{"id": "L0472", "sourceLine": 472, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0473", "sourceLine": 473, "module": "modules/017-ui.md", "kind": "paragraph", "text": "Provide:"}
+{"id": "L0474", "sourceLine": 474, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0475", "sourceLine": 475, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Device list."}
+{"id": "L0476", "sourceLine": 476, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Online/offline status."}
+{"id": "L0477", "sourceLine": 477, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Device identification."}
+{"id": "L0478", "sourceLine": 478, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Recent connections."}
+{"id": "L0479", "sourceLine": 479, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Favorites."}
+{"id": "L0480", "sourceLine": 480, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Search."}
+{"id": "L0481", "sourceLine": 481, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Connection history."}
+{"id": "L0482", "sourceLine": 482, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Relay configuration."}
+{"id": "L0483", "sourceLine": 483, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Settings."}
+{"id": "L0484", "sourceLine": 484, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Account/device management where applicable."}
+{"id": "L0485", "sourceLine": 485, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0486", "sourceLine": 486, "module": "modules/017-ui.md", "kind": "heading", "text": "### Connection interface"}
+{"id": "L0487", "sourceLine": 487, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0488", "sourceLine": 488, "module": "modules/017-ui.md", "kind": "paragraph", "text": "Provide:"}
+{"id": "L0489", "sourceLine": 489, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0490", "sourceLine": 490, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Full-screen mode."}
+{"id": "L0491", "sourceLine": 491, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Multi-monitor switching."}
+{"id": "L0492", "sourceLine": 492, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Resolution selection."}
+{"id": "L0493", "sourceLine": 493, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Display management."}
+{"id": "L0494", "sourceLine": 494, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Keyboard mapping."}
+{"id": "L0495", "sourceLine": 495, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Clipboard controls."}
+{"id": "L0496", "sourceLine": 496, "module": "modules/017-ui.md", "kind": "list-item", "text": "- File transfer."}
+{"id": "L0497", "sourceLine": 497, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Audio controls."}
+{"id": "L0498", "sourceLine": 498, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Image quality settings."}
+{"id": "L0499", "sourceLine": 499, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Connection statistics."}
+{"id": "L0500", "sourceLine": 500, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Reconnect."}
+{"id": "L0501", "sourceLine": 501, "module": "modules/017-ui.md", "kind": "list-item", "text": "- Session permissions."}
+{"id": "L0502", "sourceLine": 502, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0503", "sourceLine": 503, "module": "modules/017-ui.md", "kind": "heading", "text": "### Relay management interface"}
+{"id": "L0504", "sourceLine": 504, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0505", "sourceLine": 505, "module": "modules/017-ui.md", "kind": "paragraph", "text": "Make relay configuration exceptionally simple."}
+{"id": "L0506", "sourceLine": 506, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0507", "sourceLine": 507, "module": "modules/017-ui.md", "kind": "paragraph", "text": "The user should not need to understand networking protocols."}
+{"id": "L0508", "sourceLine": 508, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0509", "sourceLine": 509, "module": "modules/017-ui.md", "kind": "paragraph", "text": "A normal user should be able to add a server and use it within a minute."}
+{"id": "L0510", "sourceLine": 510, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0511", "sourceLine": 511, "module": "modules/017-ui.md", "kind": "paragraph", "text": "Provide useful diagnostics when a server cannot be reached."}
+{"id": "L0512", "sourceLine": 512, "module": "modules/017-ui.md", "kind": "blank", "text": ""}
+{"id": "L0513", "sourceLine": 513, "module": "modules/018-additional-features.md", "kind": "heading", "text": "## 10. Additional Features Worth Implementing"}
+{"id": "L0514", "sourceLine": 514, "module": "modules/018-additional-features.md", "kind": "blank", "text": ""}
+{"id": "L0515", "sourceLine": 515, "module": "modules/018-additional-features.md", "kind": "paragraph", "text": "Evaluate and implement the following where appropriate:"}
+{"id": "L0516", "sourceLine": 516, "module": "modules/018-additional-features.md", "kind": "blank", "text": ""}
+{"id": "L0517", "sourceLine": 517, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Remote file manager."}
+{"id": "L0518", "sourceLine": 518, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Drag-and-drop file transfer."}
+{"id": "L0519", "sourceLine": 519, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Multiple simultaneous connections."}
+{"id": "L0520", "sourceLine": 520, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Remote audio."}
+{"id": "L0521", "sourceLine": 521, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Two-way audio where practical."}
+{"id": "L0522", "sourceLine": 522, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Remote terminal with explicit authorization."}
+{"id": "L0523", "sourceLine": 523, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Remote reboot and shutdown."}
+{"id": "L0524", "sourceLine": 524, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Wake-on-LAN where supported."}
+{"id": "L0525", "sourceLine": 525, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Device groups."}
+{"id": "L0526", "sourceLine": 526, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Trusted devices."}
+{"id": "L0527", "sourceLine": 527, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Session recording with user consent."}
+{"id": "L0528", "sourceLine": 528, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Privacy mode."}
+{"id": "L0529", "sourceLine": 529, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Blank physical display where supported."}
+{"id": "L0530", "sourceLine": 530, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Connection permissions."}
+{"id": "L0531", "sourceLine": 531, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Multi-user access."}
+{"id": "L0532", "sourceLine": 532, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Remote system information."}
+{"id": "L0533", "sourceLine": 533, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Portable client."}
+{"id": "L0534", "sourceLine": 534, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Automatic updates."}
+{"id": "L0535", "sourceLine": 535, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Self-hosted device directory."}
+{"id": "L0536", "sourceLine": 536, "module": "modules/018-additional-features.md", "kind": "list-item", "text": "- Centralized device management for future enterprise use."}
+{"id": "L0537", "sourceLine": 537, "module": "modules/018-additional-features.md", "kind": "blank", "text": ""}
+{"id": "L0538", "sourceLine": 538, "module": "modules/018-additional-features.md", "kind": "paragraph", "text": "These features must not compromise the core architecture or delay the essential functionality unnecessarily."}
+{"id": "L0539", "sourceLine": 539, "module": "modules/018-additional-features.md", "kind": "blank", "text": ""}
+{"id": "L0540", "sourceLine": 540, "module": "modules/019-architecture.md", "kind": "heading", "text": "## 11. Suggested Architecture"}
+{"id": "L0541", "sourceLine": 541, "module": "modules/019-architecture.md", "kind": "blank", "text": ""}
+{"id": "L0542", "sourceLine": 542, "module": "modules/019-architecture.md", "kind": "paragraph", "text": "Do not blindly follow this proposal. Evaluate alternatives before making architectural decisions."}
+{"id": "L0543", "sourceLine": 543, "module": "modules/019-architecture.md", "kind": "blank", "text": ""}
+{"id": "L0544", "sourceLine": 544, "module": "modules/019-architecture.md", "kind": "paragraph", "text": "A possible architecture:"}
+{"id": "L0545", "sourceLine": 545, "module": "modules/019-architecture.md", "kind": "blank", "text": ""}
+{"id": "L0546", "sourceLine": 546, "module": "modules/019-architecture.md", "kind": "list-item", "text": "- Rust: Core networking, relay server, protocol, and cross-platform shared components."}
+{"id": "L0547", "sourceLine": 547, "module": "modules/019-architecture.md", "kind": "list-item", "text": "- Native platform integrations: Windows, Linux, macOS."}
+{"id": "L0548", "sourceLine": 548, "module": "modules/019-architecture.md", "kind": "list-item", "text": "- Kotlin: Android."}
+{"id": "L0549", "sourceLine": 549, "module": "modules/019-architecture.md", "kind": "list-item", "text": "- Tauri or another suitable framework: Desktop interface."}
+{"id": "L0550", "sourceLine": 550, "module": "modules/019-architecture.md", "kind": "list-item", "text": "- WebRTC / QUIC: Evaluate for media and transport."}
+{"id": "L0551", "sourceLine": 551, "module": "modules/019-architecture.md", "kind": "list-item", "text": "- Hardware encoding APIs: Platform-specific implementation."}
+{"id": "L0552", "sourceLine": 552, "module": "modules/019-architecture.md", "kind": "list-item", "text": "- Protocol Buffers or another appropriate serialization format."}
+{"id": "L0553", "sourceLine": 553, "module": "modules/019-architecture.md", "kind": "blank", "text": ""}
+{"id": "L0554", "sourceLine": 554, "module": "modules/019-architecture.md", "kind": "paragraph", "text": "Separate the system into:"}
+{"id": "L0555", "sourceLine": 555, "module": "modules/019-architecture.md", "kind": "blank", "text": ""}
+{"id": "L0556", "sourceLine": 556, "module": "modules/019-architecture.md", "kind": "list-item", "text": "1. Core."}
+{"id": "L0557", "sourceLine": 557, "module": "modules/019-architecture.md", "kind": "list-item", "text": "2. Capture."}
+{"id": "L0558", "sourceLine": 558, "module": "modules/019-architecture.md", "kind": "list-item", "text": "3. Virtual Display."}
+{"id": "L0559", "sourceLine": 559, "module": "modules/019-architecture.md", "kind": "list-item", "text": "4. Encoder."}
+{"id": "L0560", "sourceLine": 560, "module": "modules/019-architecture.md", "kind": "list-item", "text": "5. Decoder."}
+{"id": "L0561", "sourceLine": 561, "module": "modules/019-architecture.md", "kind": "list-item", "text": "6. Input."}
+{"id": "L0562", "sourceLine": 562, "module": "modules/019-architecture.md", "kind": "list-item", "text": "7. Clipboard."}
+{"id": "L0563", "sourceLine": 563, "module": "modules/019-architecture.md", "kind": "list-item", "text": "8. File Transfer."}
+{"id": "L0564", "sourceLine": 564, "module": "modules/019-architecture.md", "kind": "list-item", "text": "9. Audio."}
+{"id": "L0565", "sourceLine": 565, "module": "modules/019-architecture.md", "kind": "list-item", "text": "10. Networking."}
+{"id": "L0566", "sourceLine": 566, "module": "modules/019-architecture.md", "kind": "list-item", "text": "11. P2P."}
+{"id": "L0567", "sourceLine": 567, "module": "modules/019-architecture.md", "kind": "list-item", "text": "12. Relay."}
+{"id": "L0568", "sourceLine": 568, "module": "modules/019-architecture.md", "kind": "list-item", "text": "13. Device Discovery."}
+{"id": "L0569", "sourceLine": 569, "module": "modules/019-architecture.md", "kind": "list-item", "text": "14. Authentication."}
+{"id": "L0570", "sourceLine": 570, "module": "modules/019-architecture.md", "kind": "list-item", "text": "15. Desktop UI."}
+{"id": "L0571", "sourceLine": 571, "module": "modules/019-architecture.md", "kind": "list-item", "text": "16. Android UI."}
+{"id": "L0572", "sourceLine": 572, "module": "modules/019-architecture.md", "kind": "list-item", "text": "17. Server Management."}
+{"id": "L0573", "sourceLine": 573, "module": "modules/019-architecture.md", "kind": "blank", "text": ""}
+{"id": "L0574", "sourceLine": 574, "module": "modules/019-architecture.md", "kind": "paragraph", "text": "Define stable interfaces between modules."}
+{"id": "L0575", "sourceLine": 575, "module": "modules/019-architecture.md", "kind": "blank", "text": ""}
+{"id": "L0576", "sourceLine": 576, "module": "modules/019-architecture.md", "kind": "paragraph", "text": "Avoid unnecessary microservices."}
+{"id": "L0577", "sourceLine": 577, "module": "modules/019-architecture.md", "kind": "blank", "text": ""}
+{"id": "L0578", "sourceLine": 578, "module": "modules/019-architecture.md", "kind": "paragraph", "text": "Keep the relay server lightweight and independent of the desktop applications."}
+{"id": "L0579", "sourceLine": 579, "module": "modules/019-architecture.md", "kind": "blank", "text": ""}
+{"id": "L0580", "sourceLine": 580, "module": "modules/020-development-phases.md", "kind": "heading", "text": "## 12. Development Methodology"}
+{"id": "L0581", "sourceLine": 581, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0582", "sourceLine": 582, "module": "modules/020-development-phases.md", "kind": "paragraph", "text": "Work autonomously and systematically."}
+{"id": "L0583", "sourceLine": 583, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0584", "sourceLine": 584, "module": "modules/020-development-phases.md", "kind": "paragraph", "text": "Do not stop after producing an architecture document or a prototype."}
+{"id": "L0585", "sourceLine": 585, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0586", "sourceLine": 586, "module": "modules/020-development-phases.md", "kind": "heading", "text": "### Phase 1: Research and Architecture"}
+{"id": "L0587", "sourceLine": 587, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0588", "sourceLine": 588, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Complete competitive analysis."}
+{"id": "L0589", "sourceLine": 589, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Identify suitable open-source foundations."}
+{"id": "L0590", "sourceLine": 590, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Compare licenses."}
+{"id": "L0591", "sourceLine": 591, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Evaluate platform APIs."}
+{"id": "L0592", "sourceLine": 592, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Define the communication protocol."}
+{"id": "L0593", "sourceLine": 593, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Define the security model."}
+{"id": "L0594", "sourceLine": 594, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Produce architecture diagrams."}
+{"id": "L0595", "sourceLine": 595, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Create the feature matrix."}
+{"id": "L0596", "sourceLine": 596, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Establish measurable performance targets."}
+{"id": "L0597", "sourceLine": 597, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0598", "sourceLine": 598, "module": "modules/020-development-phases.md", "kind": "heading", "text": "### Phase 2: Core MVP"}
+{"id": "L0599", "sourceLine": 599, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0600", "sourceLine": 600, "module": "modules/020-development-phases.md", "kind": "paragraph", "text": "Implement:"}
+{"id": "L0601", "sourceLine": 601, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0602", "sourceLine": 602, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Windows host and controller."}
+{"id": "L0603", "sourceLine": 603, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Linux host and controller."}
+{"id": "L0604", "sourceLine": 604, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Basic desktop streaming."}
+{"id": "L0605", "sourceLine": 605, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Keyboard and mouse."}
+{"id": "L0606", "sourceLine": 606, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Clipboard synchronization."}
+{"id": "L0607", "sourceLine": 607, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Direct P2P."}
+{"id": "L0608", "sourceLine": 608, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Linux relay server."}
+{"id": "L0609", "sourceLine": 609, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Manual relay configuration."}
+{"id": "L0610", "sourceLine": 610, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Automatic relay fallback."}
+{"id": "L0611", "sourceLine": 611, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0612", "sourceLine": 612, "module": "modules/020-development-phases.md", "kind": "heading", "text": "### Phase 3: Advanced Desktop Features"}
+{"id": "L0613", "sourceLine": 613, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0614", "sourceLine": 614, "module": "modules/020-development-phases.md", "kind": "paragraph", "text": "Implement:"}
+{"id": "L0615", "sourceLine": 615, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0616", "sourceLine": 616, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Virtual displays."}
+{"id": "L0617", "sourceLine": 617, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Multiple monitors."}
+{"id": "L0618", "sourceLine": 618, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Advanced keyboard mappings."}
+{"id": "L0619", "sourceLine": 619, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- File transfer."}
+{"id": "L0620", "sourceLine": 620, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Audio."}
+{"id": "L0621", "sourceLine": 621, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Adaptive streaming."}
+{"id": "L0622", "sourceLine": 622, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Automatic relay selection."}
+{"id": "L0623", "sourceLine": 623, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Multi-server management."}
+{"id": "L0624", "sourceLine": 624, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0625", "sourceLine": 625, "module": "modules/020-development-phases.md", "kind": "heading", "text": "### Phase 4: macOS and Android"}
+{"id": "L0626", "sourceLine": 626, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0627", "sourceLine": 627, "module": "modules/020-development-phases.md", "kind": "paragraph", "text": "Complete native platform integrations."}
+{"id": "L0628", "sourceLine": 628, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0629", "sourceLine": 629, "module": "modules/020-development-phases.md", "kind": "paragraph", "text": "Test real cross-platform connections."}
+{"id": "L0630", "sourceLine": 630, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0631", "sourceLine": 631, "module": "modules/020-development-phases.md", "kind": "heading", "text": "### Phase 5: Production Quality"}
+{"id": "L0632", "sourceLine": 632, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0633", "sourceLine": 633, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Security audit."}
+{"id": "L0634", "sourceLine": 634, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Performance optimization."}
+{"id": "L0635", "sourceLine": 635, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Stress testing."}
+{"id": "L0636", "sourceLine": 636, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Network failure testing."}
+{"id": "L0637", "sourceLine": 637, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Installation testing."}
+{"id": "L0638", "sourceLine": 638, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Upgrade testing."}
+{"id": "L0639", "sourceLine": 639, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- UI refinement."}
+{"id": "L0640", "sourceLine": 640, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Documentation."}
+{"id": "L0641", "sourceLine": 641, "module": "modules/020-development-phases.md", "kind": "list-item", "text": "- Release automation."}
+{"id": "L0642", "sourceLine": 642, "module": "modules/020-development-phases.md", "kind": "blank", "text": ""}
+{"id": "L0643", "sourceLine": 643, "module": "modules/021-testing.md", "kind": "heading", "text": "## 13. Testing Requirements"}
+{"id": "L0644", "sourceLine": 644, "module": "modules/021-testing.md", "kind": "blank", "text": ""}
+{"id": "L0645", "sourceLine": 645, "module": "modules/021-testing.md", "kind": "paragraph", "text": "Create automated tests and a reproducible testing environment."}
+{"id": "L0646", "sourceLine": 646, "module": "modules/021-testing.md", "kind": "blank", "text": ""}
+{"id": "L0647", "sourceLine": 647, "module": "modules/021-testing.md", "kind": "paragraph", "text": "Test all combinations of:"}
+{"id": "L0648", "sourceLine": 648, "module": "modules/021-testing.md", "kind": "blank", "text": ""}
+{"id": "L0649", "sourceLine": 649, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Windows to Windows."}
+{"id": "L0650", "sourceLine": 650, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Windows to Linux."}
+{"id": "L0651", "sourceLine": 651, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Windows to macOS."}
+{"id": "L0652", "sourceLine": 652, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Linux to Windows."}
+{"id": "L0653", "sourceLine": 653, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Linux to Linux."}
+{"id": "L0654", "sourceLine": 654, "module": "modules/021-testing.md", "kind": "list-item", "text": "- macOS to Windows."}
+{"id": "L0655", "sourceLine": 655, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Android to Windows."}
+{"id": "L0656", "sourceLine": 656, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Android to Linux."}
+{"id": "L0657", "sourceLine": 657, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Android to macOS."}
+{"id": "L0658", "sourceLine": 658, "module": "modules/021-testing.md", "kind": "blank", "text": ""}
+{"id": "L0659", "sourceLine": 659, "module": "modules/021-testing.md", "kind": "paragraph", "text": "Test both P2P and relay modes."}
+{"id": "L0660", "sourceLine": 660, "module": "modules/021-testing.md", "kind": "blank", "text": ""}
+{"id": "L0661", "sourceLine": 661, "module": "modules/021-testing.md", "kind": "paragraph", "text": "Test:"}
+{"id": "L0662", "sourceLine": 662, "module": "modules/021-testing.md", "kind": "blank", "text": ""}
+{"id": "L0663", "sourceLine": 663, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Clipboard in both directions."}
+{"id": "L0664", "sourceLine": 664, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Keyboard shortcut translation."}
+{"id": "L0665", "sourceLine": 665, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Different keyboard layouts."}
+{"id": "L0666", "sourceLine": 666, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Virtual display creation."}
+{"id": "L0667", "sourceLine": 667, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Resolution switching."}
+{"id": "L0668", "sourceLine": 668, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Multi-monitor operation."}
+{"id": "L0669", "sourceLine": 669, "module": "modules/021-testing.md", "kind": "list-item", "text": "- File transfer."}
+{"id": "L0670", "sourceLine": 670, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Audio."}
+{"id": "L0671", "sourceLine": 671, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Network interruptions."}
+{"id": "L0672", "sourceLine": 672, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Relay failure."}
+{"id": "L0673", "sourceLine": 673, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Server switching."}
+{"id": "L0674", "sourceLine": 674, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Reconnection."}
+{"id": "L0675", "sourceLine": 675, "module": "modules/021-testing.md", "kind": "list-item", "text": "- High latency."}
+{"id": "L0676", "sourceLine": 676, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Packet loss."}
+{"id": "L0677", "sourceLine": 677, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Bandwidth restrictions."}
+{"id": "L0678", "sourceLine": 678, "module": "modules/021-testing.md", "kind": "list-item", "text": "- Long-running sessions."}
+{"id": "L0679", "sourceLine": 679, "module": "modules/021-testing.md", "kind": "blank", "text": ""}
+{"id": "L0680", "sourceLine": 680, "module": "modules/021-testing.md", "kind": "paragraph", "text": "Maintain a test coverage report."}
+{"id": "L0681", "sourceLine": 681, "module": "modules/021-testing.md", "kind": "blank", "text": ""}
+{"id": "L0682", "sourceLine": 682, "module": "modules/021-testing.md", "kind": "paragraph", "text": "Never mark an untested feature as complete."}
+{"id": "L0683", "sourceLine": 683, "module": "modules/021-testing.md", "kind": "blank", "text": ""}
+{"id": "L0684", "sourceLine": 684, "module": "modules/022-release.md", "kind": "heading", "text": "## 14. GitHub and Open-Source Release"}
+{"id": "L0685", "sourceLine": 685, "module": "modules/022-release.md", "kind": "blank", "text": ""}
+{"id": "L0686", "sourceLine": 686, "module": "modules/022-release.md", "kind": "paragraph", "text": "Publish the project as:"}
+{"id": "L0687", "sourceLine": 687, "module": "modules/022-release.md", "kind": "blank", "text": ""}
+{"id": "L0688", "sourceLine": 688, "module": "modules/022-release.md", "kind": "paragraph", "text": "**大肥鱼远程 | Big Fat Fish Remote**"}
+{"id": "L0689", "sourceLine": 689, "module": "modules/022-release.md", "kind": "blank", "text": ""}
+{"id": "L0690", "sourceLine": 690, "module": "modules/022-release.md", "kind": "paragraph", "text": "Create a clean GitHub repository."}
+{"id": "L0691", "sourceLine": 691, "module": "modules/022-release.md", "kind": "blank", "text": ""}
+{"id": "L0692", "sourceLine": 692, "module": "modules/022-release.md", "kind": "paragraph", "text": "Include:"}
+{"id": "L0693", "sourceLine": 693, "module": "modules/022-release.md", "kind": "blank", "text": ""}
+{"id": "L0694", "sourceLine": 694, "module": "modules/022-release.md", "kind": "list-item", "text": "- README.md."}
+{"id": "L0695", "sourceLine": 695, "module": "modules/022-release.md", "kind": "list-item", "text": "- English and Chinese documentation."}
+{"id": "L0696", "sourceLine": 696, "module": "modules/022-release.md", "kind": "list-item", "text": "- Architecture documentation."}
+{"id": "L0697", "sourceLine": 697, "module": "modules/022-release.md", "kind": "list-item", "text": "- Installation instructions."}
+{"id": "L0698", "sourceLine": 698, "module": "modules/022-release.md", "kind": "list-item", "text": "- Server deployment guide."}
+{"id": "L0699", "sourceLine": 699, "module": "modules/022-release.md", "kind": "list-item", "text": "- Client configuration guide."}
+{"id": "L0700", "sourceLine": 700, "module": "modules/022-release.md", "kind": "list-item", "text": "- API and protocol documentation."}
+{"id": "L0701", "sourceLine": 701, "module": "modules/022-release.md", "kind": "list-item", "text": "- Security policy."}
+{"id": "L0702", "sourceLine": 702, "module": "modules/022-release.md", "kind": "list-item", "text": "- Contribution guide."}
+{"id": "L0703", "sourceLine": 703, "module": "modules/022-release.md", "kind": "list-item", "text": "- License."}
+{"id": "L0704", "sourceLine": 704, "module": "modules/022-release.md", "kind": "list-item", "text": "- Changelog."}
+{"id": "L0705", "sourceLine": 705, "module": "modules/022-release.md", "kind": "list-item", "text": "- Issue templates."}
+{"id": "L0706", "sourceLine": 706, "module": "modules/022-release.md", "kind": "list-item", "text": "- CI/CD."}
+{"id": "L0707", "sourceLine": 707, "module": "modules/022-release.md", "kind": "list-item", "text": "- Release workflow."}
+{"id": "L0708", "sourceLine": 708, "module": "modules/022-release.md", "kind": "blank", "text": ""}
+{"id": "L0709", "sourceLine": 709, "module": "modules/022-release.md", "kind": "paragraph", "text": "Choose a license after reviewing all dependencies and their compatibility."}
+{"id": "L0710", "sourceLine": 710, "module": "modules/022-release.md", "kind": "blank", "text": ""}
+{"id": "L0711", "sourceLine": 711, "module": "modules/022-release.md", "kind": "paragraph", "text": "Provide reproducible builds where practical."}
+{"id": "L0712", "sourceLine": 712, "module": "modules/022-release.md", "kind": "blank", "text": ""}
+{"id": "L0713", "sourceLine": 713, "module": "modules/022-release.md", "kind": "paragraph", "text": "Publish binaries for supported platforms."}
+{"id": "L0714", "sourceLine": 714, "module": "modules/022-release.md", "kind": "blank", "text": ""}
+{"id": "L0715", "sourceLine": 715, "module": "modules/022-release.md", "kind": "paragraph", "text": "Do not include secrets, private keys, proprietary binaries, or copyrighted assets."}
+{"id": "L0716", "sourceLine": 716, "module": "modules/022-release.md", "kind": "blank", "text": ""}
+{"id": "L0717", "sourceLine": 717, "module": "modules/023-engineering.md", "kind": "heading", "text": "## 15. Engineering Principles"}
+{"id": "L0718", "sourceLine": 718, "module": "modules/023-engineering.md", "kind": "blank", "text": ""}
+{"id": "L0719", "sourceLine": 719, "module": "modules/023-engineering.md", "kind": "paragraph", "text": "These requirements are mandatory."}
+{"id": "L0720", "sourceLine": 720, "module": "modules/023-engineering.md", "kind": "blank", "text": ""}
+{"id": "L0721", "sourceLine": 721, "module": "modules/023-engineering.md", "kind": "list-item", "text": "1. Do not merely produce plans. Implement working software."}
+{"id": "L0722", "sourceLine": 722, "module": "modules/023-engineering.md", "kind": "list-item", "text": "2. Do not stop at an MVP if substantial work remains."}
+{"id": "L0723", "sourceLine": 723, "module": "modules/023-engineering.md", "kind": "list-item", "text": "3. Do not claim completion without evidence."}
+{"id": "L0724", "sourceLine": 724, "module": "modules/023-engineering.md", "kind": "list-item", "text": "4. Do not implement fake or placeholder functionality and label it complete."}
+{"id": "L0725", "sourceLine": 725, "module": "modules/023-engineering.md", "kind": "list-item", "text": "5. Prioritize architectural correctness over superficial feature counts."}
+{"id": "L0726", "sourceLine": 726, "module": "modules/023-engineering.md", "kind": "list-item", "text": "6. Reuse mature open-source components when appropriate."}
+{"id": "L0727", "sourceLine": 727, "module": "modules/023-engineering.md", "kind": "list-item", "text": "7. Keep dependencies maintainable."}
+{"id": "L0728", "sourceLine": 728, "module": "modules/023-engineering.md", "kind": "list-item", "text": "8. Avoid unnecessary complexity."}
+{"id": "L0729", "sourceLine": 729, "module": "modules/023-engineering.md", "kind": "list-item", "text": "9. Document important engineering decisions."}
+{"id": "L0730", "sourceLine": 730, "module": "modules/023-engineering.md", "kind": "list-item", "text": "10. Test continuously."}
+{"id": "L0731", "sourceLine": 731, "module": "modules/023-engineering.md", "kind": "list-item", "text": "11. Keep the repository buildable."}
+{"id": "L0732", "sourceLine": 732, "module": "modules/023-engineering.md", "kind": "list-item", "text": "12. Commit working milestones regularly."}
+{"id": "L0733", "sourceLine": 733, "module": "modules/023-engineering.md", "kind": "list-item", "text": "13. Maintain a concise development tracker."}
+{"id": "L0734", "sourceLine": 734, "module": "modules/023-engineering.md", "kind": "list-item", "text": "14. Identify blockers and resolve them autonomously where possible."}
+{"id": "L0735", "sourceLine": 735, "module": "modules/023-engineering.md", "kind": "list-item", "text": "15. Do not ask for approval for routine engineering decisions."}
+{"id": "L0736", "sourceLine": 736, "module": "modules/023-engineering.md", "kind": "blank", "text": ""}
+{"id": "L0737", "sourceLine": 737, "module": "modules/023-engineering.md", "kind": "paragraph", "text": "When a feature is blocked by hardware, operating-system restrictions, or missing permissions, document the exact limitation and provide the best supported alternative."}
+{"id": "L0738", "sourceLine": 738, "module": "modules/023-engineering.md", "kind": "blank", "text": ""}
+{"id": "L0739", "sourceLine": 739, "module": "modules/024-final-objective.md", "kind": "heading", "text": "## 16. Final Objective"}
+{"id": "L0740", "sourceLine": 740, "module": "modules/024-final-objective.md", "kind": "blank", "text": ""}
+{"id": "L0741", "sourceLine": 741, "module": "modules/024-final-objective.md", "kind": "paragraph", "text": "The final objective is to deliver a genuinely useful remote desktop ecosystem."}
+{"id": "L0742", "sourceLine": 742, "module": "modules/024-final-objective.md", "kind": "blank", "text": ""}
+{"id": "L0743", "sourceLine": 743, "module": "modules/024-final-objective.md", "kind": "paragraph", "text": "The defining characteristics should be:"}
+{"id": "L0744", "sourceLine": 744, "module": "modules/024-final-objective.md", "kind": "blank", "text": ""}
+{"id": "L0745", "sourceLine": 745, "module": "modules/024-final-objective.md", "kind": "list-item", "text": "- Excellent virtual display technology."}
+{"id": "L0746", "sourceLine": 746, "module": "modules/024-final-objective.md", "kind": "list-item", "text": "- Reliable cross-platform keyboard mapping."}
+{"id": "L0747", "sourceLine": 747, "module": "modules/024-final-objective.md", "kind": "list-item", "text": "- Seamless bidirectional clipboard synchronization."}
+{"id": "L0748", "sourceLine": 748, "module": "modules/024-final-objective.md", "kind": "list-item", "text": "- Responsive remote desktop streaming."}
+{"id": "L0749", "sourceLine": 749, "module": "modules/024-final-objective.md", "kind": "list-item", "text": "- Reliable P2P with transparent relay fallback."}
+{"id": "L0750", "sourceLine": 750, "module": "modules/024-final-objective.md", "kind": "list-item", "text": "- Arbitrary user-configured relay servers."}
+{"id": "L0751", "sourceLine": 751, "module": "modules/024-final-objective.md", "kind": "list-item", "text": "- Extremely simple relay deployment."}
+{"id": "L0752", "sourceLine": 752, "module": "modules/024-final-objective.md", "kind": "list-item", "text": "- Native support for Windows, Linux, macOS, and Android."}
+{"id": "L0753", "sourceLine": 753, "module": "modules/024-final-objective.md", "kind": "list-item", "text": "- Strong security."}
+{"id": "L0754", "sourceLine": 754, "module": "modules/024-final-objective.md", "kind": "list-item", "text": "- A polished user experience."}
+{"id": "L0755", "sourceLine": 755, "module": "modules/024-final-objective.md", "kind": "list-item", "text": "- Complete open-source availability."}
+{"id": "L0756", "sourceLine": 756, "module": "modules/024-final-objective.md", "kind": "blank", "text": ""}
+{"id": "L0757", "sourceLine": 757, "module": "modules/024-final-objective.md", "kind": "paragraph", "text": "The relay system should be particularly easy to deploy and use. Users should be able to operate their own infrastructure without becoming networking experts."}
+{"id": "L0758", "sourceLine": 758, "module": "modules/024-final-objective.md", "kind": "blank", "text": ""}
+{"id": "L0759", "sourceLine": 759, "module": "modules/024-final-objective.md", "kind": "paragraph", "text": "**Think beyond feature parity. Build something technically better, more flexible, easier to deploy, and more open than the products being studied.**"}
+{"id": "L0760", "sourceLine": 760, "module": "modules/024-final-objective.md", "kind": "blank", "text": ""}
+{"id": "L0761", "sourceLine": 761, "module": "modules/024-final-objective.md", "kind": "paragraph", "text": "Start with research and a concrete implementation plan, then proceed directly to engineering. Maintain a short, continuously updated tracker showing completed work, verified tests, remaining work, and blockers."}
+{"id": "L0762", "sourceLine": 762, "module": "modules/024-final-objective.md", "kind": "blank", "text": ""}
+{"id": "L0763", "sourceLine": 763, "module": "modules/024-final-objective.md", "kind": "paragraph", "text": "Do not declare the project finished until the supported features have been implemented, tested, documented, and released."}
+{"id": "L0764", "sourceLine": 764, "module": "modules/024-final-objective.md", "kind": "blank", "text": ""}
+{"id": "L0765", "sourceLine": 765, "module": "modules/025-extra-decisions-introduction.md", "kind": "heading", "text": "## **我额外建议：三个设计决策**"}
+{"id": "L0766", "sourceLine": 766, "module": "modules/025-extra-decisions-introduction.md", "kind": "blank", "text": ""}
+{"id": "L0767", "sourceLine": 767, "module": "modules/025-extra-decisions-introduction.md", "kind": "paragraph", "text": "这三个决定会显著影响项目最终质量。"}
+{"id": "L0768", "sourceLine": 768, "module": "modules/025-extra-decisions-introduction.md", "kind": "blank", "text": ""}
+{"id": "L0769", "sourceLine": 769, "module": "modules/026-decision-session-migration.md", "kind": "heading", "text": "### **1. 不要把中继服务器设计成简单的流量转发程序**"}
+{"id": "L0770", "sourceLine": 770, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0771", "sourceLine": 771, "module": "modules/026-decision-session-migration.md", "kind": "paragraph", "text": "建议采用："}
+{"id": "L0772", "sourceLine": 772, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0773", "sourceLine": 773, "module": "modules/026-decision-session-migration.md", "kind": "paragraph", "text": "优先"}
+{"id": "L0774", "sourceLine": 774, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0775", "sourceLine": 775, "module": "modules/026-decision-session-migration.md", "kind": "paragraph", "text": "**P2P 直连**"}
+{"id": "L0776", "sourceLine": 776, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0777", "sourceLine": 777, "module": "modules/026-decision-session-migration.md", "kind": "paragraph", "text": "低延迟，尽可能减少服务器流量"}
+{"id": "L0778", "sourceLine": 778, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0779", "sourceLine": 779, "module": "modules/026-decision-session-migration.md", "kind": "paragraph", "text": "**连接质量检测**"}
+{"id": "L0780", "sourceLine": 780, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0781", "sourceLine": 781, "module": "modules/026-decision-session-migration.md", "kind": "paragraph", "text": "延迟、丢包、带宽、连接稳定性"}
+{"id": "L0782", "sourceLine": 782, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0783", "sourceLine": 783, "module": "modules/026-decision-session-migration.md", "kind": "paragraph", "text": "**P2P 保持**"}
+{"id": "L0784", "sourceLine": 784, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0785", "sourceLine": 785, "module": "modules/026-decision-session-migration.md", "kind": "paragraph", "text": "质量合格"}
+{"id": "L0786", "sourceLine": 786, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0787", "sourceLine": 787, "module": "modules/026-decision-session-migration.md", "kind": "paragraph", "text": "**Relay 接管**"}
+{"id": "L0788", "sourceLine": 788, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0789", "sourceLine": 789, "module": "modules/026-decision-session-migration.md", "kind": "paragraph", "text": "连接失败或质量不合格"}
+{"id": "L0790", "sourceLine": 790, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0791", "sourceLine": 791, "module": "modules/026-decision-session-migration.md", "kind": "paragraph", "text": "**用户配置的中继服务器池**"}
+{"id": "L0792", "sourceLine": 792, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0793", "sourceLine": 793, "module": "modules/026-decision-session-migration.md", "kind": "paragraph", "text": "多服务器、健康检测、自动切换、优先级管理"}
+{"id": "L0794", "sourceLine": 794, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0795", "sourceLine": 795, "module": "modules/026-decision-session-migration.md", "kind": "paragraph", "text": "特别注意：P2P 和 Relay 之间的切换应该设计成可恢复的会话迁移，而不只是断开后重新连接。"}
+{"id": "L0796", "sourceLine": 796, "module": "modules/026-decision-session-migration.md", "kind": "blank", "text": ""}
+{"id": "L0797", "sourceLine": 797, "module": "modules/027-decision-virtual-display.md", "kind": "heading", "text": "### **2. 虚拟屏必须成为独立的核心模块**"}
+{"id": "L0798", "sourceLine": 798, "module": "modules/027-decision-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0799", "sourceLine": 799, "module": "modules/027-decision-virtual-display.md", "kind": "paragraph", "text": "我认为这是整个项目最值得投入技术资源的地方之一。"}
+{"id": "L0800", "sourceLine": 800, "module": "modules/027-decision-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0801", "sourceLine": 801, "module": "modules/027-decision-virtual-display.md", "kind": "paragraph", "text": "尤其要做好："}
+{"id": "L0802", "sourceLine": 802, "module": "modules/027-decision-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0803", "sourceLine": 803, "module": "modules/027-decision-virtual-display.md", "kind": "list-item", "text": "- 无显示器远程开机后建立虚拟桌面。"}
+{"id": "L0804", "sourceLine": 804, "module": "modules/027-decision-virtual-display.md", "kind": "list-item", "text": "- 多个虚拟屏幕独立控制。"}
+{"id": "L0805", "sourceLine": 805, "module": "modules/027-decision-virtual-display.md", "kind": "list-item", "text": "- 远程调整分辨率，不影响物理显示器。"}
+{"id": "L0806", "sourceLine": 806, "module": "modules/027-decision-virtual-display.md", "kind": "list-item", "text": "- 不同操作系统的虚拟显示实现统一抽象。"}
+{"id": "L0807", "sourceLine": 807, "module": "modules/027-decision-virtual-display.md", "kind": "list-item", "text": "- 虚拟屏驱动异常后自动恢复。"}
+{"id": "L0808", "sourceLine": 808, "module": "modules/027-decision-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0809", "sourceLine": 809, "module": "modules/027-decision-virtual-display.md", "kind": "paragraph", "text": "这里要注意，Windows、Linux 和 macOS 的实现机制差异很大，不能指望一个通用 API 解决所有问题。"}
+{"id": "L0810", "sourceLine": 810, "module": "modules/027-decision-virtual-display.md", "kind": "blank", "text": ""}
+{"id": "L0811", "sourceLine": 811, "module": "modules/028-decision-relay-modes.md", "kind": "heading", "text": "### **3. 中继服务器最好支持两种使用模式**"}
+{"id": "L0812", "sourceLine": 812, "module": "modules/028-decision-relay-modes.md", "kind": "blank", "text": ""}
+{"id": "L0813", "sourceLine": 813, "module": "modules/028-decision-relay-modes.md", "kind": "paragraph", "text": "**个人自建模式**"}
+{"id": "L0814", "sourceLine": 814, "module": "modules/028-decision-relay-modes.md", "kind": "blank", "text": ""}
+{"id": "L0815", "sourceLine": 815, "module": "modules/028-decision-relay-modes.md", "kind": "paragraph", "text": "优先开发"}
+{"id": "L0816", "sourceLine": 816, "module": "modules/028-decision-relay-modes.md", "kind": "blank", "text": ""}
+{"id": "L0817", "sourceLine": 817, "module": "modules/028-decision-relay-modes.md", "kind": "paragraph", "text": "用户自己购买一台 Linux VPS，运行安装脚本，客户端输入服务器地址和密钥即可使用。"}
+{"id": "L0818", "sourceLine": 818, "module": "modules/028-decision-relay-modes.md", "kind": "blank", "text": ""}
+{"id": "L0819", "sourceLine": 819, "module": "modules/028-decision-relay-modes.md", "kind": "paragraph", "text": "**多服务器管理模式**\\"}
+{"id": "L0820", "sourceLine": 820, "module": "modules/028-decision-relay-modes.md", "kind": "paragraph", "text": "用户可以添加任意数量的服务器，例如国内、香港、日本、美国的 VPS。客户端自动测试延迟，选择最合适的服务器，也可以手动指定。"}
+{"id": "L0821", "sourceLine": 821, "module": "modules/028-decision-relay-modes.md", "kind": "blank", "text": ""}
+{"id": "L0822", "sourceLine": 822, "module": "modules/028-decision-relay-modes.md", "kind": "paragraph", "text": "这样未来甚至可以发展成一个独立的中继基础设施生态。"}
+{"id": "L0823", "sourceLine": 823, "module": "modules/028-decision-relay-modes.md", "kind": "blank", "text": ""}
+{"id": "L0824", "sourceLine": 824, "module": "modules/028-decision-relay-modes.md", "kind": "blank", "text": ""}
+{"id": "L0825", "sourceLine": 825, "module": "modules/028-decision-relay-modes.md", "kind": "paragraph", "text": "建议先把 Windows/Linux 的完整远控链路和 Linux 中继跑通，再扩展 macOS 和 Android。尤其是虚拟屏、输入注入、系统权限，这些都需要真正的原生开发。"}

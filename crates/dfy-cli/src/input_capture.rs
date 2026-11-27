@@ -1,29 +1,25 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
-//! 控制端（View）本地输入采集：Windows 低级钩子 → `dfy-proto` 输入事件。
+//! 控制端（View）本地输入采集：Windows 低级钩子 / Linux X11 XInput2 → `dfy-proto` 输入事件。
 //!
 //! 设计要点：
 //!
-//! - **[`WH_MOUSE_LL`]/[`WH_KEYBOARD_LL`] 全局钩子**：用 `SetWindowsHookExW` 装在一个
-//!   专用 `std::thread` 上，线程里跑 `GetMessageW` 消息泵；钩子回调必须在该线程执行，
-//!   否则收不到事件。
-//! - **鼠标移动节流**：钩子回调只把最新坐标写进 `pending`，`>= 10ms` 才真正发一条
-//!   `INPUT_KIND_MOUSE_MOVE` DATAGRAM；窗口内的多次移动用一次性 `SetTimer` 合并成
-//!   一条（只发最新），避免 1000Hz 鼠标把网络打爆。
-//! - **停止快捷键 `Ctrl+Alt+Shift+Q`**：钩子检测到就置 `AtomicBool`、发
-//!   [`CtrlMsg::Stopped`] 并 `PostQuitMessage` 结束消息泵，同时吞掉该按键（避免本机
-//!   收到一次没有配对 Down 的 Q）。主循环收到 `Stopped` 后调用
-//!   [`InputCapture::stop`] 收尾，用户不会陷入「被自己钩住、本地没法操作」。
-//! - **线程间通信**：钩子线程持有 `tokio::sync::mpsc::UnboundedSender<CtrlMsg>`，
-//!   tokio 任务侧用 [`InputCapture::recv`] 在 `select!` 里收；无界通道保证钩子回调
-//!   永不阻塞（阻塞钩子会让整个系统的输入卡住）。
-//! - 非 Windows 平台只提供「不可用」的降级实现，`--control` 时打印提示并继续只收视频。
+//! - **Windows**：用 [`WH_MOUSE_LL`]/[`WH_KEYBOARD_LL`] 全局钩子采集本机键鼠，并用 5ms
+//!   `GetCursorPos`/`GetAsyncKeyState` 状态轮询兜底；某些策略不把 SendInput 合成事件送入钩子，
+//!   轮询仍能读取真实状态，共用坐标/按下集合去重。滚轮由鼠标钩子提供。
+//! - **Linux X11**：用 XInput2 RawKey/RawButton/RawMotion 观察当前已授权的 X11 会话，物理键码经
+//!   XKB 键名转成 HID Usage；不借助 XWayland 绕过 Wayland 授权边界。
+//! - **鼠标移动节流**：10ms 合并窗口内只保留最新坐标，避免高轮询率鼠标打爆网络。
+//! - **停止快捷键 `Ctrl+Alt+Shift+Q`**：两个平台都吞掉停止组合并结束采集；停止前显式释放仍
+//!   按住的键/鼠标键，避免远端卡键。
+//! - **线程间通信**：采集线程通过 `tokio::sync::mpsc::UnboundedSender<CtrlMsg>` 投递，钩子/
+//!   X11 回调侧永不阻塞；主循环在 `select!` 中接收。
+//! - macOS 和其他平台只提供「不可用」的降级实现，`--control` 时打印提示并继续只收视频。
 //!
-//! 目前采集范围：鼠标移动 + 左/右/中/后退/前进键 + 滚轮 + 键盘（扫描码优先，回退
-//! VK 表）。文本/触摸/手柄不做（钩子拿不到可靠的 Unicode 文本）。
+//! 目前采集范围：鼠标移动 + 左/右/中/后退/前进键 + 滚轮 + 键盘。文本/触摸/手柄不做。
 
-// Windows 低级钩子实现；其它平台调用点被 cfg 掉，保留类型避免 public API 抖动。
+// 平台采集实现；非 Windows/Linux 的调用点被 cfg 掉，保留类型避免 public API 抖动。
 #![cfg_attr(not(windows), allow(dead_code))]
 #![allow(unsafe_code)]
 
@@ -41,6 +37,16 @@ pub enum CtrlMsg {
     Stopped,
 }
 
+/// 当前仍按住的键/鼠标键快照。
+///
+/// 供路径迁移后在新控制通道重放：旧连接上丢失的 KeyUp 不会让被控端卡键。
+/// HID 语义与 `CtrlMsg::Event` 一致（键盘 Usage ID、鼠标按键 1..=5）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HeldInput {
+    pub keys: Vec<u16>,
+    pub buttons: Vec<u8>,
+}
+
 /// 控制端输入采集器。
 ///
 /// [`InputCapture::disabled`] 得到的实例不采集任何输入，[`InputCapture::recv`] 永远
@@ -49,12 +55,14 @@ pub struct InputCapture {
     rx: Option<mpsc::UnboundedReceiver<CtrlMsg>>,
     #[cfg(windows)]
     hooks: Option<win::Hooks>,
+    #[cfg(target_os = "linux")]
+    worker: Option<linux::Worker>,
 }
 
 impl InputCapture {
-    /// 启动采集（仅 Windows）。
+    /// 启动采集（Windows 低级钩子 / Linux X11 XInput2）。
     ///
-    /// 返回时钩子已经装好（钩子线程通过握手确认），失败原因可直接打印给用户。
+    /// 返回时采集线程已经装好；失败原因可直接打印给用户。
     pub fn start() -> Result<Self> {
         #[cfg(windows)]
         {
@@ -65,9 +73,18 @@ impl InputCapture {
                 hooks: Some(hooks),
             })
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
         {
-            anyhow::bail!("当前平台暂不支持控制输入（仅 Windows 已实现采集）")
+            let (tx, rx) = mpsc::unbounded_channel();
+            let worker = linux::Worker::start(tx)?;
+            Ok(Self {
+                rx: Some(rx),
+                worker: Some(worker),
+            })
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        {
+            anyhow::bail!("当前平台暂不支持控制输入（Windows 与 Linux X11 已实现采集）")
         }
     }
 
@@ -78,7 +95,23 @@ impl InputCapture {
             rx: None,
             #[cfg(windows)]
             hooks: None,
+            #[cfg(target_os = "linux")]
+            worker: None,
         }
+    }
+
+    /// 当前按住的键/按钮快照；未启用采集或未建立状态时为空。
+    #[must_use]
+    pub(crate) fn held(&self) -> HeldInput {
+        #[cfg(windows)]
+        if let Some(hooks) = &self.hooks {
+            return hooks.held();
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(worker) = &self.worker {
+            return worker.held();
+        }
+        HeldInput::default()
     }
 
     /// 收下一条采集消息；无消息时挂起等待。
@@ -100,6 +133,10 @@ impl InputCapture {
         if let Some(hooks) = self.hooks.take() {
             hooks.stop();
         }
+        #[cfg(target_os = "linux")]
+        if let Some(worker) = self.worker.take() {
+            worker.stop();
+        }
         self.rx = None;
     }
 }
@@ -113,9 +150,10 @@ impl Drop for InputCapture {
 #[cfg(windows)]
 mod win {
     use std::cell::RefCell;
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Sender};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::thread::JoinHandle;
     use std::time::{Duration, Instant};
 
@@ -129,24 +167,25 @@ mod win {
     use tokio::sync::mpsc::UnboundedSender;
     use tracing::{debug, trace};
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
-        VK_MENU, VK_Q, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+        GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_LCONTROL, VK_LMENU, VK_LSHIFT,
+        VK_LWIN, VK_MBUTTON, VK_MENU, VK_Q, VK_RBUTTON, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
+        VK_SHIFT, VK_XBUTTON1, VK_XBUTTON2,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GetMessageW, GetSystemMetrics, KillTimer, PeekMessageW, PostQuitMessage,
+        CallNextHookEx, GetCursorPos, GetSystemMetrics, KillTimer, PeekMessageW, PostQuitMessage,
         PostThreadMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx, HC_ACTION, HHOOK,
-        KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE, SM_CXSCREEN,
+        KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE, PM_REMOVE, SM_CXSCREEN,
         SM_CYSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
         WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
         WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
         WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1, XBUTTON2,
     };
 
-    use super::CtrlMsg;
+    use super::{CtrlMsg, HeldInput};
 
     /// 鼠标移动合并窗口：窗口内的多次移动只发最新一条。
     const MOVE_MERGE_INTERVAL: Duration = Duration::from_millis(10);
@@ -154,6 +193,8 @@ mod win {
     const TIMER_MERGE_ID: usize = 1;
     /// 合并定时器周期（毫秒），略大于窗口以保证窗口内的移动都能被合并。
     const TIMER_MERGE_MS: u32 = 10;
+    /// 状态轮询周期：钩子收不到合成事件时仍能捕获真实光标/按键状态。
+    const TIMER_POLL_MS: u32 = 5;
 
     /// 停止组合键里的 Q 键（其余修饰键用 `GetAsyncKeyState` 实时判断，避免自己维护状态机）。
     const STOP_KEY: VIRTUAL_KEY = VK_Q;
@@ -168,6 +209,12 @@ mod win {
         last_move: Option<Instant>,
         /// 等待合并发送的最新归一化坐标。
         pending_move: Option<(u32, u32)>,
+        /// 钩子/轮询共同看到的最近光标位置，用于去重。
+        last_position: Option<(i32, i32)>,
+        /// 已发送 Down 且尚未收到 Up 的 HID 键/按钮，停止时用于释放远端状态。
+        pressed_keys: HashSet<u16>,
+        pressed_buttons: HashSet<u8>,
+        poll_ticks: u64,
         /// 是否已经挂了合并定时器（避免同一窗口内重复 `SetTimer`）。
         timer_armed: bool,
     }
@@ -187,23 +234,27 @@ mod win {
         thread: JoinHandle<()>,
         thread_id: u32,
         stopped: Arc<AtomicBool>,
+        held: Arc<Mutex<HeldInput>>,
     }
 
     impl Hooks {
         /// 启动钩子线程；返回时钩子已装好（失败会带原因返回）。
         pub(super) fn start(tx: UnboundedSender<super::CtrlMsg>) -> Result<Self> {
             let stopped = Arc::new(AtomicBool::new(false));
+            let held = Arc::new(Mutex::new(HeldInput::default()));
             let (ready_tx, ready_rx) = mpsc::channel::<std::result::Result<u32, String>>();
             let stopped_for_thread = Arc::clone(&stopped);
+            let held_for_thread = Arc::clone(&held);
             let thread = std::thread::Builder::new()
                 .name("dfy-input-hooks".to_string())
-                .spawn(move || thread_main(tx, stopped_for_thread, ready_tx))
+                .spawn(move || thread_main(tx, stopped_for_thread, ready_tx, held_for_thread))
                 .context("启动输入钩子线程失败")?;
             match ready_rx.recv_timeout(Duration::from_secs(5)) {
                 Ok(Ok(thread_id)) => Ok(Self {
                     thread,
                     thread_id,
                     stopped,
+                    held,
                 }),
                 Ok(Err(message)) => {
                     let _ = thread.join();
@@ -215,6 +266,14 @@ mod win {
                     Err(anyhow!("等待输入钩子线程就绪失败：{err}"))
                 }
             }
+        }
+
+        /// 最近一次观察到的按住键/按钮快照（路径迁移后用于重放）。
+        pub(super) fn held(&self) -> HeldInput {
+            self.held
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
         }
 
         /// 请求停止并等待钩子线程退出（卸载钩子、恢复本机输入）。
@@ -233,6 +292,7 @@ mod win {
         tx: UnboundedSender<super::CtrlMsg>,
         stopped: Arc<AtomicBool>,
         ready: Sender<std::result::Result<u32, String>>,
+        held: Arc<Mutex<HeldInput>>,
     ) {
         let thread_id = unsafe { GetCurrentThreadId() };
         match install(&tx, &stopped) {
@@ -243,7 +303,7 @@ mod win {
                     let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
                 }
                 let _ = ready.send(Ok(thread_id));
-                run_message_loop();
+                run_message_loop(&held);
                 installed.uninstall();
             }
             Err(err) => {
@@ -264,6 +324,10 @@ mod win {
                 "主屏尺寸异常（{screen_width}x{screen_height}），无法归一化鼠标坐标"
             ));
         }
+        let initial_position = unsafe {
+            let mut point = POINT::default();
+            GetCursorPos(&mut point).ok().map(|_| (point.x, point.y))
+        };
         HOOK.with(|cell| {
             *cell.borrow_mut() = Some(HookState {
                 tx: tx.clone(),
@@ -272,6 +336,10 @@ mod win {
                 screen_height,
                 last_move: None,
                 pending_move: None,
+                last_position: initial_position,
+                pressed_keys: HashSet::new(),
+                pressed_buttons: HashSet::new(),
+                poll_ticks: 0,
                 timer_armed: false,
             });
         });
@@ -310,20 +378,51 @@ mod win {
         }
     }
 
-    /// 消息泵：只处理合并定时器与 `WM_QUIT`，其余消息不需要转发。
-    fn run_message_loop() {
+    /// 消息泵：处理合并定时器/退出消息，并在 5ms 空档轮询真实输入状态。
+    fn run_message_loop(held: &Arc<Mutex<HeldInput>>) {
         let mut msg = MSG::default();
         loop {
-            // SAFETY: `msg` 是有效的可写 `MSG`；无窗口、线程消息循环。
-            let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) };
-            if ret.0 <= 0 {
-                break; // 0 = WM_QUIT，-1 = 错误
+            loop {
+                // SAFETY: `msg` 是有效的可写 `MSG`；PM_REMOVE 只取走本线程消息。
+                let ret = unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) };
+                if ret.0 == 0 {
+                    break;
+                }
+                if ret.0 < 0 {
+                    debug!("PeekMessageW 失败，结束 Windows 输入采集消息泵");
+                    return;
+                }
+                if msg.message == WM_QUIT {
+                    return;
+                }
+                if msg.message == WM_TIMER && msg.wParam.0 == TIMER_MERGE_ID {
+                    let _ = unsafe { KillTimer(None, TIMER_MERGE_ID) };
+                    flush_pending_move();
+                }
             }
-            if msg.message == WM_TIMER && msg.wParam.0 == TIMER_MERGE_ID {
-                let _ = unsafe { KillTimer(None, TIMER_MERGE_ID) };
-                flush_pending_move();
+            if poll_input_state() {
+                return;
             }
+            publish_held(held);
+            std::thread::sleep(Duration::from_millis(u64::from(TIMER_POLL_MS)));
         }
+    }
+
+    /// 把钩子线程的按下集合复制到可被主线程读取的快照（排序保证可测）。
+    fn publish_held(held: &Arc<Mutex<HeldInput>>) {
+        HOOK.with(|cell| {
+            if let Ok(state) = cell.try_borrow() {
+                if let Some(state) = state.as_ref() {
+                    let mut keys: Vec<u16> = state.pressed_keys.iter().copied().collect();
+                    keys.sort_unstable();
+                    let mut buttons: Vec<u8> = state.pressed_buttons.iter().copied().collect();
+                    buttons.sort_unstable();
+                    let mut guard = held.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.keys = keys;
+                    guard.buttons = buttons;
+                }
+            }
+        });
     }
 
     /// SAFETY: 由系统在安装钩子的线程上调用；`lparam` 指向 `MSLLHOOKSTRUCT`。
@@ -369,27 +468,39 @@ mod win {
             }
             // HID Button 页（0x0C）1 基编号：1=左、2=右、3=中、4=后退、5=前进。
             WM_LBUTTONDOWN => {
-                emit(button_event(1, true));
+                if track_button(1, true) {
+                    emit(button_event(1, true));
+                }
                 None
             }
             WM_LBUTTONUP => {
-                emit(button_event(1, false));
+                if track_button(1, false) {
+                    emit(button_event(1, false));
+                }
                 None
             }
             WM_RBUTTONDOWN => {
-                emit(button_event(2, true));
+                if track_button(2, true) {
+                    emit(button_event(2, true));
+                }
                 None
             }
             WM_RBUTTONUP => {
-                emit(button_event(2, false));
+                if track_button(2, false) {
+                    emit(button_event(2, false));
+                }
                 None
             }
             WM_MBUTTONDOWN => {
-                emit(button_event(3, true));
+                if track_button(3, true) {
+                    emit(button_event(3, true));
+                }
                 None
             }
             WM_MBUTTONUP => {
-                emit(button_event(3, false));
+                if track_button(3, false) {
+                    emit(button_event(3, false));
+                }
                 None
             }
             WM_XBUTTONDOWN | WM_XBUTTONUP => {
@@ -400,7 +511,10 @@ mod win {
                     XBUTTON2 => 5,
                     _ => return None,
                 };
-                emit(button_event(usage, wparam.0 as u32 == WM_XBUTTONDOWN));
+                let down = wparam.0 as u32 == WM_XBUTTONDOWN;
+                if track_button(usage, down) {
+                    emit(button_event(u32::from(usage), down));
+                }
                 None
             }
             WM_MOUSEWHEEL => {
@@ -459,7 +573,9 @@ mod win {
             trace!(vk, scan, "无法映射到 HID Usage，忽略按键");
             return None;
         };
-        emit(key_event(usage, down, current_modifiers()));
+        if track_key(usage, down) {
+            emit(key_event(usage, down, current_modifiers()));
+        }
         None
     }
 
@@ -474,6 +590,10 @@ mod win {
             let Some(state) = guard.as_mut() else {
                 return;
             };
+            if state.last_position == Some((x, y)) && state.pending_move.is_none() {
+                return;
+            }
+            state.last_position = Some((x, y));
             let nx = normalize(x, state.screen_width);
             let ny = normalize(y, state.screen_height);
             state.pending_move = Some((nx, ny));
@@ -529,26 +649,199 @@ mod win {
         (clamped * 65_535 / (i64::from(extent) - 1)) as u32
     }
 
-    /// 请求停止采集：置标志、通知主循环、结束消息泵。
+    fn track_key(usage: u16, down: bool) -> bool {
+        HOOK.with(|cell| {
+            let Ok(mut guard) = cell.try_borrow_mut() else {
+                return false;
+            };
+            let Some(state) = guard.as_mut() else {
+                return false;
+            };
+            if down {
+                state.pressed_keys.insert(usage)
+            } else {
+                state.pressed_keys.remove(&usage)
+            }
+        })
+    }
+
+    fn track_button(button: u8, down: bool) -> bool {
+        HOOK.with(|cell| {
+            let Ok(mut guard) = cell.try_borrow_mut() else {
+                return false;
+            };
+            let Some(state) = guard.as_mut() else {
+                return false;
+            };
+            if down {
+                state.pressed_buttons.insert(button)
+            } else {
+                state.pressed_buttons.remove(&button)
+            }
+        })
+    }
+
+    /// 在已持有 HookState 时执行停止，释放远端按键并返回是否首次停止。
+    fn begin_stop(state: &mut HookState) -> bool {
+        if state.stopped.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        let modifiers = current_modifiers();
+        for usage in state.pressed_keys.drain() {
+            let _ = state
+                .tx
+                .send(super::CtrlMsg::Event(event_envelope(key_event(
+                    usage, false, modifiers,
+                ))));
+        }
+        for button in state.pressed_buttons.drain() {
+            let _ = state
+                .tx
+                .send(super::CtrlMsg::Event(event_envelope(button_event(
+                    u32::from(button),
+                    false,
+                ))));
+        }
+        let _ = state.tx.send(super::CtrlMsg::Stopped);
+        true
+    }
+
+    /// 请求停止采集：释放远端按键、置标志、通知主循环、结束消息泵。
     fn request_stop() {
         let notified = HOOK.with(|cell| {
-            let Ok(guard) = cell.try_borrow() else {
+            let Ok(mut guard) = cell.try_borrow_mut() else {
                 return false;
             };
-            let Some(state) = guard.as_ref() else {
-                return false;
-            };
-            if state.stopped.swap(true, Ordering::SeqCst) {
-                false
-            } else {
-                let _ = state.tx.send(super::CtrlMsg::Stopped);
-                true
-            }
+            guard.as_mut().is_some_and(begin_stop)
         });
         if notified {
             debug!("收到 Ctrl+Alt+Shift+Q，停止控制输入采集");
             unsafe { PostQuitMessage(0) };
         }
+    }
+
+    /// 5ms 状态轮询兜底。某些 Windows/安全策略不会把 SendInput 合成事件送入低级钩子，
+    /// 但光标与异步按键状态仍可读取；与钩子共用 pressed 集合和最近坐标，避免重复事件。
+    fn poll_input_state() -> bool {
+        if is_stopped() {
+            return true;
+        }
+        let mut point = POINT::default();
+        if unsafe { GetCursorPos(&mut point) }.is_ok() {
+            queue_move(point.x, point.y);
+        }
+
+        let stopped = HOOK.with(|cell| {
+            let Ok(mut guard) = cell.try_borrow_mut() else {
+                return false;
+            };
+            let Some(state) = guard.as_mut() else {
+                return false;
+            };
+            state.poll_ticks = state.poll_ticks.saturating_add(1);
+            if state.poll_ticks == 1 {
+                debug!("Windows 输入状态轮询已启动");
+            }
+            let current_keys: HashSet<u16> = HidKeymap::entries()
+                .iter()
+                .filter(|entry| unsafe { GetAsyncKeyState(i32::from(entry.vk)) } < 0)
+                .map(|entry| entry.usage)
+                .collect();
+            let added = current_keys
+                .difference(&state.pressed_keys)
+                .copied()
+                .collect::<Vec<_>>();
+            let removed = state
+                .pressed_keys
+                .difference(&current_keys)
+                .copied()
+                .collect::<Vec<_>>();
+            for usage in &added {
+                state.pressed_keys.insert(*usage);
+            }
+            for usage in &removed {
+                state.pressed_keys.remove(usage);
+            }
+            let has_modifier = |usages: &[u16]| {
+                usages
+                    .iter()
+                    .any(|usage| state.pressed_keys.contains(usage))
+            };
+            if state.pressed_keys.contains(&0x14)
+                && has_modifier(&[0xe0, 0xe4])
+                && has_modifier(&[0xe2, 0xe6])
+                && has_modifier(&[0xe1, 0xe5])
+            {
+                return begin_stop(state);
+            }
+            let modifiers = current_modifiers();
+            if !added.is_empty() || !removed.is_empty() {
+                debug!(?added, ?removed, "Windows 轮询检测到键盘状态变化");
+            }
+            for usage in added {
+                let _ = state
+                    .tx
+                    .send(super::CtrlMsg::Event(event_envelope(key_event(
+                        usage, true, modifiers,
+                    ))));
+            }
+            for usage in removed {
+                let _ = state
+                    .tx
+                    .send(super::CtrlMsg::Event(event_envelope(key_event(
+                        usage, false, modifiers,
+                    ))));
+            }
+
+            let current_buttons = [
+                (VK_LBUTTON, 1),
+                (VK_RBUTTON, 2),
+                (VK_MBUTTON, 3),
+                (VK_XBUTTON1, 4),
+                (VK_XBUTTON2, 5),
+            ]
+            .into_iter()
+            .filter(|(vk, _)| unsafe { GetAsyncKeyState(i32::from(vk.0)) } < 0)
+            .map(|(_, button)| button)
+            .collect::<HashSet<_>>();
+            let added_buttons = current_buttons
+                .difference(&state.pressed_buttons)
+                .copied()
+                .collect::<Vec<_>>();
+            let removed_buttons = state
+                .pressed_buttons
+                .difference(&current_buttons)
+                .copied()
+                .collect::<Vec<_>>();
+            for button in &added_buttons {
+                state.pressed_buttons.insert(*button);
+            }
+            for button in &removed_buttons {
+                state.pressed_buttons.remove(button);
+            }
+            for button in added_buttons {
+                let _ = state
+                    .tx
+                    .send(super::CtrlMsg::Event(event_envelope(button_event(
+                        u32::from(button),
+                        true,
+                    ))));
+            }
+            for button in removed_buttons {
+                let _ = state
+                    .tx
+                    .send(super::CtrlMsg::Event(event_envelope(button_event(
+                        u32::from(button),
+                        false,
+                    ))));
+            }
+            false
+        });
+        if stopped {
+            debug!("轮询检测到 Ctrl+Alt+Shift+Q，停止控制输入采集");
+            unsafe { PostQuitMessage(0) };
+        }
+        stopped
     }
 
     /// 是否已被要求停止。
@@ -678,12 +971,15 @@ mod win {
         ev
     }
 
+    fn event_envelope(ev: dfy_proto::InputEvent) -> dfy_proto::Envelope {
+        dfy_proto::Envelope {
+            body: Some(envelope::Body::InputEvent(ev)),
+        }
+    }
+
     /// 非移动事件走可靠 control 流。
     fn emit(ev: dfy_proto::InputEvent) {
-        let env = dfy_proto::Envelope {
-            body: Some(envelope::Body::InputEvent(ev)),
-        };
-        send(super::CtrlMsg::Event(env));
+        send(super::CtrlMsg::Event(event_envelope(ev)));
     }
 
     #[cfg(test)]
@@ -713,6 +1009,783 @@ mod win {
             // 位图定义本身是常量语义，这里仅防止位序写反（不在 CI 里真实按键）。
             assert_eq!(1u8 << 0, 0b0000_0001, "LCtrl");
             assert_eq!(1u8 << 7, 0b1000_0000, "RGui");
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    //! Linux X11 控制端采集：XInput2 raw events + XKB physical key names.
+    //!
+    //! 只观察当前用户已获授权的 X11 会话；Wayland/XWayland 明确拒绝，不尝试绕过 portal。
+
+    use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
+    use std::thread::JoinHandle;
+    use std::time::{Duration, Instant};
+
+    use anyhow::{anyhow, Context, Result};
+    use tokio::sync::mpsc::UnboundedSender;
+    use tracing::{debug, warn};
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xinput::{ConnectionExt as _, DeviceType, EventMask, XIEventMask};
+    use x11rb::protocol::xkb::{ConnectionExt as _, NameDetail, ID};
+    use x11rb::protocol::xproto::{
+        ChangeWindowAttributesAux, ConnectionExt as _, EventMask as XprotoEventMask, KeyButMask,
+        Window,
+    };
+    use x11rb::protocol::Event;
+    use x11rb::rust_connection::RustConnection;
+
+    use crate::real::{
+        frame_point_to_move, input_button_envelope, input_key_envelope, input_wheel_envelope,
+    };
+
+    use super::{CtrlMsg, HeldInput};
+
+    const MOVE_MERGE_INTERVAL: Duration = Duration::from_millis(10);
+    const POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+    pub(super) struct Worker {
+        thread: JoinHandle<()>,
+        stopped: Arc<AtomicBool>,
+        held: Arc<Mutex<HeldInput>>,
+    }
+
+    impl Worker {
+        pub(super) fn start(tx: UnboundedSender<CtrlMsg>) -> Result<Self> {
+            let stopped = Arc::new(AtomicBool::new(false));
+            let held = Arc::new(Mutex::new(HeldInput::default()));
+            let worker_stopped = Arc::clone(&stopped);
+            let worker_held = Arc::clone(&held);
+            let (ready_tx, ready_rx) = mpsc::channel::<std::result::Result<(), anyhow::Error>>();
+            let thread = std::thread::Builder::new()
+                .name("dfy-x11-input-capture".to_string())
+                .spawn(move || {
+                    let result = Capture::open().and_then(|mut capture| {
+                        capture.held = Arc::clone(&worker_held);
+                        ready_tx
+                            .send(Ok(()))
+                            .map_err(|_| anyhow!("输入采集就绪通知失败"))?;
+                        capture.run(tx, &worker_stopped);
+                        Ok(())
+                    });
+                    if let Err(err) = result {
+                        let _ = ready_tx.send(Err(err));
+                    }
+                })
+                .context("启动 Linux X11 输入采集线程失败")?;
+            match ready_rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(Ok(())) => Ok(Self {
+                    thread,
+                    stopped,
+                    held,
+                }),
+                Ok(Err(err)) => {
+                    stopped.store(true, Ordering::SeqCst);
+                    let _ = thread.join();
+                    Err(err)
+                }
+                Err(err) => {
+                    stopped.store(true, Ordering::SeqCst);
+                    Err(anyhow!("等待 Linux X11 输入采集就绪失败：{err}"))
+                }
+            }
+        }
+
+        /// 最近一次观察到的按住键/按钮快照（路径迁移后用于重放）。
+        pub(super) fn held(&self) -> HeldInput {
+            self.held
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+
+        pub(super) fn stop(self) {
+            self.stopped.store(true, Ordering::SeqCst);
+            let _ = self.thread.join();
+        }
+    }
+
+    struct Capture {
+        connection: RustConnection,
+        root: Window,
+        width: u32,
+        height: u32,
+        key_usages: HashMap<u8, u16>,
+        pressed: HashSet<u16>,
+        buttons: HashSet<u8>,
+        last_sent_position: Option<(u32, u32)>,
+        pending_move: Option<(u32, u32)>,
+        last_move_at: Option<Instant>,
+        held: Arc<Mutex<HeldInput>>,
+    }
+
+    impl Capture {
+        fn open() -> Result<Self> {
+            let display = std::env::var("DISPLAY").ok();
+            anyhow::ensure!(
+                display
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()),
+                "Linux 控制输入需要 DISPLAY 指向已授权的 X11 会话"
+            );
+            let session = std::env::var("XDG_SESSION_TYPE").ok();
+            let wayland = std::env::var("WAYLAND_DISPLAY").ok();
+            let explicit_x11 = session
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case("x11"));
+            if session
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case("wayland"))
+                || (!explicit_x11
+                    && wayland
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty()))
+            {
+                anyhow::bail!(
+                    "Wayland 控制输入需要用户授权的 RemoteDesktop portal；X11/XWayland 采集已拒绝"
+                );
+            }
+
+            let (connection, screen) =
+                x11rb::connect(display.as_deref()).context("连接 DISPLAY 指定的 X11 会话失败")?;
+            let xwayland = connection
+                .query_extension(b"XWAYLAND")
+                .context("查询 X11 服务器类型失败")?
+                .reply()
+                .context("读取 X11 服务器类型失败")?;
+            if xwayland.present {
+                anyhow::bail!(
+                    "XWayland 不是受支持的完整控制桌面；Wayland 需要 RemoteDesktop portal"
+                );
+            }
+            let root = connection
+                .setup()
+                .roots
+                .get(screen)
+                .context("DISPLAY 的屏幕编号无效")?
+                .root;
+            let geometry = connection
+                .get_geometry(root)
+                .context("读取 X11 桌面尺寸失败")?
+                .reply()
+                .context("X11 桌面尺寸不可用")?;
+            anyhow::ensure!(
+                geometry.width >= 2 && geometry.height >= 2,
+                "X11 桌面尺寸异常：{}x{}",
+                geometry.width,
+                geometry.height
+            );
+
+            let xinput = connection
+                .xinput_xi_query_version(2, 0)
+                .context("X11 显示未提供 XInput2 扩展")?
+                .reply()
+                .context("无法协商 XInput2 版本")?;
+            anyhow::ensure!(xinput.major_version >= 2, "X11 服务器不支持 XInput2");
+            let xkb = connection
+                .xkb_use_extension(1, 0)
+                .context("X11 显示未提供 XKB 扩展")?
+                .reply()
+                .context("无法初始化 XKB 扩展")?;
+            anyhow::ensure!(xkb.supported, "X11 服务器不支持 XKB 1.0");
+            let names = connection
+                .xkb_get_names(
+                    ID::USE_CORE_KBD.into(),
+                    NameDetail::KEY_NAMES | NameDetail::KEY_ALIASES,
+                )
+                .context("读取 XKB 物理键名失败")?
+                .reply()
+                .context("XKB 物理键名不可用")?;
+            let keys = names
+                .value_list
+                .key_names
+                .context("XKB 未返回物理键名；不能安全推断固定键码")?;
+            let mut key_usages = HashMap::new();
+            let mut name_to_code = HashMap::new();
+            for (offset, key) in keys.iter().enumerate() {
+                let code = usize::from(names.first_key) + offset;
+                if code > u8::MAX as usize {
+                    break;
+                }
+                let code = code as u8;
+                name_to_code.insert(key.name, code);
+                if let Some(usage) = dfy_input::x11_physical_key_name_to_usage(key.name) {
+                    key_usages.insert(code, usage);
+                }
+            }
+            for alias in names.value_list.key_aliases.unwrap_or_default() {
+                let (Some(&real_code), Some(&alias_code)) = (
+                    name_to_code.get(&alias.real),
+                    name_to_code.get(&alias.alias),
+                ) else {
+                    continue;
+                };
+                if let Some(&usage) = key_usages.get(&real_code) {
+                    key_usages.insert(alias_code, usage);
+                }
+            }
+            anyhow::ensure!(!key_usages.is_empty(), "XKB 未提供可映射的物理键名");
+
+            let mut pointer_devices = Vec::new();
+            let mut keyboard_devices = Vec::new();
+            for device_id in 2u8..=u8::MAX {
+                let reply = match connection.xinput_xi_query_device(u16::from(device_id)) {
+                    Ok(cookie) => match cookie.reply() {
+                        Ok(reply) => reply,
+                        Err(_) => continue,
+                    },
+                    Err(_) => continue,
+                };
+                for info in reply.infos {
+                    match info.type_ {
+                        DeviceType::MASTER_POINTER => {
+                            pointer_devices.push(u16::from(info.deviceid))
+                        }
+                        DeviceType::MASTER_KEYBOARD => {
+                            keyboard_devices.push(u16::from(info.deviceid))
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let mut masks = Vec::new();
+            for deviceid in pointer_devices {
+                masks.push(EventMask {
+                    deviceid,
+                    mask: vec![
+                        XIEventMask::RAW_BUTTON_PRESS,
+                        XIEventMask::RAW_BUTTON_RELEASE,
+                        XIEventMask::RAW_MOTION,
+                    ],
+                });
+            }
+            for deviceid in keyboard_devices {
+                masks.push(EventMask {
+                    deviceid,
+                    mask: vec![XIEventMask::RAW_KEY_PRESS, XIEventMask::RAW_KEY_RELEASE],
+                });
+            }
+            let xinput_selected = if masks.is_empty() {
+                false
+            } else {
+                match connection.xinput_xi_select_events(root, &masks) {
+                    Ok(cookie) => cookie.check().is_ok(),
+                    Err(_) => false,
+                }
+            };
+            if !xinput_selected {
+                debug!("XInput2 raw 事件不可用，降级为 X11 根窗口核心事件");
+            }
+            let mut root_mask = XprotoEventMask::STRUCTURE_NOTIFY;
+            if !xinput_selected {
+                root_mask |= XprotoEventMask::KEY_PRESS
+                    | XprotoEventMask::KEY_RELEASE
+                    | XprotoEventMask::BUTTON_PRESS
+                    | XprotoEventMask::BUTTON_RELEASE
+                    | XprotoEventMask::POINTER_MOTION;
+            }
+            connection
+                .change_window_attributes(
+                    root,
+                    &ChangeWindowAttributesAux {
+                        event_mask: Some(root_mask),
+                        ..ChangeWindowAttributesAux::default()
+                    },
+                )
+                .context("订阅 X11 根窗口事件失败")?
+                .check()
+                .context("X11 服务器拒绝根窗口事件订阅")?;
+
+            let keymap = connection
+                .query_keymap()
+                .context("读取 X11 按键状态失败")?
+                .reply()
+                .context("X11 按键状态不可用")?;
+            let mut pressed = HashSet::new();
+            for code in 0u8..=u8::MAX {
+                if keymap.keys[usize::from(code) / 8] & (1 << (code % 8)) != 0 {
+                    if let Some(usage) = key_usages.get(&code) {
+                        pressed.insert(*usage);
+                    }
+                }
+            }
+            let pointer = connection
+                .query_pointer(root)
+                .context("读取 X11 指针状态失败")?
+                .reply()
+                .context("X11 指针状态不可用")?;
+            let buttons = [(1u8, 1u8), (2, 3), (3, 2), (8, 4), (9, 5)]
+                .into_iter()
+                .filter(|(button, _)| {
+                    u16::from(pointer.mask & KeyButMask::from(1u16 << (*button - 1))) != 0
+                })
+                .map(|(_, hid)| hid)
+                .collect();
+
+            debug!(
+                screen,
+                root,
+                width = geometry.width,
+                height = geometry.height,
+                "Linux X11 控制输入采集就绪"
+            );
+            Ok(Self {
+                connection,
+                root,
+                width: u32::from(geometry.width),
+                height: u32::from(geometry.height),
+                key_usages,
+                pressed,
+                buttons,
+                last_sent_position: None,
+                pending_move: None,
+                last_move_at: None,
+                held: Arc::new(Mutex::new(HeldInput::default())),
+            })
+        }
+
+        fn run(&mut self, tx: UnboundedSender<CtrlMsg>, stopped: &AtomicBool) {
+            let result = self.run_loop(tx.clone(), stopped);
+            // 会话正常结束时 Agent 也会 release_all；这里仍显式释放，覆盖采集线程异常/用户停止。
+            self.release_all(&tx);
+            if let Err(err) = result {
+                warn!(error = %err, "Linux X11 控制输入采集结束");
+            }
+        }
+
+        fn run_loop(&mut self, tx: UnboundedSender<CtrlMsg>, stopped: &AtomicBool) -> Result<()> {
+            while !stopped.load(Ordering::SeqCst) {
+                match self.connection.poll_for_event() {
+                    Ok(Some(event)) => {
+                        if self.handle_event(event, &tx)? {
+                            self.release_all(&tx);
+                            let _ = tx.send(CtrlMsg::Stopped);
+                            return Ok(());
+                        }
+                    }
+                    Ok(None) => std::thread::sleep(POLL_INTERVAL),
+                    Err(err) => return Err(err.into()),
+                }
+                self.flush_move(&tx);
+                self.publish_held();
+            }
+            Ok(())
+        }
+
+        /// 把当前按下集合复制到共享快照；迁移后主线程据此在新通道重放。
+        fn publish_held(&self) {
+            let mut keys: Vec<u16> = self.pressed.iter().copied().collect();
+            keys.sort_unstable();
+            let mut buttons: Vec<u8> = self.buttons.iter().copied().collect();
+            buttons.sort_unstable();
+            let mut guard = self
+                .held
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.keys = keys;
+            guard.buttons = buttons;
+        }
+
+        fn handle_event(&mut self, event: Event, tx: &UnboundedSender<CtrlMsg>) -> Result<bool> {
+            match event {
+                Event::ConfigureNotify(event) if event.window == self.root => {
+                    self.width = u32::from(event.width);
+                    self.height = u32::from(event.height);
+                }
+                Event::KeyPress(event) => {
+                    return Ok(self.key(event.detail, true, tx));
+                }
+                Event::KeyRelease(event) => {
+                    return Ok(self.key(event.detail, false, tx));
+                }
+                Event::ButtonPress(event) => {
+                    self.button(event.detail, true, tx);
+                }
+                Event::ButtonRelease(event) => {
+                    self.button(event.detail, false, tx);
+                }
+                Event::MotionNotify(event) if event.root == self.root => {
+                    self.queue_move(
+                        u32::try_from(event.root_x).unwrap_or(0),
+                        u32::try_from(event.root_y).unwrap_or(0),
+                        tx,
+                    );
+                }
+                Event::XinputRawKeyPress(event) => {
+                    return Ok(self.key(event.detail as u8, true, tx));
+                }
+                Event::XinputRawKeyRelease(event) => {
+                    return Ok(self.key(event.detail as u8, false, tx));
+                }
+                Event::XinputRawButtonPress(event) => {
+                    self.button(event.detail as u8, true, tx);
+                }
+                Event::XinputRawButtonRelease(event) => {
+                    self.button(event.detail as u8, false, tx);
+                }
+                Event::XinputRawMotion(_event) => {
+                    let pointer = self
+                        .connection
+                        .query_pointer(self.root)
+                        .context("读取 X11 指针位置失败")?
+                        .reply()
+                        .context("X11 指针位置不可用")?;
+                    self.queue_move(
+                        u32::try_from(pointer.root_x).unwrap_or(0),
+                        u32::try_from(pointer.root_y).unwrap_or(0),
+                        tx,
+                    );
+                }
+                _ => {}
+            }
+            Ok(false)
+        }
+
+        fn key(&mut self, code: u8, down: bool, tx: &UnboundedSender<CtrlMsg>) -> bool {
+            let Some(&usage) = self.key_usages.get(&code) else {
+                debug!(code, "忽略未映射的 X11 物理键");
+                return false;
+            };
+            if down {
+                self.pressed.insert(usage);
+            } else {
+                self.pressed.remove(&usage);
+            }
+            if down && usage == 0x14 && self.stop_combo_pressed() {
+                return true;
+            }
+            let _ = tx.send(CtrlMsg::Event(input_key_envelope(
+                usage,
+                down,
+                self.modifiers(),
+            )));
+            false
+        }
+
+        fn button(&mut self, detail: u8, down: bool, tx: &UnboundedSender<CtrlMsg>) {
+            if let Some((dx, dy)) = wheel_delta(detail) {
+                if down {
+                    let _ = tx.send(CtrlMsg::Event(input_wheel_envelope(dx, dy)));
+                }
+                return;
+            }
+            let Some(button) = hid_button(detail) else {
+                return;
+            };
+            if down {
+                self.buttons.insert(button);
+            } else {
+                self.buttons.remove(&button);
+            }
+            let _ = tx.send(CtrlMsg::Event(input_button_envelope(button, down)));
+        }
+
+        fn queue_move(&mut self, x: u32, y: u32, tx: &UnboundedSender<CtrlMsg>) {
+            if self.width < 2 || self.height < 2 {
+                return;
+            }
+            if self.last_sent_position == Some((x, y)) && self.pending_move.is_none() {
+                return;
+            }
+            let due = match self.last_move_at {
+                Some(last) => last.elapsed() >= MOVE_MERGE_INTERVAL,
+                None => true,
+            };
+            if due {
+                self.send_move(x, y, tx);
+            } else {
+                self.pending_move = Some((x, y));
+            }
+        }
+
+        fn flush_move(&mut self, tx: &UnboundedSender<CtrlMsg>) {
+            let Some((x, y)) = self.pending_move.take() else {
+                return;
+            };
+            let due = match self.last_move_at {
+                Some(last) => last.elapsed() >= MOVE_MERGE_INTERVAL,
+                None => true,
+            };
+            if due {
+                self.send_move(x, y, tx);
+            } else {
+                self.pending_move = Some((x, y));
+            }
+        }
+
+        fn send_move(&mut self, x: u32, y: u32, tx: &UnboundedSender<CtrlMsg>) {
+            if let Some(event) = frame_point_to_move(x, y, self.width, self.height) {
+                self.last_sent_position = Some((x, y));
+                self.last_move_at = Some(Instant::now());
+                let _ = tx.send(CtrlMsg::Move(event));
+            }
+        }
+
+        fn modifiers(&self) -> u8 {
+            self.pressed
+                .iter()
+                .filter_map(|usage| modifier_bit(*usage))
+                .fold(0, |bits, bit| bits | bit)
+        }
+
+        fn stop_combo_pressed(&self) -> bool {
+            let has = |bits: &[u16]| bits.iter().any(|usage| self.pressed.contains(usage));
+            self.pressed.contains(&0x14)
+                && has(&[0xe0, 0xe4])
+                && has(&[0xe2, 0xe6])
+                && has(&[0xe1, 0xe5])
+        }
+
+        fn release_all(&mut self, tx: &UnboundedSender<CtrlMsg>) {
+            for usage in self.pressed.drain() {
+                let _ = tx.send(CtrlMsg::Event(input_key_envelope(usage, false, 0)));
+            }
+            for button in self.buttons.drain() {
+                let _ = tx.send(CtrlMsg::Event(input_button_envelope(button, false)));
+            }
+        }
+    }
+
+    fn modifier_bit(usage: u16) -> Option<u8> {
+        Some(match usage {
+            0xe0 => 1 << 0,
+            0xe1 => 1 << 1,
+            0xe2 => 1 << 2,
+            0xe3 => 1 << 3,
+            0xe4 => 1 << 4,
+            0xe5 => 1 << 5,
+            0xe6 => 1 << 6,
+            0xe7 => 1 << 7,
+            _ => return None,
+        })
+    }
+
+    fn hid_button(detail: u8) -> Option<u8> {
+        match detail {
+            1 => Some(1),
+            2 => Some(3),
+            3 => Some(2),
+            8 => Some(4),
+            9 => Some(5),
+            _ => None,
+        }
+    }
+
+    fn wheel_delta(detail: u8) -> Option<(i16, i16)> {
+        match detail {
+            4 => Some((0, 120)),
+            5 => Some((0, -120)),
+            6 => Some((-120, 0)),
+            7 => Some((120, 0)),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn x11_buttons_use_hid_order_and_wheel_deltas() {
+            assert_eq!(hid_button(1), Some(1));
+            assert_eq!(hid_button(2), Some(3));
+            assert_eq!(hid_button(3), Some(2));
+            assert_eq!(hid_button(8), Some(4));
+            assert_eq!(hid_button(9), Some(5));
+            assert_eq!(wheel_delta(4), Some((0, 120)));
+            assert_eq!(wheel_delta(5), Some((0, -120)));
+            assert_eq!(wheel_delta(6), Some((-120, 0)));
+            assert_eq!(wheel_delta(7), Some((120, 0)));
+        }
+
+        #[test]
+        fn modifier_bits_match_protocol_layout() {
+            assert_eq!(modifier_bit(0xe0), Some(0x01));
+            assert_eq!(modifier_bit(0xe1), Some(0x02));
+            assert_eq!(modifier_bit(0xe2), Some(0x04));
+            assert_eq!(modifier_bit(0xe3), Some(0x08));
+            assert_eq!(modifier_bit(0xe4), Some(0x10));
+            assert_eq!(modifier_bit(0xe5), Some(0x20));
+            assert_eq!(modifier_bit(0xe6), Some(0x40));
+            assert_eq!(modifier_bit(0xe7), Some(0x80));
+            assert_eq!(modifier_bit(0x04), None);
+        }
+
+        #[tokio::test]
+        #[ignore = "requires explicit opt-in, xdotool and a disposable Xvfb display"]
+        async fn isolated_x11_capture_observes_pointer_button_key_and_stop() -> Result<()> {
+            use std::ffi::OsString;
+            use std::process::{Child, Command, Stdio};
+
+            use dfy_proto::{
+                INPUT_KIND_KEY, INPUT_KIND_MOUSE_BTN, INPUT_KIND_MOUSE_MOVE, INPUT_KIND_WHEEL,
+                INPUT_STATE_DOWN, INPUT_STATE_UP,
+            };
+
+            use crate::input_capture::InputCapture;
+
+            anyhow::ensure!(
+                std::env::var("DFY_CLI_X11_CAPTURE_TEST").as_deref() == Ok("1"),
+                "set DFY_CLI_X11_CAPTURE_TEST=1 only in a disposable X11 test host"
+            );
+
+            struct TestXvfb(Child);
+            impl Drop for TestXvfb {
+                fn drop(&mut self) {
+                    let _ = self.0.kill();
+                    let _ = self.0.wait();
+                }
+            }
+            struct RestoreDisplay(Option<OsString>);
+            impl Drop for RestoreDisplay {
+                fn drop(&mut self) {
+                    if let Some(value) = &self.0 {
+                        std::env::set_var("DISPLAY", value);
+                    } else {
+                        std::env::remove_var("DISPLAY");
+                    }
+                }
+            }
+
+            fn free_endpoint() -> Result<String> {
+                for number in 140..240 {
+                    let endpoint = format!(":{number}");
+                    if !std::path::Path::new(&format!("/tmp/.X11-unix/X{number}")).exists()
+                        && !std::path::Path::new(&format!("/tmp/.X{number}-lock")).exists()
+                    {
+                        return Ok(endpoint);
+                    }
+                }
+                anyhow::bail!("no free Xvfb display number")
+            }
+
+            async fn wait_ready(endpoint: &str, child: &mut TestXvfb) -> Result<()> {
+                for _ in 0..100 {
+                    if x11rb::connect(Some(endpoint)).is_ok() {
+                        return Ok(());
+                    }
+                    if let Some(status) = child.0.try_wait()? {
+                        anyhow::bail!("Xvfb {endpoint} exited early: {status}");
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                anyhow::bail!("Xvfb {endpoint} did not become ready")
+            }
+
+            fn xdotool(display: &str, args: &[&str]) -> Result<()> {
+                let output = Command::new("xdotool")
+                    .args(args)
+                    .env("DISPLAY", display)
+                    .output()
+                    .context("运行 xdotool 失败")?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "xdotool {} 失败：{}",
+                    args.join(" "),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                Ok(())
+            }
+
+            let endpoint = free_endpoint()?;
+            let mut server = TestXvfb(
+                Command::new("Xvfb")
+                    .arg(&endpoint)
+                    .args(["-screen", "0", "640x480x24", "-nolisten", "tcp", "-noreset"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()?,
+            );
+            wait_ready(&endpoint, &mut server).await?;
+            let _restore_display = RestoreDisplay(std::env::var_os("DISPLAY"));
+            std::env::set_var("DISPLAY", &endpoint);
+            let mut capture = InputCapture::start()?;
+
+            xdotool(
+                &endpoint,
+                &[
+                    "mousemove",
+                    "123",
+                    "234",
+                    "click",
+                    "1",
+                    "key",
+                    "a",
+                    "click",
+                    "4",
+                    "click",
+                    "5",
+                ],
+            )?;
+            let mut moved = false;
+            let mut button_down = false;
+            let mut button_up = false;
+            let mut key_a_down = false;
+            let mut key_a_up = false;
+            let mut wheel_up = false;
+            let mut wheel_down = false;
+            let deadline = Instant::now() + Duration::from_secs(8);
+            while Instant::now() < deadline
+                && !(moved
+                    && button_down
+                    && button_up
+                    && key_a_down
+                    && key_a_up
+                    && wheel_up
+                    && wheel_down)
+            {
+                let message =
+                    match tokio::time::timeout(Duration::from_secs(2), capture.recv()).await {
+                        Ok(Some(message)) => message,
+                        Ok(None) | Err(_) => break,
+                    };
+                match message {
+                    CtrlMsg::Move(event) => {
+                        let expected_x = u32::try_from(123u64 * 65_535 / 639).unwrap();
+                        let expected_y = u32::try_from(234u64 * 65_535 / 479).unwrap();
+                        assert_eq!(event.kind, INPUT_KIND_MOUSE_MOVE);
+                        assert!(event.x.abs_diff(expected_x) <= 1, "x={}", event.x);
+                        assert!(event.y.abs_diff(expected_y) <= 1, "y={}", event.y);
+                        moved = true;
+                    }
+                    CtrlMsg::Event(event) => {
+                        let Some(dfy_proto::envelope::Body::InputEvent(input)) = event.body else {
+                            continue;
+                        };
+                        match (input.kind, input.hid_usage, input.state) {
+                            (INPUT_KIND_MOUSE_BTN, 1, INPUT_STATE_DOWN) => button_down = true,
+                            (INPUT_KIND_MOUSE_BTN, 1, INPUT_STATE_UP) => button_up = true,
+                            (INPUT_KIND_KEY, 0x04, INPUT_STATE_DOWN) => key_a_down = true,
+                            (INPUT_KIND_KEY, 0x04, INPUT_STATE_UP) => key_a_up = true,
+                            (INPUT_KIND_WHEEL, 0, _) if input.dy == 120 => wheel_up = true,
+                            (INPUT_KIND_WHEEL, 0, _) if input.dy == -120 => wheel_down = true,
+                            _ => {}
+                        }
+                    }
+                    CtrlMsg::Stopped => anyhow::bail!("unexpected stop before hotkey"),
+                }
+            }
+            assert!(
+                moved && button_down && button_up && key_a_down && key_a_up,
+                "missing input: move={moved} button={button_down}/{button_up} a={key_a_down}/{key_a_up} wheel={wheel_up}/{wheel_down}"
+            );
+
+            xdotool(&endpoint, &["key", "ctrl+alt+shift+q"])?;
+            let stopped = tokio::time::timeout(Duration::from_secs(8), async {
+                loop {
+                    if matches!(capture.recv().await, Some(CtrlMsg::Stopped)) {
+                        return true;
+                    }
+                }
+            })
+            .await?;
+            assert!(stopped, "stop hotkey did not end capture");
+            capture.stop();
+            Ok(())
         }
     }
 }

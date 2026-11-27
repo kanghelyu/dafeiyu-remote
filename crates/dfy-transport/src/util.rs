@@ -1,16 +1,12 @@
-//! 小工具：时间戳、随机数、密码证明、指纹/十六进制转换。
+//! 小工具：时间戳、随机数、摘要、指纹/十六进制转换。
 //!
-//! 这里的密码证明是 **MVP 简化版**：`HMAC-SHA256(key = SHA-256(password), msg = nonce)`。
-//! 正式版应换成 Argon2id 派生密钥后再做 HMAC（见 `spec/DFYP-v1.md` 握手章节）。
+//! 口令认证实现位于 crate 内部的 auth 模块；不提供旧 nonce-only 证明原语。
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
-use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
-
-type HmacSha256 = Hmac<Sha256>;
 
 /// 当前 Unix 微秒时间戳（握手 nonce 的时间语义、心跳 RTT、视频帧 `ts_us`）。
 pub fn now_us() -> u64 {
@@ -40,33 +36,6 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 /// SHA-256 摘要的小写十六进制表示。
 pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(sha256(data))
-}
-
-/// 从口令派生 HMAC 密钥。
-///
-/// MVP：直接 SHA-256；`// MVP: replace with Argon2id`。
-pub fn password_key(password: &str) -> [u8; 32] {
-    // MVP: replace with Argon2id
-    sha256(password.as_bytes())
-}
-
-/// 计算握手证明：`HMAC-SHA256(SHA-256(password), nonce)`。
-pub fn password_proof(password: &str, nonce: &[u8]) -> Vec<u8> {
-    let key = password_key(password);
-    let mut mac = HmacSha256::new_from_slice(&key).expect("HMAC 接受任意长度密钥");
-    mac.update(nonce);
-    mac.finalize().into_bytes().to_vec()
-}
-
-/// 常数时间校验握手证明。
-pub fn verify_proof(password: &str, nonce: &[u8], proof: &[u8]) -> bool {
-    let key = password_key(password);
-    let mut mac = match HmacSha256::new_from_slice(&key) {
-        Ok(mac) => mac,
-        Err(_) => return false,
-    };
-    mac.update(nonce);
-    mac.verify_slice(proof).is_ok()
 }
 
 /// 常数时间字节比较（避免提前返回泄漏比较进度）。
@@ -114,16 +83,6 @@ pub fn human_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn proof_is_deterministic_and_password_bound() {
-        let nonce = random_bytes(32);
-        let proof = password_proof("test", &nonce);
-        assert_eq!(proof.len(), 32);
-        assert!(verify_proof("test", &nonce, &proof));
-        assert!(!verify_proof("wrong", &nonce, &proof));
-        assert!(!verify_proof("test", &random_bytes(32), &proof));
-    }
 
     #[test]
     fn fingerprint_roundtrip() {

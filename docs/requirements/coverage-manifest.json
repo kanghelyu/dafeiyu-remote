@@ -1,0 +1,266 @@
+{
+  "source": "000-original-user-prompt.md",
+  "encoding": "UTF-8",
+  "sourceSha256": "3db9a60032c0e801593be04f6094b376c97794521fa855d413acbade971cd4e3",
+  "sourceByteCount": 23342,
+  "sourceLineCount": 825,
+  "nonblankLineCount": 583,
+  "nonblankBlocks": 242,
+  "moduleCount": 28,
+  "coveredLineCount": 825,
+  "missingLines": [],
+  "duplicatedLines": [],
+  "byteExactConcatenation": true,
+  "modules": [
+    {
+      "file": "modules/001-positioning.md",
+      "title": "中文定位、环境授权和三项产品重点",
+      "startLine": 1,
+      "endLine": 15,
+      "lineCount": 15,
+      "sha256": "ae789d16c19c4d9ad50a11fd4da9c0009218def5480347e27224f0f535c0717c"
+    },
+    {
+      "file": "modules/002-mission.md",
+      "title": "1. 产品使命与完整生态",
+      "startLine": 16,
+      "endLine": 36,
+      "lineCount": 21,
+      "sha256": "2b7011562c30236c092ced50ddec3b11a4661c044e36761015651762b9edd6ff"
+    },
+    {
+      "file": "modules/003-research.md",
+      "title": "2. 合法竞品研究与20项功能矩阵",
+      "startLine": 37,
+      "endLine": 91,
+      "lineCount": 55,
+      "sha256": "fa25a1ddf5c78e2ee3de7cbbf5d0fd6ebb56c002d415efce9e0b57417e60642a"
+    },
+    {
+      "file": "modules/004-platforms.md",
+      "title": "3. 四平台主控、被控与Linux中继",
+      "startLine": 92,
+      "endLine": 110,
+      "lineCount": 19,
+      "sha256": "e8346493dc29173bd30d7e9519a4829b8db9a3e613e855bac911fc35d69151c3"
+    },
+    {
+      "file": "modules/005-core-introduction.md",
+      "title": "4. 核心功能标题",
+      "startLine": 111,
+      "endLine": 112,
+      "lineCount": 2,
+      "sha256": "59453df8327192cf022c48fd7a41f71536aa5144d7676757af1ddb8593153d20"
+    },
+    {
+      "file": "modules/006-virtual-display.md",
+      "title": "4.1 虚拟显示与平台原生实现",
+      "startLine": 113,
+      "endLine": 159,
+      "lineCount": 47,
+      "sha256": "5daddce6b0d0c3369b61c01d76639edc4f632ff06c774c3249b603ff447f6573"
+    },
+    {
+      "file": "modules/007-input.md",
+      "title": "4.2 键鼠、国际布局和快捷键映射",
+      "startLine": 160,
+      "endLine": 193,
+      "lineCount": 34,
+      "sha256": "3e263f72a33e028284c3cb72513450f9587ba7590d1cabe3e80b29424dcde69a"
+    },
+    {
+      "file": "modules/008-clipboard.md",
+      "title": "4.3 剪贴板、权限和逐连接配置",
+      "startLine": 194,
+      "endLine": 221,
+      "lineCount": 28,
+      "sha256": "7e6190e52073e9b0043aba33930586649d3d97f4d6915770498adb21001db4eb"
+    },
+    {
+      "file": "modules/009-streaming.md",
+      "title": "4.4 编解码、自适应和连接统计",
+      "startLine": 222,
+      "endLine": 259,
+      "lineCount": 38,
+      "sha256": "098aef5c2845ead4fb82ff755079c8966f9e4da5501bea73e8005c7653299743"
+    },
+    {
+      "file": "modules/010-networking.md",
+      "title": "5. P2P、自动回退和用户选定中继",
+      "startLine": 260,
+      "endLine": 293,
+      "lineCount": 34,
+      "sha256": "7baa0a75cfc03eacbec19de45940449357e614734630372d82f17c68f89475cc"
+    },
+    {
+      "file": "modules/011-relay-server.md",
+      "title": "6. 独立Linux中继服务",
+      "startLine": 294,
+      "endLine": 325,
+      "lineCount": 32,
+      "sha256": "7b7f008e99728a54df20b2ed415711c5fd2b4b6f8cfc1220fb7e100f5c18cc43"
+    },
+    {
+      "file": "modules/012-relay-deployment.md",
+      "title": "6.1 极简安装、维护和诊断",
+      "startLine": 326,
+      "endLine": 354,
+      "lineCount": 29,
+      "sha256": "8e37e960d8e19bb8b7cc59edcc78e529cf23a9fbfd52aef972064293b5971807"
+    },
+    {
+      "file": "modules/013-relay-profiles.md",
+      "title": "6.2 不限数量的中继配置",
+      "startLine": 355,
+      "endLine": 384,
+      "lineCount": 30,
+      "sha256": "bdc200b6885deff77a4fb665d920b2962e79f01a4ed8ea291a3766ca01a4fe05"
+    },
+    {
+      "file": "modules/014-relay-selection.md",
+      "title": "6.3 质量选择、故障切换与分布式演进",
+      "startLine": 385,
+      "endLine": 410,
+      "lineCount": 26,
+      "sha256": "50cb8178352ea171fb508ccaf6301758f900149a70713ed170e2cffb069c403d"
+    },
+    {
+      "file": "modules/015-android.md",
+      "title": "7. Android原生体验和权限限制",
+      "startLine": 411,
+      "endLine": 435,
+      "lineCount": 25,
+      "sha256": "2f8bb6f5fd7eb62483ce34f6f3cc3c2950f08a3779a5b4742dc989d25006d9d5"
+    },
+    {
+      "file": "modules/016-security.md",
+      "title": "8. E2E、认证、授权和安全更新",
+      "startLine": 436,
+      "endLine": 464,
+      "lineCount": 29,
+      "sha256": "31bbf975f74a6693da8b645a4d1cc7b45bad860a1878571cb9deb883cbb24095"
+    },
+    {
+      "file": "modules/017-ui.md",
+      "title": "9. 主界面、连接界面和中继管理",
+      "startLine": 465,
+      "endLine": 512,
+      "lineCount": 48,
+      "sha256": "68ecda5990c5bc7025a705c8a40d0f84a5d34b9655fe30afa3425adaf699d2c9"
+    },
+    {
+      "file": "modules/018-additional-features.md",
+      "title": "10. 需评估的20项扩展功能",
+      "startLine": 513,
+      "endLine": 539,
+      "lineCount": 27,
+      "sha256": "ae9457d7f8648d91908c5ad4227f859e42461ad4abadc0963b421ad2fbc926d5"
+    },
+    {
+      "file": "modules/019-architecture.md",
+      "title": "11. 架构候选、17模块和稳定接口",
+      "startLine": 540,
+      "endLine": 579,
+      "lineCount": 40,
+      "sha256": "3626f3d565ea3c6a824203caa432680f05be3c9215d2cb9f7d6193960ce69b20"
+    },
+    {
+      "file": "modules/020-development-phases.md",
+      "title": "12. 自主开发与五阶段交付",
+      "startLine": 580,
+      "endLine": 642,
+      "lineCount": 63,
+      "sha256": "6a93baa653bd969911ecedfd00c91bb68df93db50e159a096d6859899e93fbab"
+    },
+    {
+      "file": "modules/021-testing.md",
+      "title": "13. 真实平台组合、网络路径和故障测试",
+      "startLine": 643,
+      "endLine": 683,
+      "lineCount": 41,
+      "sha256": "b020ff1d1daf9ed469cdf52d15ccdb03a419398780188e9268d8ba1974245f5c"
+    },
+    {
+      "file": "modules/022-release.md",
+      "title": "14. GitHub、开源合规与发布物",
+      "startLine": 684,
+      "endLine": 716,
+      "lineCount": 33,
+      "sha256": "38bd4bef1307870bcc1c80506713721199886fff530fac854266c81d7aab2a26"
+    },
+    {
+      "file": "modules/023-engineering.md",
+      "title": "15. 15项强制工程原则与真实限制",
+      "startLine": 717,
+      "endLine": 738,
+      "lineCount": 22,
+      "sha256": "08fa538a957cb56c3b40ae9ee5a9d388ac39e37a0e93c48f7da6622a809969d1"
+    },
+    {
+      "file": "modules/024-final-objective.md",
+      "title": "16. 最终目标及完成判据",
+      "startLine": 739,
+      "endLine": 764,
+      "lineCount": 26,
+      "sha256": "56e4967b4a4d75c7e583e56b1f1fa7fcee8f93c67429c6b9b8abb2b4f35ce334"
+    },
+    {
+      "file": "modules/025-extra-decisions-introduction.md",
+      "title": "三项额外设计决策标题",
+      "startLine": 765,
+      "endLine": 768,
+      "lineCount": 4,
+      "sha256": "3a662b9a149237a4ac1ea118e641bc0d0bf4103cdd414691eeaca2c5dcd61a42"
+    },
+    {
+      "file": "modules/026-decision-session-migration.md",
+      "title": "补充1：质量检测、中继池与可恢复会话迁移",
+      "startLine": 769,
+      "endLine": 796,
+      "lineCount": 28,
+      "sha256": "fefb85b8b87d2da8027651ea552c45184d0bad8514d083791c7466cd8edaf160"
+    },
+    {
+      "file": "modules/027-decision-virtual-display.md",
+      "title": "补充2：独立虚拟显示核心模块",
+      "startLine": 797,
+      "endLine": 810,
+      "lineCount": 14,
+      "sha256": "84d7ff98b4513348f451fdffdf2722d962aa574dd8093142adfb1c5f91d94900"
+    },
+    {
+      "file": "modules/028-decision-relay-modes.md",
+      "title": "补充3：个人自建优先与多服务器管理",
+      "startLine": 811,
+      "endLine": 825,
+      "lineCount": 15,
+      "sha256": "f08d4d7c6f35ac33abaf7015abce99799e27bbe63360e0c3f242c640301e92c8"
+    }
+  ],
+  "extraDecisions": [
+    {
+      "name": "recoverable-session-migration",
+      "sourceLines": [
+        769,
+        796
+      ],
+      "requiredExactText": "特别注意：P2P 和 Relay 之间的切换应该设计成可恢复的会话迁移，而不只是断开后重新连接。"
+    },
+    {
+      "name": "independent-virtual-display-core",
+      "sourceLines": [
+        797,
+        810
+      ],
+      "requiredExactText": "### **2. 虚拟屏必须成为独立的核心模块**"
+    },
+    {
+      "name": "personal-and-multi-server-relay",
+      "sourceLines": [
+        811,
+        825
+      ],
+      "requiredExactText": "### **3. 中继服务器最好支持两种使用模式**"
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 # SPDX-FileCopyrightText: 2026 Dafeiyu Remote contributors
 # Copyright (c) 2026 Dafeiyu Remote contributors
 """dfy-relay 端到端验证（仅 Python 标准库，适配 3.13）。

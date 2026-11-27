@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! # dfy-session — 会话编排（大肥鱼远程）
@@ -35,15 +35,27 @@ use std::collections::HashMap;
 
 use dfy_proto::{VideoHeader, CHAN_VIDEO, VIDEO_FLAG_KEY, VIDEO_FLAG_LAST};
 
+pub mod adaptation;
 pub mod agent;
 pub mod capture_loop;
 pub mod client;
 pub mod fake;
+mod feedback;
+pub mod migration;
 
-pub use agent::{serve_agent, AgentConfig, AgentRunStats, CtrlHandler, IgnoreHandler};
-pub use capture_loop::{start_capture_loop, CaptureLoop, CaptureLoopConfig, CaptureStats};
+pub use adaptation::StreamAdaptationConfig;
+pub use agent::{
+    serve_agent, serve_agent_shared, AgentConfig, AgentRunStats, CtrlHandler, IgnoreHandler,
+};
+pub use capture_loop::{
+    start_capture_loop, start_capture_loop_with_encoder_factory, CaptureHandle, CaptureLoop,
+    CaptureLoopConfig, CaptureRuntimeControl, CaptureStats, EncodeResolution, FrameInput,
+    RuntimeSettings,
+};
 pub use client::{run_client, ClientConfig, ClientRunStats};
 pub use fake::{FakeCapturer, FakeDecoder, FakeEncoder};
+pub use feedback::{StreamFeedbackWindow, FEEDBACK_INTERVAL};
+pub use migration::{MigrationContext, SessionCoordinator, SessionLease};
 
 /// 采集线程输出的一帧原始图像（与 `dfy-capture` 解耦，便于测试替身）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,6 +104,18 @@ pub struct DecodedFrame {
 pub trait Capturer {
     /// 采集一帧；`Ok(None)` 表示本次超时无新帧（正常现象），可继续调用。
     fn capture(&mut self, timeout_ms: u32) -> anyhow::Result<Option<RawFrame>>;
+
+    /// 当前采集表面尺寸；未知时返回 `None`。
+    ///
+    /// 运行时分辨率控制用它提前校验/缩放，无需等待第一帧。默认实现保持旧采集器兼容。
+    fn dimensions(&self) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// 取出一次采集源恢复通知；采集循环据此请求恢复后的首帧为关键帧。
+    fn take_recovery_request(&mut self) -> bool {
+        false
+    }
 }
 
 /// 视频编码器。
@@ -100,8 +124,25 @@ pub trait Encoder {
     fn encode(&mut self, frame: &RawFrame) -> anyhow::Result<Vec<EncodedFrame>>;
     /// 请求下一帧强制关键帧（例如客户端新连接/丢帧后）。
     fn request_keyframe(&mut self);
-    /// 运行时调整码率（kbps）。
-    fn set_bitrate(&mut self, _kbps: u32) {}
+    /// 运行时调整码率（kbps）；不支持时必须返回明确错误，不得静默接受。
+    fn set_bitrate(&mut self, _kbps: u32) -> anyhow::Result<()> {
+        anyhow::bail!("dfy-session: 当前编码器不支持动态码率调整")
+    }
+    /// 运行时调整帧率（fps）；不支持时必须返回明确错误，不得静默接受。
+    fn set_frame_rate(&mut self, _fps: u32) -> anyhow::Result<()> {
+        anyhow::bail!("dfy-session: 当前编码器不支持动态帧率调整；请通过编码器工厂重建")
+    }
+    /// 返回当前编码器设置（若实现能提供）。采集循环不会凭空假设原生码率。
+    fn runtime_settings(&self) -> Option<crate::capture_loop::RuntimeSettings> {
+        None
+    }
+    /// 冲刷内部缓冲。分辨率切换时调用。
+    ///
+    /// 无缓冲实现必须显式返回空列表；默认返回错误，避免在未实现冲刷时
+    /// 丢弃旧编码器待输出帧并宣称可以安全重建。
+    fn flush(&mut self) -> anyhow::Result<Vec<EncodedFrame>> {
+        anyhow::bail!("dfy-session: 当前编码器未实现 flush，不能安全重建编码器")
+    }
 }
 
 /// 视频解码器。
@@ -111,9 +152,9 @@ pub trait Decoder: Send {
 }
 
 #[cfg(windows)]
-impl Capturer for dfy_capture::DxgiCapturer {
+impl Capturer for dfy_capture::WindowsCapturer {
     fn capture(&mut self, timeout_ms: u32) -> anyhow::Result<Option<RawFrame>> {
-        let frame = dfy_capture::DxgiCapturer::capture(self, timeout_ms)?;
+        let frame = dfy_capture::WindowsCapturer::capture(self, timeout_ms)?;
         Ok(frame.map(|f| RawFrame {
             width: f.width,
             height: f.height,
@@ -122,6 +163,11 @@ impl Capturer for dfy_capture::DxgiCapturer {
             pts_us: dfy_transport::now_us(),
             full_frame: f.full_frame,
         }))
+    }
+
+    fn dimensions(&self) -> Option<(u32, u32)> {
+        let monitor = dfy_capture::WindowsCapturer::monitor(self);
+        Some((monitor.w, monitor.h))
     }
 }
 
@@ -138,6 +184,11 @@ impl Capturer for dfy_capture::LinuxCapturer {
             pts_us: dfy_transport::now_us(),
             full_frame: f.full_frame,
         }))
+    }
+
+    fn dimensions(&self) -> Option<(u32, u32)> {
+        let monitor = dfy_capture::LinuxCapturer::monitor(self);
+        Some((monitor.w, monitor.h))
     }
 }
 

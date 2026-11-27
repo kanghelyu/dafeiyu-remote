@@ -12,10 +12,12 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -27,18 +29,32 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            bins: dfy, dfy-relay
-            archive: tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
           - os: windows-2022
-            target: x86_64-pc-windows-gnu
-            bins: dfy.exe, dfy-relay.exe
-            archive: zip
+            target: x86_64-pc-windows-msvc
+          - os: macos-14
+            target: x86_64-apple-darwin
           - os: macos-14
             target: aarch64-apple-darwin
-            bins: dfy, dfy-relay
-            archive: tar.gz
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: 校验发布 tag 与工作区版本
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?(\+[A-Za-z0-9.-]+)?$ ]]
+          git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}" >/dev/null
+          python3 - "$RELEASE_TAG" <<'PY'
+          from pathlib import Path
+          import sys, tomllib
+          tag = sys.argv[1].removeprefix("v")
+          version = tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"]
+          if tag != version:
+              raise SystemExit(f"release tag {tag} does not match workspace version {version}")
+          PY
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
@@ -50,66 +66,248 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Ubuntu 依赖（x11rb 编译期不需要 C 库，保留占位）
+      - name: Ubuntu 依赖
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config
 
-      - name: 构建
+      - name: 构建 dfy 与 dfy-relay
         shell: bash
         run: |
           cargo build --release --locked --target "${{ matrix.target }}" \
             -p dfy-cli -p dfy-relay
 
-      - name: 打包
+      - name: 创建架构正确的归档与校验和
         shell: bash
         run: |
-          set -euo pipefail
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          out="dist"
-          mkdir -p "$out"
-          # 统一二进制名：dfy / dfy-relay
-          for spec in "dfy-cli:dfy" "dfy-relay:dfy-relay"; do
-            pkg="${spec%%:*}"; bin="${spec##*:}"
-            case "${{ matrix.target }}" in
-              *windows*) src="target/${{ matrix.target }}/release/${bin}.exe" ;;
-              *)         src="target/${{ matrix.target }}/release/${bin}" ;;
-            esac
-            [ -f "$src" ] || { echo "missing $src"; exit 1; }
-            cp "$src" "$out/"
-          done
-          cp README.md LICENSE spec/DFYP-v1.md deploy/README.md "$out/" 2>/dev/null || true
-          base="dafeiyu-${tag}-${{ matrix.target }}"
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            (cd "$out" && 7z a "../${base}.zip" . >/dev/null)
-          else
-            tar -C "$out" -czf "${base}.tar.gz" .
-          fi
-          ls -lh *.zip *.tar.gz 2>/dev/null || true
+          python3 packaging/make_archive.py \
+            --binary-dir "$CARGO_TARGET_DIR/${{ matrix.target }}/release" \
+            --target "${{ matrix.target }}" \
+            --version "$RELEASE_TAG" \
+            --output-dir dist
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: dafeiyu-${{ matrix.target }}
-          path: |
-            *.zip
-            *.tar.gz
+          path: dist/*
+          if-no-files-found: error
+
+  windows-installer:
+    name: Windows Inno Setup installer
+    needs: build
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dafeiyu-x86_64-pc-windows-msvc
+          path: archive
+      - name: 解压 Windows 二进制
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+          archive = next(Path("archive").glob("*.zip"))
+          with zipfile.ZipFile(archive) as bundle:
+              bundle.extractall("binaries")
+          PY
+      - name: 确保 Inno Setup 可用
+        shell: bash
+        run: |
+          if ! command -v ISCC.exe >/dev/null 2>&1 && ! command -v iscc >/dev/null 2>&1; then
+            choco install innosetup --no-progress -y
+          fi
+      - name: 构建安装包
+        shell: bash
+        env:
+          ISCC: '/c/Program Files (x86)/Inno Setup 6/ISCC.exe'
+        run: |
+          bash packaging/windows/build-installer.sh \
+            --binary-dir binaries \
+            --version "$RELEASE_TAG" \
+            --output-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dafeiyu-windows-x86_64-installer
+          path: dist/*
+          if-no-files-found: error
+
+  linux-packages:
+    name: Linux ${{ matrix.arch }} ${{ matrix.format }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+            target: x86_64-unknown-linux-gnu
+            format: deb
+          - os: ubuntu-24.04
+            arch: x86_64
+            target: x86_64-unknown-linux-gnu
+            format: rpm
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            target: aarch64-unknown-linux-gnu
+            format: deb
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            target: aarch64-unknown-linux-gnu
+            format: rpm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dafeiyu-${{ matrix.target }}
+          path: archive
+      - name: 安装打包工具
+        run: |
+          sudo apt-get update
+          if [ "${{ matrix.format }}" = rpm ]; then
+            sudo apt-get install -y --no-install-recommends rpm
+          else
+            sudo apt-get install -y --no-install-recommends dpkg-dev
+          fi
+      - name: 解压 Linux 二进制
+        shell: bash
+        run: |
+          mkdir -p binaries
+          tar -xzf archive/dafeiyu-*.tar.gz -C binaries
+      - name: 构建 DEB/RPM（不启用、不启动服务）
+        shell: bash
+        run: |
+          bash packaging/linux/build-packages.sh \
+            --binary-dir binaries \
+            --version "$RELEASE_TAG" \
+            --arch "${{ matrix.arch }}" \
+            --format "${{ matrix.format }}" \
+            --output-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dafeiyu-linux-${{ matrix.arch }}-${{ matrix.format }}
+          path: dist/*
+          if-no-files-found: error
+
+  macos-installers:
+    name: macOS ${{ matrix.arch }} PKG/DMG
+    needs: build
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-apple-darwin
+          - arch: arm64
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dafeiyu-${{ matrix.target }}
+          path: archive
+      - name: 解压 macOS 二进制
+        run: |
+          mkdir -p binaries
+          tar -xzf archive/dafeiyu-*.tar.gz -C binaries
+      - name: 构建可选签名/公证的 PKG 与 DMG
+        shell: bash
+        env:
+          MAC_SIGNING_IDENTITY: ${{ secrets.MAC_SIGNING_IDENTITY }}
+          MAC_DMG_SIGNING_IDENTITY: ${{ secrets.MAC_DMG_SIGNING_IDENTITY }}
+          MAC_NOTARY_KEY_BASE64: ${{ secrets.MAC_NOTARY_KEY_BASE64 }}
+          MAC_NOTARY_KEY_ID: ${{ secrets.MAC_NOTARY_KEY_ID }}
+          MAC_NOTARY_ISSUER_ID: ${{ secrets.MAC_NOTARY_ISSUER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MAC_REQUIRE_NOTARIZATION: ${{ secrets.MAC_REQUIRE_NOTARIZATION }}
+        run: |
+          bash packaging/macos/build-installer.sh \
+            --binary-dir binaries \
+            --version "$RELEASE_TAG" \
+            --arch "${{ matrix.arch }}" \
+            --format all \
+            --output-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dafeiyu-macos-${{ matrix.arch }}-installers
+          path: dist/*
+          if-no-files-found: error
+
+  android:
+    name: Android debug and release APK/AAB
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: 安装 Android SDK/NDK 与 cargo-ndk
+        shell: bash
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
+          cargo install cargo-ndk --locked
+      - name: 构建 APK/AAB（秘密缺失时明确输出 unsigned）
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          bash packaging/android/build.sh \
+            --version "$RELEASE_TAG" \
+            --signing auto \
+            --output-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dafeiyu-android
+          path: dist/*
           if-no-files-found: error
 
   publish:
     name: 发布 GitHub Release
-    needs: build
+    needs: [build, windows-installer, linux-packages, macos-installers, android]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: 生成校验和
+      - name: 生成 release 级校验和
         run: |
           cd artifacts
-          sha256sum * > SHA256SUMS.txt || true
+          sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+      - name: 判断 SemVer 预发布标记
+        id: release_channel
+        shell: bash
+        run: |
+          version="${RELEASE_TAG#v}"
+          if [[ "${version%%+*}" == *-* ]]; then
+            printf 'prerelease=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'prerelease=false\n' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
@@ -117,23 +315,31 @@ jobs:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: 大肥鱼远程 ${{ github.event.inputs.tag || github.ref_name }}
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.release_channel.outputs.prerelease }}
           generate_release_notes: true
-          files: |
-            artifacts/*
+          files: artifacts/*
           body: |
             ## 大肥鱼远程 ${{ github.event.inputs.tag || github.ref_name }}
 
-            开源跨平台远控：Win / Linux / macOS / Android（开发中）。
+            包含 `dfy` / `dfy-relay` CLI、Linux DEB/RPM、Windows Inno Setup、
+            macOS PKG/DMG，以及 Android APK/AAB。macOS 包不是原生 GUI app；
+            Windows 包不安装服务包装器。未配置签名秘密的产物会明确标记为 unsigned。
 
             ### 下载
-            - `dafeiyu-*-x86_64-unknown-linux-gnu.tar.gz`：Linux 主控端 + 中继
-            - `dafeiyu-*-x86_64-pc-windows-gnu.zip`：Windows
-            - `dafeiyu-*-aarch64-apple-darwin.tar.gz`：Apple Silicon macOS
+            - `dafeiyu-*-unknown-linux-gnu.tar.gz`：Linux x86_64 / aarch64 CLI + relay
+            - `dfy-relay-linux-<arch>.tar.gz`：一键脚本使用的中继归档
+            - `dafeiyu_*_amd64.deb` / `dafeiyu_*_arm64.deb`：Linux DEB
+            - `dafeiyu-*.rpm`：Linux RPM
+            - `dafeiyu-*-windows-x86_64-setup.exe`：Windows 安装程序
+            - `dafeiyu-*-macos-*.pkg` / `.dmg`：macOS CLI 安装包
+            - `dafeiyu-*-debug.apk` / `dafeiyu-*-release*.apk` / `.aab`
 
-            ### 中继一键部署
+            SHA-256：`SHA256SUMS.txt`（也提供逐归档 `.sha256`）。
+
+            ### 中继部署
+            先审阅脚本，再执行：
             ```bash
-            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/deploy/install-relay.sh | sudo bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.event.inputs.tag || github.ref_name }}/deploy/install-relay.sh -o install-relay.sh
+            sudo DFY_REQUIRE_CHECKSUM=1 bash install-relay.sh --version "${{ github.event.inputs.tag || github.ref_name }}"
             ```
-
-            完整用法见仓库 README 与 `spec/DFYP-v1.md`（协议规范）。
+            配置、覆盖参数、签名秘密和本地构建说明见 `deploy/README.md`。

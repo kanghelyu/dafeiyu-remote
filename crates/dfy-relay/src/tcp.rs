@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Dafeiyu Remote contributors
 // Copyright (c) 2026 Dafeiyu Remote contributors
 //! TCP 降级通道：`u32 len | u8 chan | payload` 帧，与 UDP 路径同语义、
@@ -21,7 +21,7 @@ use tracing::{debug, info};
 use crate::config::Config;
 use crate::metrics::{DropReason, Metrics};
 use crate::proto::{self, CHAN_CTRL, CHAN_DATA, CHAN_PING};
-use crate::state::{self, BindOutcome, State};
+use crate::state::{self, BindOutcome, EndpointSource, State};
 use crate::udp::send_egress;
 use crate::unix_ms;
 
@@ -107,35 +107,49 @@ async fn handle_conn(
         )
     };
     let mut wr = wr;
-    let (tag, role, id) = match outcome {
+    let (tag, role, id, mut closed, reply) = match outcome {
         BindOutcome::Ok {
             tag,
             role,
             id,
+            closed,
             reply,
             rebind,
             ..
         } => {
-            metrics.add_out(reply.len());
-            let frame = proto::tcp_frame(CHAN_CTRL, &reply);
-            if wr.write_all(&frame).await.is_err() {
-                return;
-            }
             debug!(tag = %proto::tag_prefix(&tag), role, rebind, "TCP bind 成功");
-            (tag, role, id)
+            (tag, role, id, closed, reply)
         }
         BindOutcome::Reject { reply, code } => {
             metrics.add_out(reply.len());
             let frame = proto::tcp_frame(CHAN_CTRL, &reply);
-            let _ = wr.write_all(&frame).await;
+            let _ = timeout(Duration::from_secs(2), wr.write_all(&frame)).await;
             debug!(code, "TCP bind 被拒绝");
             return;
         }
         BindOutcome::Silent => return,
     };
+    let source = EndpointSource::Tcp { id };
+    drop(tx);
+    let frame = proto::tcp_frame(CHAN_CTRL, &reply);
+    let wrote_ack = tokio::select! {
+        biased;
+        _ = closed.changed() => false,
+        written = timeout(Duration::from_secs(2), wr.write_all(&frame)) => {
+            matches!(written, Ok(Ok(())))
+        }
+    };
+    if !wrote_ack {
+        let byes = state::lock(&state).unbind(&tag, role, source);
+        for eg in byes {
+            send_egress(&udp, eg, &metrics).await;
+        }
+        return;
+    }
+    metrics.add_out(reply.len());
 
     // 写任务：所有发往此 TCP 端点的帧都经 mpsc 串行化写入。
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         while let Some(frame) = rx.recv().await {
             if wr.write_all(&frame).await.is_err() {
                 break;
@@ -145,24 +159,37 @@ async fn handle_conn(
     });
 
     loop {
-        match read_frame(&mut rd).await {
+        let incoming = tokio::select! {
+            biased;
+            // 当前 endpoint 被替换或回收后，旧 reader/writer 都必须结束。
+            _ = closed.changed() => break,
+            _ = &mut writer => break,
+            frame = read_frame(&mut rd) => frame,
+        };
+        match incoming {
             Ok(Some((chan, data))) => {
                 metrics.add_in(data.len());
                 match chan {
                     CHAN_DATA => {
                         let eg = {
                             let mut st = state::lock(&state);
-                            st.forward(tag, role, &data, Instant::now())
+                            st.forward(tag, role, source, &data, Instant::now())
                         };
                         if let Some(eg) = eg {
-                            send_egress(&udp, eg, &metrics).await;
+                            tokio::select! {
+                                biased;
+                                _ = closed.changed() => break,
+                                _ = send_egress(&udp, eg, &metrics) => {}
+                            }
                         }
                     }
                     CHAN_PING => {
-                        state::lock(&state).touch(&tag, role, Instant::now());
+                        if !state::lock(&state).touch(&tag, role, source, Instant::now()) {
+                            break;
+                        }
                     }
                     CHAN_CTRL => {
-                        // 客户端 Bye：只接受本 tag。
+                        // 客户端 Bye：只接受本 tag，清理时仍检查 endpoint 身份。
                         if let Some(t) = proto::parse_bye_tag(&data) {
                             if t == tag {
                                 break;
@@ -180,16 +207,16 @@ async fn handle_conn(
         }
     }
 
+    // 先结束旧 writer，避免等待对端 Bye 投递时仍持有旧连接。
+    writer.abort();
     let byes = {
         let mut st = state::lock(&state);
-        st.unbind(&tag, role, Some(id))
+        st.unbind(&tag, role, source)
     };
     for eg in byes {
         send_egress(&udp, eg, &metrics).await;
     }
     metrics.inc_drop(DropReason::ForwardError);
-    // writer 会在 senders 全部 drop 后自行退出；这里直接 abort 避免残留。
-    writer.abort();
 }
 
 /// 读一个 TCP 帧：`u32 len | u8 chan | payload(len-1)`，EOF 返回 `Ok(None)`。

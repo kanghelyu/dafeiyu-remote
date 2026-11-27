@@ -5,7 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 edition = "2021"
 version = "0.1.0"
-license = "AGPL-3.0-or-later"
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 rust-version = "1.75"
 authors = ["Dafeiyu Remote Project"]
 
@@ -26,9 +26,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 blake3 = "1"
 hex = "0.4"
+jni = "0.21"
 
 dfy-proto = { path = "crates/dfy-proto" }
 dfy-transport = { path = "crates/dfy-transport" }
+dfy-session = { path = "crates/dfy-session" }
 
 [profile.release]
 opt-level = 2

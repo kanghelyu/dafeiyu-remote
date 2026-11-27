@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (C) 2025 Dafeiyu Remote Project
 
 //! Windows user-mode half of the Dafeiyu virtual display (IddCx) control plane.

@@ -1,10 +1,11 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! 测试/自检替身：不依赖真实屏幕与编解码器，用来验证会话编排（采集 → 发送 → 重组 → 解码）。
 
 use std::time::{Duration, Instant};
 
+use crate::capture_loop::RuntimeSettings;
 use crate::{Capturer, DecodedFrame, EncodedFrame, Encoder, RawFrame};
 
 /// 合成帧的魔数（码流里必须能找到，便于测试断言）。
@@ -40,6 +41,10 @@ impl FakeCapturer {
 }
 
 impl Capturer for FakeCapturer {
+    fn dimensions(&self) -> Option<(u32, u32)> {
+        Some((self.width, self.height))
+    }
+
     fn capture(&mut self, timeout_ms: u32) -> anyhow::Result<Option<RawFrame>> {
         if self.remaining == 0 {
             // 模拟超时无新帧，同时让调用方有机会检查停止标志
@@ -85,6 +90,7 @@ pub struct FakeEncoder {
     frame_index: u64,
     keyframe_interval: u64,
     pending_keyframe: bool,
+    settings: RuntimeSettings,
 }
 
 impl Default for FakeEncoder {
@@ -100,7 +106,22 @@ impl FakeEncoder {
             frame_index: 0,
             keyframe_interval: 10,
             pending_keyframe: false,
+            settings: RuntimeSettings::new(60, 4000),
         }
+    }
+
+    /// 使用指定初始运行时设置。
+    pub fn with_settings(settings: RuntimeSettings) -> Self {
+        settings.validate().expect("invalid fake encoder settings");
+        Self {
+            settings,
+            ..Self::new()
+        }
+    }
+
+    /// 当前运行时设置。
+    pub fn settings(&self) -> RuntimeSettings {
+        self.settings
     }
 }
 
@@ -127,6 +148,30 @@ impl Encoder for FakeEncoder {
 
     fn request_keyframe(&mut self) {
         self.pending_keyframe = true;
+    }
+
+    fn set_bitrate(&mut self, kbps: u32) -> anyhow::Result<()> {
+        let mut settings = self.settings;
+        settings.bitrate_kbps = kbps;
+        settings.validate()?;
+        self.settings = settings;
+        Ok(())
+    }
+
+    fn set_frame_rate(&mut self, fps: u32) -> anyhow::Result<()> {
+        let mut settings = self.settings;
+        settings.fps = fps;
+        settings.validate()?;
+        self.settings = settings;
+        Ok(())
+    }
+
+    fn runtime_settings(&self) -> Option<RuntimeSettings> {
+        Some(self.settings)
+    }
+
+    fn flush(&mut self) -> anyhow::Result<Vec<EncodedFrame>> {
+        Ok(Vec::new())
     }
 }
 

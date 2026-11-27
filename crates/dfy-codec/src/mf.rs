@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! Windows Media Foundation 后端：MFT 枚举 + `IMFTransform` 驱动。
@@ -29,8 +29,8 @@ use windows::Win32::System::Variant::{
 use crate::format::{bgra_to_nv12_into, nv12_len, rgba_to_nv12_into};
 use crate::nal;
 use crate::{
-    Codec, CodecExtra, DecodedFrame, EncodedFrame, EncoderConfig, EncoderInfo, PixelFormatIn,
-    PixelFormatOut, VideoDecoder, VideoEncoder,
+    validate_bitrate_kbps, validate_fps, Codec, CodecExtra, DecodedFrame, EncodedFrame,
+    EncoderConfig, EncoderInfo, PixelFormatIn, PixelFormatOut, VideoDecoder, VideoEncoder,
 };
 
 // ---------------------------------------------------------------------------
@@ -1058,18 +1058,41 @@ impl VideoEncoder for MfEncoder {
     }
 
     fn set_bitrate(&mut self, kbps: u32) -> Result<()> {
-        if kbps == 0 {
-            bail!("dfy-codec: 码率不能为 0");
+        validate_bitrate_kbps(kbps)?;
+        if kbps == self.cfg.bitrate_kbps {
+            return Ok(());
         }
         let Some(api) = &self.codec_api else {
             bail!("dfy-codec: 当前编码 MFT 不支持 Codec API，无法动态改码率");
         };
-        let bitrate = kbps.saturating_mul(1000);
-        if !set_codec_value(api, &CODECAPI_AVEncCommonMeanBitRate, &variant_u32(bitrate)) {
+        let bitrate = kbps
+            .checked_mul(1000)
+            .ok_or_else(|| anyhow!("dfy-codec: 码率换算溢出（{kbps} kbps）"))?;
+        let mean_key = CODECAPI_AVEncCommonMeanBitRate;
+        if unsafe { api.IsSupported(&mean_key) }.is_err() {
             bail!("dfy-codec: 编码 MFT 不支持 CODECAPI_AVEncCommonMeanBitRate，无法动态改码率");
         }
+        unsafe { api.SetValue(&mean_key, &variant_u32(bitrate)) }
+            .context("dfy-codec: 编码 MFT 设置 CODECAPI_AVEncCommonMeanBitRate 失败")?;
+        // CBR/PeakVBR 的峰值约束也必须跟着调整；不支持峰值控制的 MFT仍可只用均值。
+        let _ = set_codec_value(api, &CODECAPI_AVEncCommonMaxBitRate, &variant_u32(bitrate));
         self.cfg.bitrate_kbps = kbps;
         Ok(())
+    }
+
+    fn set_frame_rate(&mut self, fps: u32) -> Result<()> {
+        validate_fps(fps)?;
+        if fps == self.cfg.fps {
+            return Ok(());
+        }
+        bail!(
+            "dfy-codec: Media Foundation 编码 MFT 的帧率绑定到已协商媒体类型，不能在当前 transform 上从 {} 动态改为 {fps} fps；请用新 EncoderConfig 重建编码器",
+            self.cfg.fps
+        )
+    }
+
+    fn config(&self) -> Option<&EncoderConfig> {
+        Some(&self.cfg)
     }
 
     fn flush(&mut self) -> Result<Vec<EncodedFrame>> {
@@ -1163,6 +1186,14 @@ impl MfDecoder {
                     continue;
                 }
             };
+            if let Ok(api) = transform.cast::<ICodecAPI>() {
+                let _ = apply_codec_value(
+                    &api,
+                    &CODECAPI_AVLowLatencyMode,
+                    &variant_u32(1),
+                    "AVLowLatencyMode",
+                );
+            }
             if let Ok(attrs) = transform.cast::<IMFAttributes>() {
                 unsafe {
                     let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);

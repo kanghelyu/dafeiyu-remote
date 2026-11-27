@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // 大肥鱼远程 —— DIB（CF_DIB / CF_DIBV5）到 PNG 的转换。
 // 跨端图像统一走 PNG：Windows 侧读 CF_DIB 时在这里即时转换，避免对端实现 DIB 解析。
 // 支持范围：8/16/24/32bpp，BI_RGB 与 BI_BITFIELDS；不支持 1/4bpp、RLE、BITMAPCOREHEADER。

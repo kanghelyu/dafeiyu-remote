@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! `dfy-codec` — 大肥鱼远控的编码/解码模块。
@@ -106,6 +106,15 @@ impl fmt::Display for PixelFormatOut {
     }
 }
 
+/// 最小目标帧率（fps）。
+pub const MIN_FPS: u32 = 1;
+/// 最大目标帧率（fps）。高于此值的采集/编码节奏不作为受支持配置接受。
+pub const MAX_FPS: u32 = 120;
+/// 最小目标码率（kbps）。
+pub const MIN_BITRATE_KBPS: u32 = 100;
+/// 最大目标码率（kbps，即 100 Mbps）。
+pub const MAX_BITRATE_KBPS: u32 = 100_000;
+
 /// 编码器配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncoderConfig {
@@ -115,9 +124,9 @@ pub struct EncoderConfig {
     pub width: u32,
     /// 编码高度（像素，需为偶数）。
     pub height: u32,
-    /// 目标帧率（fps）。
+    /// 目标帧率（fps，1..=120）。
     pub fps: u32,
-    /// 目标码率（kbps）。
+    /// 目标码率（kbps，100..=100_000）。
     pub bitrate_kbps: u32,
     /// 关键帧间隔（帧数）。
     pub keyframe_interval: u32,
@@ -126,7 +135,7 @@ pub struct EncoderConfig {
 }
 
 impl EncoderConfig {
-    /// 校验配置是否自洽（宽高非零且为偶数、fps/码率/GOP 非零）。
+    /// 校验配置是否自洽（宽高非零且为偶数、fps/码率/GOP 在支持范围内）。
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.width == 0 || self.height == 0 {
             anyhow::bail!(
@@ -142,12 +151,8 @@ impl EncoderConfig {
                 self.height
             );
         }
-        if self.fps == 0 {
-            anyhow::bail!("dfy-codec: fps 不能为 0");
-        }
-        if self.bitrate_kbps == 0 {
-            anyhow::bail!("dfy-codec: 码率不能为 0");
-        }
+        validate_fps(self.fps)?;
+        validate_bitrate_kbps(self.bitrate_kbps)?;
         if self.keyframe_interval == 0 {
             anyhow::bail!("dfy-codec: 关键帧间隔不能为 0");
         }
@@ -157,10 +162,32 @@ impl EncoderConfig {
         Ok(())
     }
 
-    /// 每帧时长（微秒）。
+    /// 每帧时长（微秒，向下取整）。配置非法时返回 0，调用方应先校验。
     pub const fn frame_duration_us(&self) -> u64 {
-        1_000_000 / self.fps as u64
+        if self.fps == 0 || self.fps > MAX_FPS {
+            0
+        } else {
+            1_000_000 / self.fps as u64
+        }
     }
+}
+
+/// 校验受支持的目标帧率。
+pub fn validate_fps(fps: u32) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        (MIN_FPS..=MAX_FPS).contains(&fps),
+        "dfy-codec: fps 必须在 {MIN_FPS}..={MAX_FPS} 之间（收到 {fps}）"
+    );
+    Ok(())
+}
+
+/// 校验受支持的目标码率（kbps）。
+pub fn validate_bitrate_kbps(kbps: u32) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        (MIN_BITRATE_KBPS..=MAX_BITRATE_KBPS).contains(&kbps),
+        "dfy-codec: 码率必须在 {MIN_BITRATE_KBPS}..={MAX_BITRATE_KBPS} kbps 之间（收到 {kbps}）"
+    );
+    Ok(())
 }
 
 /// 编码器产生的附加码流信息（SPS/PPS 等），供封装/传输层使用。
@@ -203,11 +230,26 @@ pub trait VideoEncoder: Send {
     fn encode(&mut self, raw: &[u8], stride: u32, pts_us: u64)
         -> anyhow::Result<Vec<EncodedFrame>>;
 
+    /// 动态调整目标码率（kbps）；底层不支持时返回明确错误。
+    ///
+    /// 参数必须先通过 [`validate_bitrate_kbps`]。实现不得把不支持的控制当成成功。
+    fn set_bitrate(&mut self, kbps: u32) -> anyhow::Result<()>;
+
+    /// 动态调整目标帧率（fps）；底层不支持时返回明确错误。
+    ///
+    /// 参数必须先通过 [`validate_fps`]。采集侧限帧与编码器内部帧率控制是两件事；
+    /// 需要重建媒体类型的实现应指明调用方改用新编码器，而不是静默接受。
+    fn set_frame_rate(&mut self, _fps: u32) -> anyhow::Result<()> {
+        anyhow::bail!("dfy-codec: 当前编码器不支持动态帧率调整，需要以新配置重建编码器")
+    }
+
+    /// 返回编码器当前生效的配置；无法提供时返回 `None`。
+    fn config(&self) -> Option<&EncoderConfig> {
+        None
+    }
+
     /// 请求下一帧编码为关键帧（IDR）。
     fn request_keyframe(&mut self);
-
-    /// 动态调整目标码率（kbps）；底层不支持时返回错误。
-    fn set_bitrate(&mut self, kbps: u32) -> anyhow::Result<()>;
 
     /// 冲刷编码器内部缓冲，取出尚未输出的码流帧。
     ///
@@ -347,6 +389,15 @@ mod tests {
         assert!(good.validate().is_ok());
         assert_eq!(good.frame_duration_us(), 33_333);
 
+        let mut high_fps = good.clone();
+        high_fps.fps = 120;
+        assert!(high_fps.validate().is_ok());
+        assert_eq!(high_fps.frame_duration_us(), 8_333);
+
+        let mut low_fps = good.clone();
+        low_fps.fps = 1;
+        assert!(low_fps.validate().is_ok());
+
         let mut bad = good.clone();
         bad.width = 1281;
         assert!(bad.validate().is_err());
@@ -359,9 +410,31 @@ mod tests {
         bad.fps = 0;
         assert!(bad.validate().is_err());
         let mut bad = good.clone();
+        bad.fps = 121;
+        assert!(bad.validate().is_err());
+        assert_eq!(bad.frame_duration_us(), 0);
+        let mut bad = good.clone();
         bad.bitrate_kbps = 0;
         assert!(bad.validate().is_err());
         let mut bad = good.clone();
+        bad.bitrate_kbps = MIN_BITRATE_KBPS - 1;
+        assert!(bad.validate().is_err());
+        let mut bad = good.clone();
+        bad.bitrate_kbps = MAX_BITRATE_KBPS + 1;
+        assert!(bad.validate().is_err());
+        assert!(EncoderConfig {
+            bitrate_kbps: MIN_BITRATE_KBPS,
+            ..good.clone()
+        }
+        .validate()
+        .is_ok());
+        assert!(EncoderConfig {
+            bitrate_kbps: MAX_BITRATE_KBPS,
+            ..good.clone()
+        }
+        .validate()
+        .is_ok());
+        let mut bad = good;
         bad.keyframe_interval = 0;
         assert!(bad.validate().is_err());
     }
@@ -383,6 +456,27 @@ mod tests {
         };
         assert!(err.contains("H.265"), "err = {err}");
         assert!(create_decoder(Codec::H265, false).is_err());
+    }
+
+    #[test]
+    fn mjpeg_rejects_unsupported_dynamic_controls_instead_of_noop_success() {
+        let cfg = EncoderConfig {
+            codec: Codec::Mjpeg,
+            width: 64,
+            height: 48,
+            fps: 120,
+            bitrate_kbps: 1000,
+            keyframe_interval: 1,
+            prefer_hardware: false,
+        };
+        let mut enc = create_encoder(&cfg).expect("MJPEG 编码器应可用");
+        assert_eq!(enc.config(), Some(&cfg));
+        let bitrate_err = enc.set_bitrate(2000).unwrap_err().to_string();
+        assert!(bitrate_err.contains("MJPEG") && bitrate_err.contains("无法动态设置"));
+        assert!(enc.set_bitrate(0).is_err());
+        let fps_err = enc.set_frame_rate(60).unwrap_err().to_string();
+        assert!(fps_err.contains("不支持动态帧率") && fps_err.contains("重建"));
+        assert!(enc.set_frame_rate(121).is_err());
     }
 
     #[test]

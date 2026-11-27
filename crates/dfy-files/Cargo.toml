@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 # 大肥鱼远程 —— 文件传输状态机（offer/accept/chunk/ack/result）。
 # 与网络解耦：只消费/产出 dfy-proto 消息体，不持有连接；由 dfy-session 的 CtrlHandler 驱动。
 

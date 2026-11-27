@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! Client（主控端）会话：接收视频 DATAGRAM → 分片重组 → 解码 → 交给 UI/回调；
@@ -13,7 +13,7 @@ use quinn::Connection;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info};
 
-use crate::{DecodedFrame, Decoder, FrameAssembler};
+use crate::{DecodedFrame, Decoder, FrameAssembler, StreamFeedbackWindow, FEEDBACK_INTERVAL};
 
 /// Client 运行参数。
 #[derive(Clone, Debug)]
@@ -71,6 +71,8 @@ pub struct ClientRunStats {
     pub last_frame_id: u64,
     /// agent 是否确认了 resume 并请求关键帧。
     pub resume_ok: bool,
+    /// 已发送的接收质量反馈窗口数。
+    pub feedback_windows_sent: u64,
     /// 最近一次 RTT（毫秒）。
     pub rtt_ms: Option<f64>,
     /// 结束原因。
@@ -90,6 +92,13 @@ pub async fn run_client(
     let mut heartbeat = Heartbeat::new();
     heartbeat.interval = cfg.ping_interval;
     let mut assembler = FrameAssembler::new();
+    let mut feedback = StreamFeedbackWindow::new(Instant::now());
+    let feedback_enabled = welcome
+        .capability
+        .iter()
+        .any(|name| name == "stream-feedback.v1");
+    let mut feedback_due = Instant::now() + FEEDBACK_INTERVAL;
+    let mut dropped_reported = 0u64;
     let mut stats = ClientRunStats::default();
     let mut frames_left = cfg.expect_frames;
     let mut last_activity = Instant::now();
@@ -102,44 +111,6 @@ pub async fn run_client(
         expect_frames = ?frames_left,
         "Client 会话开始"
     );
-
-    // 重连/路径迁移：声明已看到的进度，等 agent 确认（它会请求关键帧）。
-    // 先等确认再进入收帧循环，避免帧洪峰让客户端在确认到达前就收满帧退出。
-    if let Err(err) = tx.send_ctrl(&Envelope::session_resume(0, 0)).await {
-        debug!(error = %err, "发送 SessionResume 失败");
-    } else {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep_until(deadline) => {
-                    debug!("等待 SessionResumeOk 超时，继续收帧");
-                    break;
-                }
-                msg = rx.recv_ctrl() => {
-                    match msg {
-                        Ok(Some(env)) => match env.body {
-                            Some(envelope::Body::SessionResumeOk(ok)) => {
-                                stats.resume_ok = ok.keyframe_requested;
-                                debug!(
-                                    resume_from_frame_id = ok.resume_from_frame_id,
-                                    keyframe_requested = ok.keyframe_requested,
-                                    "会话恢复已确认"
-                                );
-                                break;
-                            }
-                            Some(envelope::Body::Ping(ping)) => {
-                                if let Err(err) = tx.send_ctrl(&Envelope::pong(ping.ts_us)).await {
-                                    debug!(error = %err, "回复 Pong 失败");
-                                }
-                            }
-                            _ => {}
-                        },
-                        _ => break,
-                    }
-                }
-            }
-        }
-    }
 
     loop {
         tokio::select! {
@@ -159,6 +130,19 @@ pub async fn run_client(
                 if heartbeat.timed_out() {
                     stats.end_reason = "heartbeat_timeout";
                     break;
+                }
+                if feedback_enabled && now >= feedback_due {
+                    feedback.set_dropped_frames(assembler.dropped().saturating_sub(dropped_reported));
+                    dropped_reported = assembler.dropped();
+                    if let Some(window) = feedback.take(now) {
+                        if let Err(err) = tx.send_ctrl(&Envelope::stream_feedback(window)).await {
+                            debug!(error = %err, "发送视频质量反馈失败");
+                            stats.end_reason = "ctrl_closed";
+                            break;
+                        }
+                        stats.feedback_windows_sent += 1;
+                    }
+                    feedback_due = now + FEEDBACK_INTERVAL;
                 }
                 if last_activity.elapsed() > cfg.idle_timeout {
                     stats.end_reason = "idle_timeout";
@@ -224,15 +208,18 @@ pub async fn run_client(
                             Ok((header, payload)) => {
                                 stats.packets_recv += 1;
                                 stats.bytes_recv += payload.len() as u64;
+                                feedback.note_packet(Instant::now(), payload.len());
                                 if header.is_key() {
                                     stats.keyframes += 1;
                                 }
                                 match assembler.push(&header, payload) {
                                     Ok(Some(complete)) => {
                                         stats.frames_assembled += 1;
+                                        feedback.note_assembled();
                                         match decoder.decode(&complete.data, u64::from(complete.ts_us)) {
                                             Ok(Some(frame)) => {
                                                 stats.frames_delivered += 1;
+                                                feedback.note_delivered();
                                                 stats.last_frame_id = u64::from(complete.frame_id);
                                                 on_frame(frame);
                                                 frames_left = frames_left.map(|n| n.saturating_sub(1));

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Dafeiyu Remote contributors
 // Copyright (c) 2026 Dafeiyu Remote contributors
 //! bind 鉴权、时间窗与 nonce 防重放。
@@ -51,9 +51,10 @@ pub fn ts_in_window(ts_ms: u64, now_ms: u64, window_s: u64) -> bool {
     ts_ms.abs_diff(now_ms) <= window_s.saturating_mul(1000)
 }
 
-/// 有界 nonce 去重表：按时间/容量淘汰，防内存放大攻击。
+/// 有界 nonce 去重表：仅清理过期记录，满载时拒绝新 nonce。
 ///
-/// 语义：`insert` 返回 `true` 表示新 nonce（可继续 bind），`false` 表示重放。
+/// 语义：`insert` 返回 `true` 表示已记录新 nonce（可继续 bind），
+/// `false` 表示重放或容量已满。不能为接受新请求而淘汰仍在有效期内的记录。
 pub struct NonceCache {
     capacity: usize,
     ttl: Duration,
@@ -72,10 +73,10 @@ impl NonceCache {
     }
 
     pub fn insert(&mut self, tag: Tag, role: u8, nonce: Nonce, now: Instant) -> bool {
-        // 先按 TTL / 容量淘汰。
+        // 只能清过期记录：容量压力不能缩短有效 nonce 的防重放期限。
         while let Some((key, at)) = self.order.front() {
             let expired = now.saturating_duration_since(*at) > self.ttl;
-            if expired || self.order.len() >= self.capacity {
+            if expired {
                 self.set.remove(key);
                 self.order.pop_front();
             } else {
@@ -84,6 +85,9 @@ impl NonceCache {
         }
         let key = (tag, role, nonce);
         if self.set.contains(&key) {
+            return false;
+        }
+        if self.set.len() >= self.capacity {
             return false;
         }
         self.set.insert(key);
@@ -156,15 +160,42 @@ mod tests {
     }
 
     #[test]
+    fn nonce_full_cache_keeps_live_records_and_rejects_new_entries() {
+        let mut c = NonceCache::new(1, Duration::from_secs(660));
+        let now = Instant::now();
+        assert!(c.insert(tag(1), 0, nonce(1), now));
+        assert!(
+            !c.insert(tag(1), 0, nonce(1), now),
+            "满载时不能先淘汰仍有效的最旧 nonce 再接受其重放"
+        );
+        assert!(!c.insert(tag(2), 1, nonce(2), now));
+        assert!(!c.insert(tag(1), 0, nonce(1), now));
+        assert_eq!(c.len(), 1);
+        // TTL 边界仍保留，只有严格过期之后才能腾出容量。
+        assert!(!c.insert(tag(2), 1, nonce(2), now + Duration::from_secs(660)));
+        assert!(c.insert(
+            tag(2),
+            1,
+            nonce(2),
+            now + Duration::from_secs(660) + Duration::from_nanos(1)
+        ));
+    }
+
+    #[test]
     fn nonce_capacity_bounded() {
         let mut c = NonceCache::new(4, Duration::from_secs(300));
         let now = Instant::now();
-        for i in 0..10u8 {
+        for i in 0..4u8 {
             assert!(c.insert(tag(1), 0, nonce(i), now));
         }
-        assert!(c.len() <= 4, "nonce 表必须有界，实际 {}", c.len());
-        // 最早的记录已被淘汰（可重新使用），但表规模不增长。
-        assert!(c.len() <= 4);
+        for i in 4..10u8 {
+            assert!(!c.insert(tag(1), 0, nonce(i), now));
+        }
+        assert_eq!(c.len(), 4, "nonce 表必须有界");
+        // 满载后的重放不能腾出容量，所有仍有效的记录都必须保留。
+        for i in 0..4u8 {
+            assert!(!c.insert(tag(1), 0, nonce(i), now));
+        }
     }
 
     #[test]

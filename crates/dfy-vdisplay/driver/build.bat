@@ -1,5 +1,5 @@
 @echo off
-rem SPDX-License-Identifier: AGPL-3.0-or-later
+rem SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 rem Copyright (c) 2025 Dafeiyu Remote Project
 rem
 rem build.bat - WDK build driver for the Dafeiyu virtual display driver.

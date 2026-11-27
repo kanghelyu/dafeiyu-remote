@@ -26,13 +26,16 @@ pub mod frame;
 pub mod msg;
 
 pub use consts::*;
-pub use datagram::{decode_input_move, decode_video, encode_input_move, encode_video, VideoHeader};
+pub use datagram::{
+    decode_audio, decode_input_move, decode_video, encode_audio, encode_input_move, encode_video,
+    AudioPacket, VideoHeader,
+};
 pub use frame::{decode_frame, encode_frame, encode_frame_into, peek_frame_len, FRAME_LEN_PREFIX};
 pub use msg::{
     envelope, Auth, Bye, CapabilityAck, Challenge, ClipboardApplied, ClipboardDataChunk,
     ClipboardFormat, ClipboardFormatList, ClipboardPull, Envelope, FileAccept, FileAck, FileChunk,
-    FileOffer, FileResult, Hello, InputEvent, Monitor, MonitorList, Ping, Pong, Reject,
-    SessionResume, SessionResumeOk, VideoConfig, Welcome,
+    FileOffer, FileResult, Hello, InputEvent, KeyframeRequest, Monitor, MonitorList, Ping, Pong,
+    QualityControl, Reject, SessionResume, SessionResumeOk, StreamFeedback, VideoConfig, Welcome,
 };
 
 use std::fmt;

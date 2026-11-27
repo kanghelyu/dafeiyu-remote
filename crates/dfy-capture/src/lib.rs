@@ -260,7 +260,11 @@ impl From<anyhow::Error> for CaptureError {
 #[cfg(windows)]
 mod dxgi;
 #[cfg(windows)]
+mod wgc;
+#[cfg(windows)]
 pub use dxgi::DxgiCapturer;
+#[cfg(windows)]
+pub use wgc::{WgcCapturer, WindowsCapturer};
 
 // Linux 走 X11 后端（`linux.rs`）；只有在既非 Windows 又非 Linux 的平台
 // （目前是 macOS）才退化成 stub，保证整个 workspace 仍可编译。

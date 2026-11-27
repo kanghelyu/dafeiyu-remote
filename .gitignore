@@ -2,12 +2,33 @@
 .tmp/
 *.exe
 .env
-# 逆向调研笔记（内部资料，不随开源仓库发布）
+# 逆向调研原始资料（内部资料，不随仓库发布）
 /research/
-/notes/
+# 逆向调研笔记（内部资料，不随仓库发布）
+/notes/*
+# 仅发布本项目的验收证据与交接记录；UU/逆向 reconnaissance 全部留在本地
+!notes/HANDOFF.md
+!notes/000-owner-brief.md
+!notes/security-audit-current.md
+!notes/active-path-probe-20261127.md
+!notes/audio-first-step-20261127.md
+!notes/auto-path-acceptance-20261126.md
+!notes/crossos-migration-clipboard-20261127.md
+!notes/crossplatform-acceptance-20261126.md
+!notes/deb-installer-accept-20261127.md
+!notes/icons-all-platforms-20261127.md
+!notes/input-replay-migration-20261127.md
+!notes/LICENSE-DECISION-20261127.md
+!notes/manager-ui-20261127.md
+!notes/relay-profiles-acceptance-20261126.md
+!notes/vdisplay-linux-app-window-20261127.md
 # 设备私钥（genkey 产物），绝不入库
 device.key
 device.pub
+# 客户端中继池（含预共享密钥），绝不入库
+dfy-relay-profiles.toml
+*.relay-profiles.toml
+*.relay-profiles.toml.tmp.*
 # 构建/检查日志
 *.log
 deploy/relay.toml

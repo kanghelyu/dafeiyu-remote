@@ -4,8 +4,7 @@
 //! 不终结 TLS。因此 agent/view 只需把中继 socket 传给 quinn，握手与会话层完全不变；
 //! 两侧看到的对端地址都是中继地址（NAT 后才可通过）。
 //!
-//! tag 与口令的默认约定：`tag = BLAKE3(password ‖ relay_addr)[:16]`，两端参数相同时自动一致，
-//! 无需额外交换；也允许用 `--relay-tag` 显式指定（16 字节 hex）。
+//! tag 由两端通过 `--relay-tag` 显式共享（16 字节 hex），不再从会话口令派生。
 
 use std::net::SocketAddr;
 
@@ -25,17 +24,9 @@ pub struct RelayOptions {
 }
 
 impl RelayOptions {
-    /// 从命令行参数构造：`tag_hex` 为空时按口令派生；`key_text` 支持 `hex:…`/`base64:…`/裸 hex。
-    pub fn new(
-        addr: SocketAddr,
-        tag_hex: Option<&str>,
-        key_text: &str,
-        password: &str,
-    ) -> Result<Self> {
-        let tag = match tag_hex {
-            Some(hex) => parse_tag_hex(hex)?,
-            None => derive_tag(password, addr),
-        };
+    /// 从命令行参数构造：`tag_hex` 为两端显式共享的 16 字节 tag。
+    pub fn new(addr: SocketAddr, tag_hex: &str, key_text: &str) -> Result<Self> {
+        let tag = parse_tag_hex(tag_hex)?;
         let key = RelayKey::parse(key_text).context("解析 --relay-key 失败")?;
         Ok(Self { addr, tag, key })
     }
@@ -72,18 +63,6 @@ pub fn parse_tag_hex(text: &str) -> Result<[u8; 16]> {
     Ok(tag)
 }
 
-/// 默认 tag 派生：`BLAKE3(password ‖ relay_addr)[:16]`。两端口令一致即可自动配对。
-pub fn derive_tag(password: &str, relay_addr: SocketAddr) -> [u8; 16] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(password.as_bytes());
-    hasher.update(b"\x00dfy-relay-tag\x00");
-    hasher.update(relay_addr.to_string().as_bytes());
-    let digest = hasher.finalize();
-    let mut tag = [0u8; 16];
-    tag.copy_from_slice(&digest.as_bytes()[..16]);
-    tag
-}
-
 /// tag 的展示形式（hex，便于两端核对）。
 pub fn tag_hex(tag: &[u8; 16]) -> String {
     tag.iter().map(|b| format!("{b:02x}")).collect()
@@ -92,20 +71,6 @@ pub fn tag_hex(tag: &[u8; 16]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn addr() -> SocketAddr {
-        "203.0.113.7:21117".parse().expect("addr")
-    }
-
-    #[test]
-    fn derived_tag_is_stable_and_sensitive_to_inputs() {
-        let a = derive_tag("secret", addr());
-        let b = derive_tag("secret", addr());
-        let c = derive_tag("other", addr());
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-        assert_eq!(tag_hex(&a).len(), 32);
-    }
 
     #[test]
     fn parse_tag_hex_accepts_separators() {

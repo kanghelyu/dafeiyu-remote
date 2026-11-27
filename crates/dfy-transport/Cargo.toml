@@ -8,11 +8,15 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = { version = "1", features = ["alloc"] }
 bytes.workspace = true
 dfy-proto.workspace = true
+ed25519-dalek.workspace = true
 hmac.workspace = true
 quinn.workspace = true
 rand.workspace = true
+rand_core = { version = "0.6", features = ["getrandom"] }
 rcgen.workspace = true
 rustls.workspace = true
 sha2.workspace = true

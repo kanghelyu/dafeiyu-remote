@@ -13,5 +13,9 @@ tracing.workspace = true
 dfy-proto = { path = "../dfy-proto" }
 dfy-transport = { path = "../dfy-transport" }
 dfy-capture = { path = "../dfy-capture" }
+dfy-path = { path = "../dfy-path" }
 quinn.workspace = true
 hex.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true

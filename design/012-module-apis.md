@@ -127,4 +127,4 @@ pub struct ClientRuntime { /* transport, decoder, viewer, input capture, clipboa
 ## 9. 命名/许可证纪律
 - 禁止从逆向目标抄：消息名 `gv_pb.*`、常量 `FF_*`/`FT_*`/`CB_*`、bridge 方法名、默认键位表、图标资源、域名/路由。
 - 允许借鉴：能力矩阵、快捷键四态、剪贴板清单→拉块、文件 ask→confirm→block、Qt/Web 分层思想（用 Flutter/Web 重写）。
-- 每个 crate 头部加 3 行 SPDX：`// SPDX-License-Identifier: AGPL-3.0-or-later` + 版权行。
+- 每个 crate 头部加 3 行 SPDX：`// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0` + 版权行。

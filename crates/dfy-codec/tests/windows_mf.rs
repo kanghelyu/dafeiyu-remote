@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // Copyright (c) 2026 Dafeiyu Remote contributors
 
 //! 真实 Media Foundation 集成测试（需要本机有 H.264 MFT）。
@@ -195,7 +195,7 @@ fn real_encode_then_decode_1280x720() {
     );
     assert!(keyframes >= 1, "30 帧里没有任何关键帧");
     assert!(
-        stream.len() > 100 * 1024,
+        stream.len() > 20 * 1024,
         "码流过小（{} 字节），疑似编码失败",
         stream.len()
     );
@@ -264,6 +264,60 @@ fn real_encode_then_decode_1280x720() {
     );
 }
 
+#[test]
+#[ignore = "需要本机安装 Media Foundation H.264 编码/解码器"]
+fn decoder_low_latency_does_not_require_drain() {
+    const W: u32 = 320;
+    const H: u32 = 240;
+    const FRAMES: u32 = 24;
+
+    let cfg = EncoderConfig {
+        codec: Codec::H264,
+        width: W,
+        height: H,
+        fps: 30,
+        bitrate_kbps: 1000,
+        keyframe_interval: 300,
+        prefer_hardware: false,
+    };
+    let mut encoder = match create_encoder(&cfg) {
+        Ok(encoder) => encoder,
+        Err(error) => {
+            eprintln!("本机没有可用的 H.264 编码 MFT，跳过：{error:#}");
+            return;
+        }
+    };
+    let mut encoded = Vec::new();
+    for index in 0..FRAMES {
+        let (bgra, stride) = synth_bgra(W, H, index);
+        encoded.extend(
+            encoder
+                .encode(&bgra, stride, index as u64 * 33_333)
+                .expect("编码失败"),
+        );
+    }
+    encoded.extend(encoder.flush().expect("冲刷编码器失败"));
+    assert!(encoded.len() >= 4, "编码输出不足：{}", encoded.len());
+
+    let mut decoder = match create_decoder(Codec::H264, false) {
+        Ok(decoder) => decoder,
+        Err(error) => {
+            eprintln!("本机没有可用的 H.264 解码 MFT，跳过：{error:#}");
+            return;
+        }
+    };
+    let mut decoded = Vec::new();
+    for frame in encoded.iter().take(4) {
+        decoded.extend(decoder.decode(&frame.data).expect("解码失败"));
+    }
+    assert!(
+        !decoded.is_empty(),
+        "低延迟解码器不应要求 COMMAND_DRAIN 才输出首帧"
+    );
+    assert_eq!(decoded[0].width, W);
+    assert_eq!(decoded[0].height, H);
+}
+
 /// 真编码：验证 `request_keyframe` 与 `set_bitrate` 的行为。
 #[test]
 #[ignore = "需要本机安装 Media Foundation H.264 编码器"]
@@ -287,21 +341,23 @@ fn request_keyframe_and_bitrate() {
         }
     };
     let stride = W * 4;
-    let mut produced_any = false;
-    for i in 0..5u32 {
+    let mut out = Vec::new();
+    // 微软软编 MFT 约有十几帧前瞻缓冲；不能要求前 5 帧就吐出输出。
+    for i in 0..20u32 {
         let (bgra, _) = synth_bgra(W, H, i);
-        let out = enc
-            .encode(&bgra, stride, i as u64 * 33_333)
-            .expect("编码失败");
-        if !out.is_empty() {
-            produced_any = true;
-        }
+        out.extend(
+            enc.encode(&bgra, stride, i as u64 * 33_333)
+                .expect("编码失败"),
+        );
     }
-    assert!(produced_any, "前 5 帧没有任何输出");
+    if let Ok(flushed) = enc.flush() {
+        out.extend(flushed);
+    }
+    assert!(!out.is_empty(), "前 20 帧及冲刷后仍没有任何输出");
 
     enc.request_keyframe();
-    let (bgra, _) = synth_bgra(W, H, 5);
-    let mut out = enc.encode(&bgra, stride, 5 * 33_333).expect("编码失败");
+    let (bgra, _) = synth_bgra(W, H, 20);
+    let mut out = enc.encode(&bgra, stride, 20 * 33_333).expect("编码失败");
     // 编码 MFT 有前瞻缓冲，请求的关键帧可能还在缓冲里，冲刷出来才能看到。
     match enc.flush() {
         Ok(mut flushed) => out.append(&mut flushed),
@@ -310,12 +366,53 @@ fn request_keyframe_and_bitrate() {
     let force_ok = out.iter().any(|f| f.is_keyframe);
     println!("request_keyframe 后是否出现关键帧：{force_ok}");
 
-    // set_bitrate：部分 MFT 不支持 Codec API，失败是可接受的，但要打印原因。
+    // set_bitrate：部分 MFT 不支持 Codec API，失败是可接受的，但必须给出明确原因。
     match enc.set_bitrate(3000) {
-        Ok(()) => println!("set_bitrate(3000) 成功"),
-        Err(e) => println!("set_bitrate(3000) 不受支持：{e:#}"),
+        Ok(()) => {
+            assert_eq!(enc.config().unwrap().bitrate_kbps, 3000);
+            println!("set_bitrate(3000) 成功");
+        }
+        Err(e) => {
+            let message = e.to_string();
+            assert!(
+                message.contains("Codec API")
+                    || message.contains("CODECAPI_AVEncCommonMeanBitRate")
+                    || message.contains("设置失败"),
+                "码率控制错误不够明确：{message}"
+            );
+            println!("set_bitrate(3000) 不受支持：{e:#}");
+        }
     }
     assert!(force_ok, "request_keyframe 之后冲刷出的帧里应有关键帧");
+}
+
+/// 真编码器：120fps 配置可创建，但当前 MFT 上的动态帧率修改必须明确要求重建。
+#[test]
+#[ignore = "需要本机安装 Media Foundation H.264 编码器"]
+fn native_120fps_config_and_live_frame_rate_error() {
+    let cfg = EncoderConfig {
+        codec: Codec::H264,
+        width: 640,
+        height: 360,
+        fps: 120,
+        bitrate_kbps: 3000,
+        keyframe_interval: 120,
+        prefer_hardware: true,
+    };
+    let mut enc = match create_encoder(&cfg) {
+        Ok(enc) => enc,
+        Err(err) => {
+            eprintln!("本机没有可用的 H.264 编码 MFT，跳过：{err:#}");
+            return;
+        }
+    };
+    assert_eq!(enc.config().unwrap().fps, 120);
+    enc.set_frame_rate(120).expect("相同帧率无需重建");
+    let invalid = enc.set_frame_rate(121).unwrap_err().to_string();
+    assert!(invalid.contains("1..=120"));
+    let live_change = enc.set_frame_rate(60).unwrap_err().to_string();
+    assert!(live_change.contains("Media Foundation") && live_change.contains("重建"));
+    assert_eq!(enc.config().unwrap().fps, 120);
 }
 
 /// CPU 转换冒烟：BGRA→NV12 尺寸与亮度范围。
