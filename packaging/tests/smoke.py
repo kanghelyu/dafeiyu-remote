@@ -96,7 +96,7 @@ def write_pe(path: Path, machine: int = 0x8664) -> None:
 def write_mach(path: Path, cpu: int = 0x0100000C) -> None:
     header = bytearray(64)
     header[:4] = b"\xcf\xfa\xed\xfe"
-    struct.pack_into("<III", header, 0, 0xFEEDFACF, cpu, 2)
+    struct.pack_into("<IIII", header, 0, 0xFEEDFACF, cpu, 3, 2)
     path.write_bytes(header)
 
 

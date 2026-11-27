@@ -69,7 +69,11 @@ jobs:
 
       - name: Ubuntu 依赖
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config
+        run: |
+          if ! command -v pkg-config >/dev/null 2>&1; then
+            sudo rm -f /etc/apt/sources.list.d/microsoft*.list* /etc/apt/sources.list.d/microsoft*.sources*
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config
+          fi
 
       - name: 构建 dfy 与 dfy-relay
         shell: bash
@@ -229,6 +233,7 @@ jobs:
           path: archive
       - name: 安装打包工具
         run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list* /etc/apt/sources.list.d/microsoft*.sources*
           sudo apt-get update
           if [ "${{ matrix.format }}" = rpm ]; then
             sudo apt-get install -y --no-install-recommends rpm

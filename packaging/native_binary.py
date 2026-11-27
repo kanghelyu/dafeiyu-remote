@@ -62,7 +62,7 @@ def validate_binary(path: Path, target: str) -> None:
             endian = ">"
         else:
             raise ValueError(f"not a thin 64-bit Mach-O executable: {path}")
-        _, cpu_type, file_type = struct.unpack_from(endian + "III", header, 0)
+        _, cpu_type, _cpu_subtype, file_type = struct.unpack_from(endian + "IIII", header, 0)
         if cpu_type != expected:
             raise ValueError(f"Mach-O architecture mismatch for {path}: expected {target}, got cputype={cpu_type:#x}")
         if file_type != 2:
