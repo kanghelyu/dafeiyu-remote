@@ -258,7 +258,12 @@ impl<'a> ViewerApp<'a> {
                 self.stats.record_render(now, size, started.elapsed());
             }
             if self.config.show_stats && self.stats.should_refresh_title(now) {
-                window.set_title(&self.stats.title(&self.config.title, true));
+                let conn = self.mailbox.latest_stats();
+                window.set_title(&self.stats.title_with_connection(
+                    &self.config.title,
+                    true,
+                    conn.as_ref(),
+                ));
             }
         }
     }
@@ -387,9 +392,12 @@ impl<'a> ViewerApp<'a> {
 
     fn attach_window(&mut self, event_loop: &ActiveEventLoop) {
         let (width, height) = self.config.effective_initial_size();
-        let attributes = WindowAttributes::default()
+        let mut attributes = WindowAttributes::default()
             .with_title(self.config.title.clone())
             .with_inner_size(PhysicalSize::new(width, height));
+        if let Some(icon) = load_app_icon() {
+            attributes = attributes.with_window_icon(Some(icon));
+        }
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(err) => {
@@ -534,6 +542,26 @@ impl ApplicationHandler<UiCommand> for ViewerApp<'_> {
         self.context = None;
         self.window = None;
     }
+}
+
+const ICON_PNG: &[u8] = include_bytes!("../../../assets/icon-512.png");
+
+fn load_app_icon() -> Option<winit::window::Icon> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(ICON_PNG));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let bytes = &buf[..info.buffer_size()];
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => bytes.to_vec(),
+        png::ColorType::Rgb => bytes
+            .chunks_exact(3)
+            .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
+            .collect(),
+        _ => return None,
+    };
+    winit::window::Icon::from_rgba(rgba, info.width, info.height).ok()
 }
 
 /// 把「源像素 × scale」换算成夹在合法窗口范围里的物理像素。
@@ -694,5 +722,10 @@ mod tests {
         assert!(!modifiers_have_control_toggle((1u8 << 0) | (1u8 << 1)));
         // 一个都没有。
         assert!(!modifiers_have_control_toggle(0));
+    }
+
+    #[test]
+    fn app_icon_decodes_cleanly() {
+        assert!(load_app_icon().is_some());
     }
 }

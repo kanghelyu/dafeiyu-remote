@@ -8,7 +8,9 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+#[cfg(any(windows, target_os = "linux"))]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(any(windows, target_os = "linux"))]
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::sync::Mutex;
@@ -16,10 +18,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use dfy_path::{Action, PathConfig, PathKind, PathMonitor, PathSample};
+#[cfg(any(windows, target_os = "linux"))]
+use dfy_proto::consts::PERM_AUDIO_OUT;
 use dfy_proto::consts::{
     CAPABILITY_QUALITY_CONTROL, INPUT_KIND_KEY, INPUT_KIND_MOUSE_BTN, INPUT_KIND_MOUSE_MOVE,
-    INPUT_KIND_WHEEL, INPUT_STATE_DOWN, INPUT_STATE_UP, PERM_AUDIO_OUT, PERM_CLIPBOARD,
-    PERM_CONTROL, PERM_FILE, PERM_VIEW,
+    INPUT_KIND_WHEEL, INPUT_STATE_DOWN, INPUT_STATE_UP, PERM_CLIPBOARD, PERM_CONTROL, PERM_FILE,
+    PERM_VIEW,
 };
 use dfy_proto::envelope;
 use dfy_proto::msg::InputEvent as ProtoInputEvent;
@@ -47,9 +51,7 @@ use ed25519_dalek::SigningKey;
 
 use crate::relay_bridge::RelayOptions;
 use tokio::time::Instant;
-#[cfg(any(windows, target_os = "linux"))]
-use tracing::warn;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::adapters::MftDecoderAdapter;
 #[cfg(any(windows, target_os = "linux"))]
@@ -224,6 +226,8 @@ pub struct ViewOptions {
     pub quality_bitrate: Option<u32>,
     /// 恢复 Agent 启动时的画质上限。
     pub reset_quality: bool,
+    /// 候选路径主动探测包大小（64..=1200 字节，默认 1200）。
+    pub probe_bytes: usize,
 }
 
 impl ViewOptions {
@@ -985,12 +989,13 @@ async fn probe_path(
     opts: &ViewOptions,
     tls: dfy_transport::ClientTls,
     target: PathKind,
+    probe_bytes: usize,
 ) -> Result<PathSample> {
     let (_endpoint, conn, _relay_socket) = open_view_path(opts, tls, target).await?;
     let before = conn.stats().path;
     // 用接近 MTU 的探测包：只对小包敏感的瓶颈（只延迟大 QUIC 包的代理/队列）
     // 否则会把拥塞中的直连误判为健康。
-    let mut payload = vec![0u8; 1200];
+    let mut payload = vec![0u8; probe_bytes.clamp(64, 1200)];
     for (i, byte) in payload.iter_mut().enumerate() {
         *byte = i as u8;
     }
@@ -1017,6 +1022,14 @@ async fn probe_path(
     })
 }
 
+type ResumedPath = (
+    quinn::Endpoint,
+    quinn::Connection,
+    Option<dfy_relay::RelaySocket>,
+    dfy_proto::msg::Welcome,
+    dfy_transport::CtrlChannel,
+);
+
 /// 建立一条新路径后，用已有会话令牌做可恢复握手，而不是新建会话。
 async fn resume_on_path(
     opts: &ViewOptions,
@@ -1026,13 +1039,7 @@ async fn resume_on_path(
     previous_welcome: &dfy_proto::msg::Welcome,
     last_frame_id: u64,
     last_frame_seq: u64,
-) -> Result<(
-    quinn::Endpoint,
-    quinn::Connection,
-    Option<dfy_relay::RelaySocket>,
-    dfy_proto::msg::Welcome,
-    dfy_transport::CtrlChannel,
-)> {
+) -> Result<ResumedPath> {
     let (endpoint, conn, socket) = open_view_path(opts, tls, target).await?;
     // 弱网/ virtualization（QEMU TCG）下新路径的握手往返可能明显超过 5s；
     // 过短的超时会把本来可用的迁移误判为失败并放弃已建立的 QUIC 连接。
@@ -1213,6 +1220,18 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
     let mut last_sent_packets = conn.stats().path.sent_packets;
     // 候选路径探测可能返回 SwitchTo；下一个采样 tick 用同一套切换逻辑执行它。
     let mut deferred_action: Option<Action> = None;
+    let mut pending_probe: Option<(PathKind, tokio::task::JoinHandle<Result<PathSample>>)> = None;
+    let mut pending_migration: Option<(
+        PathKind,
+        Instant,
+        tokio::task::JoinHandle<Result<ResumedPath>>,
+    )> = None;
+    let mut last_decode_ms: Option<f64> = None;
+    let mut last_ui_stats_at = Instant::now();
+    let mut last_ui_bytes = 0u64;
+    let mut last_ui_lost = conn.stats().path.lost_packets;
+    let mut last_ui_sent = conn.stats().path.sent_packets;
+    let mut next_ui_stats = Instant::now() + Duration::from_millis(500);
     let deadline = Instant::now() + Duration::from_secs(opts.seconds.max(1));
     let mut saved = false;
     let mut next_ping = Instant::now();
@@ -1324,461 +1343,566 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
             break;
         }
         tokio::select! {
-            frame = rx.recv_ctrl() => {
-                match frame {
-                    Ok(Some(env)) => match &env.body {
-                        Some(envelope::Body::Ping(_)) => {
-                            if let Some(pong) = hb.on_frame(&env) {
-                                let _ = tx.send_ctrl(&pong).await;
+                frame = rx.recv_ctrl() => {
+                    match frame {
+                        Ok(Some(env)) => match &env.body {
+                            Some(envelope::Body::Ping(_)) => {
+                                if let Some(pong) = hb.on_frame(&env) {
+                                    let _ = tx.send_ctrl(&pong).await;
+                                }
                             }
-                        }
-                        Some(envelope::Body::Pong(_)) => {
-                            hb.on_frame(&env);
-                        }
-                        Some(envelope::Body::VideoConfig(config)) => {
-                            println!(
-                                "[view] Agent 应用视频质量：{}x{} {}fps {}kbps",
-                                config.width, config.height, config.fps, config.bitrate_kbps
-                            );
-                        }
-                        Some(envelope::Body::Bye(_)) => {
-                            stats.end_reason = "agent_bye";
-                            break;
-                        }
-                        _ => {
-                            if is_file_envelope(&env) {
-                                if let Some(view_files) = files.as_mut() {
-                                    for reply in view_files.on_envelope(&env) {
+                            Some(envelope::Body::Pong(_)) => {
+                                hb.on_frame(&env);
+                            }
+                            Some(envelope::Body::VideoConfig(config)) => {
+                                println!(
+                                    "[view] Agent 应用视频质量：{}x{} {}fps {}kbps",
+                                    config.width, config.height, config.fps, config.bitrate_kbps
+                                );
+                            }
+                            Some(envelope::Body::Bye(_)) => {
+                                stats.end_reason = "agent_bye";
+                                break;
+                            }
+                            _ => {
+                                if is_file_envelope(&env) {
+                                    if let Some(view_files) = files.as_mut() {
+                                        for reply in view_files.on_envelope(&env) {
+                                            let _ = tx.send_ctrl(&reply).await;
+                                        }
+                                    }
+                                } else if let Some(sync) = clipboard.as_mut() {
+                                    let replies = sync.on_ctrl(&env);
+                                    for reply in replies {
                                         let _ = tx.send_ctrl(&reply).await;
                                     }
                                 }
-                            } else if let Some(sync) = clipboard.as_mut() {
-                                let replies = sync.on_ctrl(&env);
-                                for reply in replies {
-                                    let _ = tx.send_ctrl(&reply).await;
-                                }
                             }
-                        }
-                    },
-                    Ok(None) => { stats.end_reason = "ctrl_closed"; break; }
-                    Err(_) => { stats.end_reason = "ctrl_error"; break; }
+                        },
+                        Ok(None) => { stats.end_reason = "ctrl_closed"; break; }
+                        Err(_) => { stats.end_reason = "ctrl_error"; break; }
+                    }
                 }
-            }
 
-            datagram = conn.read_datagram() => {
-                match datagram {
-                    Ok(bytes) => {
-                        stats.datagrams += 1;
-                        stats.bytes += bytes.len() as u64;
-                        if bytes.first() == Some(&dfy_proto::CHAN_AUDIO) {
-                            stats.audio_packets += 1;
-                            if audio.is_some() {
-                                match dfy_audio::PcmFrame::from_datagram(&bytes) {
-                                    Ok(Some((seq, frame))) => {
-                                        stats.audio_last_seq = seq;
-                                        if let Err(err) = audio_buffer.push(
-                                            seq,
-                                            frame,
-                                            dfy_transport::now_us(),
-                                        ) {
-                                            debug!(error = %err, "音频入抖动缓冲失败");
+                datagram = conn.read_datagram() => {
+                    match datagram {
+                        Ok(bytes) => {
+                            stats.datagrams += 1;
+                            stats.bytes += bytes.len() as u64;
+                            if bytes.first() == Some(&dfy_proto::CHAN_AUDIO) {
+                                stats.audio_packets += 1;
+                                if audio.is_some() {
+                                    match dfy_audio::PcmFrame::from_datagram(&bytes) {
+                                        Ok(Some((seq, frame))) => {
+                                            stats.audio_last_seq = seq;
+                                            if let Err(err) = audio_buffer.push(
+                                                seq,
+                                                frame,
+                                                dfy_transport::now_us(),
+                                            ) {
+                                                debug!(error = %err, "音频入抖动缓冲失败");
+                                            }
                                         }
+                                        Ok(None) => {}
+                                        Err(err) => debug!(error = %err, "音频帧解码失败"),
                                     }
-                                    Ok(None) => {}
-                                    Err(err) => debug!(error = %err, "音频帧解码失败"),
                                 }
-                            }
-                        } else {
-                        match dfy_proto::decode_video(&bytes) {
-                            Ok((header, payload)) => {
-                                feedback.note_packet(std::time::Instant::now(), payload.len());
-                                if header.flags & dfy_proto::consts::VIDEO_FLAG_KEY != 0 {
-                                    stats.keyframes += 1;
-                                }
-                                match assembler.push(&header, payload) {
-                                    Ok(Some(frame)) => {
-                                        stats.frames += 1;
-                                        stats.last_frame_id = u64::from(frame.frame_id);
-                                        stats.last_frame_seq = u64::from(frame.seq);
-                                        last_frame_at = Instant::now();
-                                        feedback.note_assembled();
-                                        match decoder.decode(&frame.data, frame.ts_us as u64) {
-                                            Ok(Some(decoded)) => {
-                                                stats.decoded += 1;
-                                                feedback.note_delivered();
-                                                if let Some(handle) = ui.as_ref() {
-                                                    handle.present.present(
-                                                        decoded.width,
-                                                        decoded.height,
-                                                        decoded.data.clone(),
+                            } else {
+                            match dfy_proto::decode_video(&bytes) {
+                                Ok((header, payload)) => {
+                                    feedback.note_packet(std::time::Instant::now(), payload.len());
+                                    if header.flags & dfy_proto::consts::VIDEO_FLAG_KEY != 0 {
+                                        stats.keyframes += 1;
+                                    }
+                                    match assembler.push(&header, payload) {
+                                        Ok(Some(frame)) => {
+                                            stats.frames += 1;
+                                            stats.last_frame_id = u64::from(frame.frame_id);
+                                            stats.last_frame_seq = u64::from(frame.seq);
+                                            last_frame_at = Instant::now();
+                                            feedback.note_assembled();
+                                            let decode_started = std::time::Instant::now();
+                                            match decoder.decode(&frame.data, frame.ts_us as u64) {
+                                                Ok(Some(decoded)) => {
+                                                    last_decode_ms = Some(
+                                                        decode_started.elapsed().as_secs_f64() * 1000.0,
                                                     );
-                                                }
-                                                if !saved {
-                                                    if let Some(path) = &opts.save_first_frame {
-                                                        let mut buf = Vec::with_capacity(decoded.data.len());
-                                                        buf.extend_from_slice(&decoded.data);
-                                                        std::fs::write(path, &buf)
-                                                            .with_context(|| format!("写 {} 失败", path.display()))?;
-                                                        println!("[view] 首帧已保存：{}（{}x{}，{} 字节）",
-                                                            path.display(), decoded.width, decoded.height, buf.len());
-                                                        saved = true;
+                                                    stats.decoded += 1;
+                                                    feedback.note_delivered();
+                                                    if let Some(handle) = ui.as_ref() {
+                                                        handle.present.present(
+                                                            decoded.width,
+                                                            decoded.height,
+                                                            decoded.data.clone(),
+                                                        );
+                                                    }
+                                                    if !saved {
+                                                        if let Some(path) = &opts.save_first_frame {
+                                                            let mut buf = Vec::with_capacity(decoded.data.len());
+                                                            buf.extend_from_slice(&decoded.data);
+                                                            std::fs::write(path, &buf)
+                                                                .with_context(|| format!("写 {} 失败", path.display()))?;
+                                                            println!("[view] 首帧已保存：{}（{}x{}，{} 字节）",
+                                                                path.display(), decoded.width, decoded.height, buf.len());
+                                                            saved = true;
+                                                        }
                                                     }
                                                 }
+                                                Ok(None) => {}
+                                                Err(err) => debug!(error = %err, "解码失败"),
                                             }
-                                            Ok(None) => {}
-                                            Err(err) => debug!(error = %err, "解码失败"),
                                         }
-                                    }
-                                    Ok(None) => {}
-                                    Err(err) => {
-                                        stats.malformed += 1;
-                                        debug!(error = %err, "分片重组失败");
-                                    }
-                                }
-                            }
-                            Err(err) => {
-                                stats.malformed += 1;
-                                debug!(error = %err, "解析视频头失败");
-                            }
-                        }
-                        }
-                    }
-                    Err(_) => { stats.end_reason = "conn_closed"; break; }
-                }
-            }
-
-            msg = capture.recv() => {
-                match msg {
-                    Some(CtrlMsg::Move(ev)) => match send_input_move(&conn, &ev) {
-                        Ok(()) => stats.input_moves += 1,
-                        Err(err) => debug!(error = %err, "发送鼠标移动 DATAGRAM 失败"),
-                    },
-                    Some(CtrlMsg::Event(env)) => {
-                        if tx.send_ctrl(&env).await.is_ok() {
-                            stats.input_events += 1;
-                        }
-                    }
-                    Some(CtrlMsg::Stopped) => {
-                        println!("[view] 收到 Ctrl+Alt+Shift+Q：停止采集控制输入（继续收视频）");
-                        capture.stop();
-                    }
-                    None => {
-                        debug!("控制输入采集已结束");
-                        capture.stop();
-                    }
-                }
-            }
-
-            ui_event = async {
-                match ui.as_mut() {
-                    Some(handle) => handle.event_rx.recv().await,
-                    None => std::future::pending::<Option<ViewerEvent>>().await,
-                }
-            } => {
-                match ui_event {
-                    Some(ViewerEvent::Key {
-                        usage,
-                        down,
-                        modifiers,
-                    }) => {
-                        if ui_send_input {
-                            let env = input_key_envelope(usage, down, modifiers);
-                            if tx.send_ctrl(&env).await.is_ok() {
-                                stats.input_events += 1;
-                            }
-                        }
-                    }
-                    Some(ViewerEvent::Mouse {
-                        x,
-                        y,
-                        width,
-                        height,
-                        button,
-                        down,
-                    }) => {
-                        if !ui_send_input {
-                            continue;
-                        }
-                        if let Some(button) = button {
-                            let env = input_button_envelope(button, down);
-                            if tx.send_ctrl(&env).await.is_ok() {
-                                stats.input_events += 1;
-                            }
-                        } else if let Some(ev) = frame_point_to_move(x, y, width, height) {
-                            match send_input_move(&conn, &ev) {
-                                Ok(()) => stats.input_moves += 1,
-                                Err(err) => debug!(error = %err, "发送鼠标移动 DATAGRAM 失败"),
-                            }
-                        }
-                    }
-                    Some(ViewerEvent::Wheel { dx, dy }) => {
-                        if ui_send_input {
-                            let env = input_wheel_envelope(dx, dy);
-                            if tx.send_ctrl(&env).await.is_ok() {
-                                stats.input_events += 1;
-                            }
-                        }
-                    }
-                    Some(ViewerEvent::Closed) => {
-                        stats.end_reason = "ui_closed";
-                        break;
-                    }
-                    Some(ViewerEvent::ToggleControl) => {
-                        if control_allowed {
-                            ui_send_input = !ui_send_input;
-                            println!(
-                                "[view] 远控输入：{}",
-                                if ui_send_input { "开启" } else { "暂停" }
-                            );
-                        }
-                    }
-                    Some(ViewerEvent::ToggleFullscreen) => {}
-                    None => {
-                        stats.end_reason = "ui_closed";
-                        break;
-                    }
-                }
-            }
-
-            _ = tokio::time::sleep_until(next_clipboard_poll) => {
-                next_clipboard_poll = Instant::now() + crate::clipboard_bridge::CLIPBOARD_POLL;
-                if let Some(sync) = clipboard.as_mut() {
-                    for env in sync.poll() {
-                        let _ = tx.send_ctrl(&env).await;
-                    }
-                }
-            }
-
-            _ = tokio::time::sleep_until(next_audio_tick) => {
-                // 不追赶到未来：长时间停顿后追赶会把后续多个 tick 一次跳过，
-                // 反而让抖动缓冲在迁移前堆满。停顿后从当前时刻重新起拍。
-                next_audio_tick = Instant::now() + Duration::from_millis(20);
-                let queued = audio_buffer.len();
-                audio_buffer.adapt(queued);
-                let now_us = dfy_transport::now_us();
-                while let Some((_seq, frame)) = audio_buffer.pop_ready(now_us) {
-                    if let Some(sink) = audio.as_mut() {
-                        match sink.play(&frame) {
-                            Ok(()) => stats.audio_frames += 1,
-                            Err(err) => debug!(error = %err, "音频播放失败"),
-                        }
-                    }
-                }
-                let audio_stats = audio_buffer.stats();
-                if audio_buffer.len() > 8 {
-                    debug!(
-                        depth = audio_buffer.len(),
-                        oldest_ts = audio_buffer.oldest_ts(),
-                        now_us,
-                        due = now_us.saturating_sub(100_000),
-                        "音频抖动缓冲积压"
-                    );
-                }
-                stats.audio_lost = audio_stats.lost;
-                stats.audio_reordered = audio_stats.reordered;
-                stats.audio_duplicates = audio_stats.duplicates;
-                stats.audio_depth = audio_stats.deepest;
-                stats.audio_evicted = audio_stats.evicted;
-            }
-
-            _ = tokio::time::sleep_until(next_file_tick) => {
-                next_file_tick = Instant::now() + Duration::from_millis(100);
-                if let Some(view_files) = files.as_mut() {
-                    for env in view_files.start_next() {
-                        let _ = tx.send_ctrl(&env).await;
-                    }
-                    for env in view_files.poll_chunks() {
-                        let _ = tx.send_ctrl(&env).await;
-                    }
-                }
-            }
-
-            _ = tokio::time::sleep_until(next_feedback) => {
-                if feedback_enabled {
-                    feedback.set_dropped_frames(
-                        assembler.dropped().saturating_sub(feedback_dropped_reported),
-                    );
-                    feedback_dropped_reported = assembler.dropped();
-                    if let Some(window) = feedback.take(std::time::Instant::now()) {
-                        if tx.send_ctrl(&dfy_proto::Envelope::stream_feedback(window)).await.is_err() {
-                            stats.end_reason = "ctrl_closed";
-                            break;
-                        }
-                        stats.feedback_windows_sent += 1;
-                    }
-                }
-                next_feedback = Instant::now() + FEEDBACK_INTERVAL;
-            }
-
-            _ = tokio::time::sleep_until(next_path_sample) => {
-                if let Some(monitor) = path_monitor.as_mut() {
-                    let now = Instant::now();
-                    let elapsed = now.duration_since(last_sample_at).as_secs_f64().max(0.001);
-                    let bytes_delta = stats.bytes.saturating_sub(last_sample_bytes);
-                    let quic_stats = conn.stats();
-                    let lost_delta = quic_stats.path.lost_packets.saturating_sub(last_lost_packets);
-                    let sent_delta = quic_stats.path.sent_packets.saturating_sub(last_sent_packets);
-                    let loss_ppm = loss_ppm_from_deltas(lost_delta, sent_delta);
-                    last_lost_packets = quic_stats.path.lost_packets;
-                    last_sent_packets = quic_stats.path.sent_packets;
-                    let sample = PathSample {
-                        rtt_ms: hb.rtt_ms().unwrap_or(f32::NAN as f64) as f32,
-                        loss_ppm,
-                        recv_bps: (bytes_delta as f64 * 8.0 / elapsed) as u64,
-                        stall_ms: last_frame_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
-                        at_ms: dfy_transport::now_us() / 1000,
-                    };
-                    last_sample_at = now;
-                    last_sample_bytes = stats.bytes;
-                    next_path_sample = Instant::now() + Duration::from_millis(250);
-                    let action = {
-                        let action = if let Some(deferred) = deferred_action.take() {
-                            deferred
-                        } else if let Some(target) = opts.force_switch_once {
-                            if !forced_switch_done {
-                                forced_switch_done = true;
-                                Action::SwitchTo(target)
-                            } else {
-                                monitor.on_sample_for(active_path, sample)
-                            }
-                        } else {
-                            monitor.on_sample_for(active_path, sample)
-                        };
-                        for event in monitor.drain_events() {
-                            debug!("path event: {event:?}");
-                        }
-                        action
-                    };
-                    if !action.is_none() {
-                        info!(?action, active = ?active_path, "路径监测输出决策");
-                    }
-                    match action {
-                        Action::None => {}
-                        Action::RequestProbe(target) => {
-                            info!(probe_path = ?target, "路径监测请求候选路径探测");
-                            match probe_path(&opts, tls.clone(), target).await {
-                                Ok(sample) => {
-                                    info!(
-                                        probe_path = ?target,
-                                        rtt_ms = sample.rtt_ms,
-                                        loss_ppm = sample.loss_ppm,
-                                        "候选路径探测完成"
-                                    );
-                                    let action = monitor.on_sample_for(target, sample);
-                                    for event in monitor.drain_events() {
-                                        debug!("path event: {event:?}");
-                                    }
-                                    if !action.is_none() {
-                                        debug!(?action, "探测采样触发路径决策，下一采样 tick 执行");
-                                        deferred_action = Some(action);
+                                        Ok(None) => {}
+                                        Err(err) => {
+                                            stats.malformed += 1;
+                                            debug!(error = %err, "分片重组失败");
+                                        }
                                     }
                                 }
                                 Err(err) => {
-                                    debug!(error = %err, probe_path = ?target, "候选路径探测失败");
+                                    stats.malformed += 1;
+                                    debug!(error = %err, "解析视频头失败");
+                                }
+                            }
+                            }
+                        }
+                        Err(_) => { stats.end_reason = "conn_closed"; break; }
+                    }
+                }
+
+                msg = capture.recv() => {
+                    match msg {
+                        Some(CtrlMsg::Move(ev)) => match send_input_move(&conn, &ev) {
+                            Ok(()) => stats.input_moves += 1,
+                            Err(err) => debug!(error = %err, "发送鼠标移动 DATAGRAM 失败"),
+                        },
+                        Some(CtrlMsg::Event(env)) => {
+                            if tx.send_ctrl(&env).await.is_ok() {
+                                stats.input_events += 1;
+                            }
+                        }
+                        Some(CtrlMsg::Stopped) => {
+                            println!("[view] 收到 Ctrl+Alt+Shift+Q：停止采集控制输入（继续收视频）");
+                            if let Some((_, handle)) = pending_probe.take() {
+            handle.abort();
+        }
+        if let Some((_, _, handle)) = pending_migration.take() {
+            handle.abort();
+        }
+        capture.stop();
+                        }
+                        None => {
+                            debug!("控制输入采集已结束");
+                            if let Some((_, handle)) = pending_probe.take() {
+            handle.abort();
+        }
+        if let Some((_, _, handle)) = pending_migration.take() {
+            handle.abort();
+        }
+        capture.stop();
+                        }
+                    }
+                }
+
+                ui_event = async {
+                    match ui.as_mut() {
+                        Some(handle) => handle.event_rx.recv().await,
+                        None => std::future::pending::<Option<ViewerEvent>>().await,
+                    }
+                } => {
+                    match ui_event {
+                        Some(ViewerEvent::Key {
+                            usage,
+                            down,
+                            modifiers,
+                        }) => {
+                            if ui_send_input {
+                                let env = input_key_envelope(usage, down, modifiers);
+                                if tx.send_ctrl(&env).await.is_ok() {
+                                    stats.input_events += 1;
                                 }
                             }
                         }
-                        Action::SwitchTo(target) => {
-                            if target == active_path {
+                        Some(ViewerEvent::Mouse {
+                            x,
+                            y,
+                            width,
+                            height,
+                            button,
+                            down,
+                        }) => {
+                            if !ui_send_input {
                                 continue;
                             }
-                            let started = Instant::now();
-                            match resume_on_path(
-                                &opts,
-                                tls.clone(),
-                                target,
-                                &signing_key,
-                                &session_welcome,
-                                stats.last_frame_id,
-                                stats.last_frame_seq,
-                            )
-                            .await
-                            {
-                                Ok((new_endpoint, new_conn, new_socket, new_welcome, new_chan)) => {
-                                    // 旧连接的音频属于旧 seq 纪元；握手期间积压的包无法与新
-                                    // 纪元拼接。Connection 被替换后由 QUIC 丢弃，不塞进缓冲。
-                                    info!(
-                                        queued = audio_buffer.len(),
-                                        "迁移时清空旧音频序号的缓冲"
-                                    );
-                                    // Agent 在新连接上重建音频任务，序号从 0 重新开始。
-                                    audio_buffer.reset_sequence();
-                                    let ClientSession {
-                                        conn: resumed_conn,
-                                        welcome: _,
-                                        tx: new_tx,
-                                        rx: new_rx,
-                                        heartbeat: new_hb,
-                                    } = ClientSession::new(new_conn.clone(), new_welcome.clone(), new_chan);
-                                    endpoint = new_endpoint;
-                                    conn = resumed_conn;
-                                    relay_socket = new_socket;
-                                    tx = new_tx;
-                                    rx = new_rx;
-                                    hb = new_hb;
-                                    // 迁移瞬间旧控制通道上可能刚好丢了 KeyUp；在新通道重放
-                                    // 当前仍按住的键/按钮。注入端对重复 Down 幂等。
-                                    let held = capture.held();
-                                    let mut replayed = 0usize;
-                                    for usage in held.keys {
-                                        if tx.send_ctrl(&input_key_envelope(usage, true, 0)).await.is_ok()
-                                        {
-                                            replayed += 1;
-                                        }
-                                    }
-                                    for button in held.buttons {
-                                        if tx.send_ctrl(&input_button_envelope(button, true)).await.is_ok()
-                                        {
-                                            replayed += 1;
-                                        }
-                                    }
-                                    if replayed > 0 {
-                                        info!(replayed, "迁移后已在新通道重放按住的输入状态");
-                                    }
-                                    session_welcome = new_welcome;
-                                    last_lost_packets = conn.stats().path.lost_packets;
-                                    last_sent_packets = conn.stats().path.sent_packets;
-                                    active_path = target;
-                                    assembler = FrameAssembler::new();
-                                    feedback_dropped_reported = assembler.dropped();
-                                    stats.path_switches += 1;
-                                    stats.resume_ok = true;
-                                    let took_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-                                    let at_ms = dfy_transport::now_us() / 1000;
-                                    monitor.on_switch_committed(at_ms, took_ms);
-                                    println!(
-                                        "[view] 会话已迁移到{}（epoch={}, 耗时 {}ms，帧=#{}）",
-                                        if target == PathKind::Relay { "中继" } else { "直连" },
-                                        session_welcome.session_epoch,
-                                        took_ms,
-                                        stats.last_frame_id
-                                    );
+                            if let Some(button) = button {
+                                let env = input_button_envelope(button, down);
+                                if tx.send_ctrl(&env).await.is_ok() {
+                                    stats.input_events += 1;
                                 }
-                                Err(err) => {
-                                    tracing::warn!(error = %err, "路径迁移失败，保持当前路径");
-                                    let at_ms = dfy_transport::now_us() / 1000;
-                                    monitor.on_switch_failed(at_ms);
+                            } else if let Some(ev) = frame_point_to_move(x, y, width, height) {
+                                match send_input_move(&conn, &ev) {
+                                    Ok(()) => stats.input_moves += 1,
+                                    Err(err) => debug!(error = %err, "发送鼠标移动 DATAGRAM 失败"),
+                                }
+                            }
+                        }
+                        Some(ViewerEvent::Wheel { dx, dy }) => {
+                            if ui_send_input {
+                                let env = input_wheel_envelope(dx, dy);
+                                if tx.send_ctrl(&env).await.is_ok() {
+                                    stats.input_events += 1;
+                                }
+                            }
+                        }
+                        Some(ViewerEvent::Closed) => {
+                            stats.end_reason = "ui_closed";
+                            break;
+                        }
+                        Some(ViewerEvent::ToggleControl) => {
+                            if control_allowed {
+                                ui_send_input = !ui_send_input;
+                                println!(
+                                    "[view] 远控输入：{}",
+                                    if ui_send_input { "开启" } else { "暂停" }
+                                );
+                            }
+                        }
+                        Some(ViewerEvent::ToggleFullscreen) => {}
+                        None => {
+                            stats.end_reason = "ui_closed";
+                            break;
+                        }
+                    }
+                }
+
+                _ = tokio::time::sleep_until(next_clipboard_poll) => {
+                    next_clipboard_poll = Instant::now() + crate::clipboard_bridge::CLIPBOARD_POLL;
+                    if let Some(sync) = clipboard.as_mut() {
+                        for env in sync.poll() {
+                            let _ = tx.send_ctrl(&env).await;
+                        }
+                    }
+                }
+
+                _ = tokio::time::sleep_until(next_audio_tick) => {
+                    // 不追赶到未来：长时间停顿后追赶会把后续多个 tick 一次跳过，
+                    // 反而让抖动缓冲在迁移前堆满。停顿后从当前时刻重新起拍。
+                    next_audio_tick = Instant::now() + Duration::from_millis(20);
+                    let queued = audio_buffer.len();
+                    audio_buffer.adapt(queued);
+                    let now_us = dfy_transport::now_us();
+                    while let Some((_seq, frame)) = audio_buffer.pop_ready(now_us) {
+                        if let Some(sink) = audio.as_mut() {
+                            match sink.play(&frame) {
+                                Ok(()) => stats.audio_frames += 1,
+                                Err(err) => debug!(error = %err, "音频播放失败"),
+                            }
+                        }
+                    }
+                    let audio_stats = audio_buffer.stats();
+                    if audio_buffer.len() > 8 {
+                        debug!(
+                            depth = audio_buffer.len(),
+                            oldest_ts = audio_buffer.oldest_ts(),
+                            now_us,
+                            due = now_us.saturating_sub(100_000),
+                            "音频抖动缓冲积压"
+                        );
+                    }
+                    stats.audio_lost = audio_stats.lost;
+                    stats.audio_reordered = audio_stats.reordered;
+                    stats.audio_duplicates = audio_stats.duplicates;
+                    stats.audio_depth = audio_stats.deepest;
+                    stats.audio_evicted = audio_stats.evicted;
+                }
+
+                _ = tokio::time::sleep_until(next_file_tick) => {
+                    next_file_tick = Instant::now() + Duration::from_millis(100);
+                    if let Some(view_files) = files.as_mut() {
+                        for env in view_files.start_next() {
+                            let _ = tx.send_ctrl(&env).await;
+                        }
+                        for env in view_files.poll_chunks() {
+                            let _ = tx.send_ctrl(&env).await;
+                        }
+                    }
+                }
+
+                _ = tokio::time::sleep_until(next_feedback) => {
+                    if feedback_enabled {
+                        feedback.set_dropped_frames(
+                            assembler.dropped().saturating_sub(feedback_dropped_reported),
+                        );
+                        feedback_dropped_reported = assembler.dropped();
+                        if let Some(window) = feedback.take(std::time::Instant::now()) {
+                            if tx.send_ctrl(&dfy_proto::Envelope::stream_feedback(window)).await.is_err() {
+                                stats.end_reason = "ctrl_closed";
+                                break;
+                            }
+                            stats.feedback_windows_sent += 1;
+                        }
+                    }
+                    next_feedback = Instant::now() + FEEDBACK_INTERVAL;
+                }
+
+                _ = tokio::time::sleep_until(next_path_sample) => {
+                    if let Some(monitor) = path_monitor.as_mut() {
+                        let now = Instant::now();
+                        let elapsed = now.duration_since(last_sample_at).as_secs_f64().max(0.001);
+                        let bytes_delta = stats.bytes.saturating_sub(last_sample_bytes);
+                        let quic_stats = conn.stats();
+                        let lost_delta = quic_stats.path.lost_packets.saturating_sub(last_lost_packets);
+                        let sent_delta = quic_stats.path.sent_packets.saturating_sub(last_sent_packets);
+                        let loss_ppm = loss_ppm_from_deltas(lost_delta, sent_delta);
+                        last_lost_packets = quic_stats.path.lost_packets;
+                        last_sent_packets = quic_stats.path.sent_packets;
+                        let sample = PathSample {
+                            rtt_ms: hb.rtt_ms().unwrap_or(f32::NAN as f64) as f32,
+                            loss_ppm,
+                            recv_bps: (bytes_delta as f64 * 8.0 / elapsed) as u64,
+                            stall_ms: last_frame_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                            at_ms: dfy_transport::now_us() / 1000,
+                        };
+                        last_sample_at = now;
+                        last_sample_bytes = stats.bytes;
+                        next_path_sample = Instant::now() + Duration::from_millis(250);
+                        let action = {
+                            let action = if let Some(deferred) = deferred_action.take() {
+                                deferred
+                            } else if let Some(target) = opts.force_switch_once {
+                                if !forced_switch_done {
+                                    forced_switch_done = true;
+                                    Action::SwitchTo(target)
+                                } else {
+                                    monitor.on_sample_for(active_path, sample)
+                                }
+                            } else {
+                                monitor.on_sample_for(active_path, sample)
+                            };
+                            for event in monitor.drain_events() {
+                                debug!("path event: {event:?}");
+                            }
+                            action
+                        };
+                        if !action.is_none() {
+                            info!(?action, active = ?active_path, "路径监测输出决策");
+                        }
+                        match action {
+                            Action::None => {}
+                            Action::RequestProbe(target) => {
+                                if pending_probe.is_none() && pending_migration.is_none() {
+                                    info!(probe_path = ?target, "路径监测请求候选路径探测");
+                                    let probe_opts = opts.clone();
+                                    let probe_tls = tls.clone();
+                                    let probe_bytes = opts.probe_bytes;
+                                    let handle = tokio::spawn(async move {
+                                        probe_path(&probe_opts, probe_tls, target, probe_bytes).await
+                                    });
+                                    pending_probe = Some((target, handle));
+                                }
+                            }
+                            Action::SwitchTo(target) => {
+                                if target != active_path && pending_migration.is_none() {
+                                    let m_opts = opts.clone();
+                                    let m_tls = tls.clone();
+                                    let m_key = signing_key.clone();
+                                    let m_welcome = session_welcome.clone();
+                                    let frame_id = stats.last_frame_id;
+                                    let frame_seq = stats.last_frame_seq;
+                                    let started = Instant::now();
+                                    let handle = tokio::spawn(async move {
+                                        resume_on_path(
+                                            &m_opts,
+                                            m_tls,
+                                            target,
+                                            &m_key,
+                                            &m_welcome,
+                                            frame_id,
+                                            frame_seq,
+                                        )
+                                        .await
+                                    });
+                                    pending_migration = Some((target, started, handle));
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            _ = tokio::time::sleep_until(next_ping) => {
-                let ts = dfy_transport::now_us();
-                if tx.send_ctrl(&dfy_proto::Envelope::ping(ts)).await.is_ok() {
-                    hb.mark_ping_sent(ts);
+                probe_result = async {
+                    match pending_probe.as_mut() {
+                        Some((_, handle)) => handle.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let (target, _) = pending_probe.take().expect("pending_probe active");
+                    match probe_result {
+                        Ok(Ok(sample)) => {
+                            info!(
+                                probe_path = ?target,
+                                rtt_ms = sample.rtt_ms,
+                                loss_ppm = sample.loss_ppm,
+                                "候选路径探测完成"
+                            );
+                            if let Some(monitor) = path_monitor.as_mut() {
+                                let action = monitor.on_sample_for(target, sample);
+                                for event in monitor.drain_events() {
+                                    debug!("path event: {event:?}");
+                                }
+                                if !action.is_none() {
+                                    debug!(?action, "探测采样触发路径决策，下一采样 tick 执行");
+                                    deferred_action = Some(action);
+                                }
+                            }
+                        }
+                        Ok(Err(err)) => {
+                            debug!(error = %err, probe_path = ?target, "候选路径探测失败");
+                        }
+                        Err(err) => {
+                            debug!(error = %err, probe_path = ?target, "候选路径探测任务异常");
+                        }
+                    }
                 }
-                next_ping = Instant::now() + hb.interval;
-                if hb.timed_out() {
-                    stats.end_reason = "timeout";
-                    break;
+
+                migration_result = async {
+                    match pending_migration.as_mut() {
+                        Some((_, _, handle)) => handle.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let (target, started, _) = pending_migration.take().expect("pending_migration active");
+                    match migration_result {
+                        Ok(Ok((new_endpoint, new_conn, new_socket, new_welcome, new_chan))) => {
+                            // 旧连接的音频属于旧 seq 纪元；握手期间积压的包无法与新
+                            // 纪元拼接。Connection 被替换后由 QUIC 丢弃，不塞进缓冲。
+                            info!(
+                                queued = audio_buffer.len(),
+                                "迁移时清空旧音频序号的缓冲"
+                            );
+                            // Agent 在新连接上重建音频任务，序号从 0 重新开始。
+                            audio_buffer.reset_sequence();
+                            let ClientSession {
+                                conn: resumed_conn,
+                                welcome: _,
+                                tx: new_tx,
+                                rx: new_rx,
+                                heartbeat: new_hb,
+                            } = ClientSession::new(new_conn.clone(), new_welcome.clone(), new_chan);
+                            endpoint = new_endpoint;
+                            conn = resumed_conn;
+                            relay_socket = new_socket;
+                            tx = new_tx;
+                            rx = new_rx;
+                            hb = new_hb;
+                            // 迁移瞬间旧控制通道上可能刚好丢了 KeyUp；在新通道重放
+                            // 当前仍按住的键/按钮。注入端对重复 Down 幂等。
+                            let held = capture.held();
+                            let mut replayed = 0usize;
+                            for usage in held.keys {
+                                if tx.send_ctrl(&input_key_envelope(usage, true, 0)).await.is_ok() {
+                                    replayed += 1;
+                                }
+                            }
+                            for button in held.buttons {
+                                if tx.send_ctrl(&input_button_envelope(button, true)).await.is_ok() {
+                                    replayed += 1;
+                                }
+                            }
+                            if replayed > 0 {
+                                info!(replayed, "迁移后已在新通道重放按住的输入状态");
+                            }
+                            session_welcome = new_welcome;
+                            last_lost_packets = conn.stats().path.lost_packets;
+                            last_sent_packets = conn.stats().path.sent_packets;
+                            last_ui_lost = last_lost_packets;
+                            last_ui_sent = last_sent_packets;
+                            active_path = target;
+                            assembler = FrameAssembler::new();
+                            feedback_dropped_reported = assembler.dropped();
+                            stats.path_switches += 1;
+                            stats.resume_ok = true;
+                            let took_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                            let at_ms = dfy_transport::now_us() / 1000;
+                            if let Some(monitor) = path_monitor.as_mut() {
+                                monitor.on_switch_committed(at_ms, took_ms);
+                            }
+                            println!(
+                                "[view] 会话已迁移到{}（epoch={}, 耗时 {}ms，帧=#{}）",
+                                if target == PathKind::Relay { "中继" } else { "直连" },
+                                session_welcome.session_epoch,
+                                took_ms,
+                                stats.last_frame_id
+                            );
+                        }
+                        Ok(Err(err)) => {
+                            tracing::warn!(error = %err, "路径迁移失败，保持当前路径");
+                            let at_ms = dfy_transport::now_us() / 1000;
+                            if let Some(monitor) = path_monitor.as_mut() {
+                                monitor.on_switch_failed(at_ms);
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(error = %err, "路径迁移任务异常，保持当前路径");
+                            let at_ms = dfy_transport::now_us() / 1000;
+                            if let Some(monitor) = path_monitor.as_mut() {
+                                monitor.on_switch_failed(at_ms);
+                            }
+                        }
+                    }
+                }
+
+                _ = tokio::time::sleep_until(next_ui_stats) => {
+                    next_ui_stats = Instant::now() + Duration::from_millis(500);
+                    if let Some(handle) = ui.as_ref() {
+                        let now = Instant::now();
+                        let elapsed = now.duration_since(last_ui_stats_at).as_secs_f64().max(0.001);
+                        let bytes_delta = stats.bytes.saturating_sub(last_ui_bytes);
+                        let quic_stats = conn.stats();
+                        let lost_delta = quic_stats.path.lost_packets.saturating_sub(last_ui_lost);
+                        let sent_delta = quic_stats.path.sent_packets.saturating_sub(last_ui_sent);
+                        last_ui_stats_at = now;
+                        last_ui_bytes = stats.bytes;
+                        last_ui_lost = quic_stats.path.lost_packets;
+                        last_ui_sent = quic_stats.path.sent_packets;
+                        handle.present.update_stats(dfy_ui::ConnectionStats {
+                            rtt_ms: hb.rtt_ms(),
+                            loss_ppm: Some(loss_ppm_from_deltas(lost_delta, sent_delta)),
+                            bitrate_kbps: Some(((bytes_delta as f64 * 8.0 / elapsed) / 1000.0) as u32),
+                            decode_ms: last_decode_ms,
+                            path: if active_path == PathKind::Relay {
+                                "Relay".to_string()
+                            } else {
+                                "Direct".to_string()
+                            },
+                            relay_name: if active_path == PathKind::Relay {
+                                opts.relay.as_ref().map(|r| r.addr.to_string())
+                            } else {
+                                None
+                            },
+                        });
+                    }
+                }
+
+                _ = tokio::time::sleep_until(next_ping) => {
+                    let ts = dfy_transport::now_us();
+                    if tx.send_ctrl(&dfy_proto::Envelope::ping(ts)).await.is_ok() {
+                        hb.mark_ping_sent(ts);
+                    }
+                    next_ping = Instant::now() + hb.interval;
+                    if hb.timed_out() {
+                        stats.end_reason = "timeout";
+                        break;
+                    }
                 }
             }
-        }
     }
 
+    if let Some((_, handle)) = pending_probe.take() {
+        handle.abort();
+    }
+    if let Some((_, _, handle)) = pending_migration.take() {
+        handle.abort();
+    }
     capture.stop();
     stats.rtt_ms = hb.rtt_ms();
     match decoder.flush() {

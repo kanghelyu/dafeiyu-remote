@@ -16,6 +16,23 @@ pub const FPS_WINDOW: Duration = Duration::from_secs(1);
 /// 窗口标题里统计信息的刷新间隔（500ms）。
 pub const TITLE_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 
+/// 来自会话层的实时连接质量指标（供 Viewer 标题栏展示全部 8 项指标）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ConnectionStats {
+    /// 心跳/QUIC RTT（毫秒）。
+    pub rtt_ms: Option<f64>,
+    /// 丢包率（ppm，1_000_000 = 100%）。
+    pub loss_ppm: Option<u32>,
+    /// 实测接收码率（kbps）。
+    pub bitrate_kbps: Option<u32>,
+    /// 最近一帧解码耗时（毫秒）。
+    pub decode_ms: Option<f64>,
+    /// 当前传输路径名称（如 `"Direct"` / `"Relay"`）。
+    pub path: String,
+    /// 当前使用的中继名称/地址（直连时为 `None`）。
+    pub relay_name: Option<String>,
+}
+
 /// 上屏统计累计器。
 ///
 /// 典型用法：UI 线程每渲染完成一帧就调用 [`RenderStats::record_render`]；需要更新标题时
@@ -113,6 +130,18 @@ impl RenderStats {
     ///   `fps 统计中`，避免展示假数据。
     #[must_use]
     pub fn title(&self, base: &str, show_stats: bool) -> String {
+        self.title_with_connection(base, show_stats, None)
+    }
+
+    /// 生成包含全部 8 项连接统计的窗口标题：
+    /// 分辨率、FPS、码率、RTT、丢包、解码/渲染耗时、当前路径、当前中继。
+    #[must_use]
+    pub fn title_with_connection(
+        &self,
+        base: &str,
+        show_stats: bool,
+        conn: Option<&ConnectionStats>,
+    ) -> String {
         if !show_stats {
             return base.to_string();
         }
@@ -124,7 +153,35 @@ impl RenderStats {
             None => "fps 统计中".to_string(),
         };
         let millis = self.last_render_time.as_secs_f64() * 1000.0;
-        format!("{base} — {width}×{height} · {fps} · {millis:.1} ms")
+        let Some(conn) = conn else {
+            return format!("{base} — {width}×{height} · {fps} · {millis:.1} ms");
+        };
+        let mut parts = vec![format!("{width}×{height}"), fps];
+        if let Some(kbps) = conn.bitrate_kbps {
+            parts.push(format!("{kbps} kbps"));
+        }
+        if let Some(rtt) = conn.rtt_ms {
+            parts.push(format!("RTT {rtt:.1}ms"));
+        }
+        if let Some(loss_ppm) = conn.loss_ppm {
+            parts.push(format!("loss {:.2}%", f64::from(loss_ppm) / 10_000.0));
+        }
+        if let Some(decode_ms) = conn.decode_ms {
+            parts.push(format!("dec {decode_ms:.1}ms / ren {millis:.1}ms"));
+        } else {
+            parts.push(format!("{millis:.1} ms"));
+        }
+        let path_label = if conn.path.is_empty() {
+            "Direct"
+        } else {
+            conn.path.as_str()
+        };
+        if let Some(relay) = conn.relay_name.as_deref().filter(|s| !s.is_empty()) {
+            parts.push(format!("{path_label}({relay})"));
+        } else {
+            parts.push(path_label.to_string());
+        }
+        format!("{base} — {}", parts.join(" · "))
     }
 }
 
@@ -210,5 +267,38 @@ mod tests {
         assert!(!stats.should_refresh_title(now + TITLE_REFRESH_INTERVAL / 2));
         assert!(stats.should_refresh_title(now + TITLE_REFRESH_INTERVAL));
         assert!(!stats.should_refresh_title(now + TITLE_REFRESH_INTERVAL));
+    }
+
+    #[test]
+    fn title_with_connection_includes_all_eight_metrics() {
+        let now = Instant::now();
+        let mut stats = RenderStats::default();
+        stats.record_render(now, (1920, 1080), Duration::from_millis(2));
+        stats.record_render(
+            now + Duration::from_secs(1),
+            (1920, 1080),
+            Duration::from_millis(2),
+        );
+        let conn = ConnectionStats {
+            rtt_ms: Some(12.5),
+            loss_ppm: Some(1500),
+            bitrate_kbps: Some(4200),
+            decode_ms: Some(3.4),
+            path: "Relay".to_string(),
+            relay_name: Some("hk-1:21117".to_string()),
+        };
+        let title = stats.title_with_connection("dfy", true, Some(&conn));
+        for expected in [
+            "1920×1080",
+            "2.0 fps",
+            "4200 kbps",
+            "RTT 12.5ms",
+            "loss 0.15%",
+            "dec 3.4ms",
+            "ren 2.0ms",
+            "Relay(hk-1:21117)",
+        ] {
+            assert!(title.contains(expected), "missing {expected} in {title}");
+        }
     }
 }

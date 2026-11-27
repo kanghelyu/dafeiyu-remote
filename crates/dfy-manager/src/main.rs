@@ -23,13 +23,14 @@ use ab_glyph::FontVec;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use dfy_relay::{bind_relay_socket_with, RelayClientConfig, RelaySocketOptions, Role};
-use dfy_relay_profiles::{HealthStatus, RelayProfile, RelayProfileStore};
+use dfy_relay_profiles::{HealthStatus, RelayProfile, RelayProfileStore, SelectionStrategy};
+use serde::{Deserialize, Serialize};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::KeyCode;
-use winit::window::{Window, WindowAttributes};
+use winit::window::{Icon, Window, WindowAttributes};
 
 use crate::draw::{row_from_y, row_y, Surface};
 
@@ -77,6 +78,10 @@ enum Command {
     Test,
     TestAll,
     Use,
+    CycleStrategy,
+    ExportRedacted,
+    ToggleFavorite,
+    LaunchViewer,
     CreateDisplay,
     DestroyDisplay,
     RefreshDisplays,
@@ -94,6 +99,10 @@ const fn command_for_key(key: KeyCode) -> Option<Command> {
         KeyCode::KeyT => Some(Command::Test),
         KeyCode::KeyR => Some(Command::TestAll),
         KeyCode::KeyU => Some(Command::Use),
+        KeyCode::KeyS => Some(Command::CycleStrategy),
+        KeyCode::KeyE => Some(Command::ExportRedacted),
+        KeyCode::KeyF => Some(Command::ToggleFavorite),
+        KeyCode::Enter => Some(Command::LaunchViewer),
         KeyCode::KeyC => Some(Command::CreateDisplay),
         KeyCode::KeyD => Some(Command::DestroyDisplay),
         KeyCode::F5 => Some(Command::RefreshDisplays),
@@ -107,6 +116,7 @@ enum Tab {
     Relay,
     Displays,
     Diagnostics,
+    Devices,
 }
 
 impl Tab {
@@ -115,6 +125,7 @@ impl Tab {
             Self::Relay => "Relay Profiles",
             Self::Displays => "Virtual Displays",
             Self::Diagnostics => "Diagnostics",
+            Self::Devices => "Devices",
         }
     }
 
@@ -122,7 +133,8 @@ impl Tab {
         match self {
             Self::Relay => Self::Displays,
             Self::Displays => Self::Diagnostics,
-            Self::Diagnostics => Self::Relay,
+            Self::Diagnostics => Self::Devices,
+            Self::Devices => Self::Relay,
         }
     }
 }
@@ -217,6 +229,7 @@ fn run_diagnostics(store: &RelayProfileStore, displays: &[String]) -> Vec<Diagno
 
 /// 按优先级返回候选系统字体：优先能显示中文的，再退化到拉丁字体。
 fn font_candidates() -> Vec<PathBuf> {
+    #[allow(unused_mut)]
     let mut paths = Vec::new();
     #[cfg(windows)]
     {
@@ -238,6 +251,15 @@ fn font_candidates() -> Vec<PathBuf> {
         ));
         paths.push(PathBuf::from(
             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        paths.push(PathBuf::from("/System/Library/Fonts/PingFang.ttc"));
+        paths.push(PathBuf::from("/System/Library/Fonts/Hiragino Sans GB.ttc"));
+        paths.push(PathBuf::from("/System/Library/Fonts/Helvetica.ttc"));
+        paths.push(PathBuf::from(
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
         ));
     }
     paths
@@ -388,8 +410,130 @@ fn display_rows(backend: Option<&dyn dfy_vdisplay::VirtualDisplayBackend>) -> Ve
     }
 }
 
+const ICON_PNG: &[u8] = include_bytes!("../../../assets/icon-512.png");
+
+fn load_app_icon() -> Option<Icon> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(ICON_PNG));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let bytes = &buf[..info.buffer_size()];
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => bytes.to_vec(),
+        png::ColorType::Rgb => bytes
+            .chunks_exact(3)
+            .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
+            .collect(),
+        _ => return None,
+    };
+    Icon::from_rgba(rgba, info.width, info.height).ok()
+}
+
+/// 一条已保存的远程主机书签（不保存任何口令）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct DeviceEntry {
+    id: String,
+    name: String,
+    addr: String,
+    #[serde(default)]
+    favorite: bool,
+    #[serde(default)]
+    use_relay: bool,
+    #[serde(default)]
+    last_used_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct DeviceFile {
+    devices: Vec<DeviceEntry>,
+}
+
+struct DeviceBook {
+    path: PathBuf,
+    entries: Vec<DeviceEntry>,
+}
+
+impl DeviceBook {
+    fn sibling_path(config_path: &Path) -> PathBuf {
+        config_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .join("devices.toml")
+    }
+
+    fn load(path: PathBuf) -> Self {
+        let mut entries = if path.exists() {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| toml::from_str::<DeviceFile>(&text).ok())
+                .map(|file| file.devices)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        Self::sort_entries(&mut entries);
+        Self { path, entries }
+    }
+
+    fn sort_entries(entries: &mut [DeviceEntry]) {
+        entries.sort_by(|a, b| {
+            b.favorite
+                .cmp(&a.favorite)
+                .then(b.last_used_ms.cmp(&a.last_used_ms))
+                .then(a.id.cmp(&b.id))
+        });
+    }
+
+    fn toggle_favorite(&mut self, index: usize) -> Result<Option<(String, bool)>> {
+        let Some(entry) = self.entries.get_mut(index) else {
+            return Ok(None);
+        };
+        entry.favorite = !entry.favorite;
+        let result = (entry.id.clone(), entry.favorite);
+        Self::sort_entries(&mut self.entries);
+        self.save()?;
+        Ok(Some(result))
+    }
+
+    fn save(&self) -> Result<()> {
+        if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        let text = toml::to_string_pretty(&DeviceFile {
+            devices: self.entries.clone(),
+        })?;
+        std::fs::write(&self.path, text)?;
+        Ok(())
+    }
+}
+
+const fn next_strategy(current: SelectionStrategy) -> SelectionStrategy {
+    match current {
+        SelectionStrategy::Manual => SelectionStrategy::LowestLatency,
+        SelectionStrategy::LowestLatency => SelectionStrategy::PreferredFirst,
+        SelectionStrategy::PreferredFirst => SelectionStrategy::AutoFailover,
+        SelectionStrategy::AutoFailover => SelectionStrategy::Manual,
+    }
+}
+
+fn find_dfy_binary() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(if cfg!(windows) { "dfy.exe" } else { "dfy" });
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from(if cfg!(windows) { "dfy.exe" } else { "dfy" })
+}
+
 struct ManagerApp {
     store: RelayProfileStore,
+    devices: DeviceBook,
     font: FontVec,
     runtime: tokio::runtime::Runtime,
     display_backend: Option<Box<dyn dfy_vdisplay::VirtualDisplayBackend>>,
@@ -408,6 +552,7 @@ struct ManagerApp {
 impl ManagerApp {
     fn new(args: Args) -> Result<Self> {
         let store = RelayProfileStore::load(&args.config)?;
+        let devices = DeviceBook::load(DeviceBook::sibling_path(&args.config));
         let font = load_default_font(args.font.as_deref())?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -418,6 +563,7 @@ impl ManagerApp {
         let tab = match args.tab.as_str() {
             "displays" => Tab::Displays,
             "diagnostics" => Tab::Diagnostics,
+            "devices" => Tab::Devices,
             _ => Tab::Relay,
         };
         let diagnostics = if tab == Tab::Diagnostics {
@@ -427,12 +573,16 @@ impl ManagerApp {
         };
         let status = if tab == Tab::Diagnostics {
             format!("Diagnostics: {} result(s)", diagnostics.len())
+        } else if store.profiles().is_empty() {
+            "No relay profiles yet. Run 'dfy relay-profile add ...' or press Tab for Displays/Diagnostics/Devices."
+                .to_string()
         } else {
-            "Ready. Up/Down select, Tab switch, T/R test, U use, C/D display, G diagnostics, F5 refresh, Q quit."
+            "Ready. Up/Down select, Tab switch, T/R test, U use, S strategy, E export, C/D display, G diagnostics, Q quit."
                 .to_string()
         };
         Ok(Self {
             store,
+            devices,
             font,
             runtime,
             display_backend,
@@ -454,6 +604,7 @@ impl ManagerApp {
             Tab::Relay => self.store.profiles().len(),
             Tab::Displays => self.displays.len(),
             Tab::Diagnostics => self.diagnostics.len(),
+            Tab::Devices => self.devices.entries.len(),
         }
     }
 
@@ -477,7 +628,7 @@ impl ManagerApp {
     fn test_selected(&mut self) {
         let profile = match self.tab {
             Tab::Relay => self.store.profiles().get(self.selected).cloned(),
-            Tab::Displays | Tab::Diagnostics => None,
+            Tab::Displays | Tab::Diagnostics | Tab::Devices => None,
         };
         let Some(profile) = profile else {
             self.status = "No relay profile selected.".to_string();
@@ -615,6 +766,76 @@ impl ManagerApp {
         }
     }
 
+    fn cycle_strategy(&mut self) {
+        let next = next_strategy(self.store.selection().strategy);
+        self.store.set_strategy(next);
+        match self.store.save() {
+            Ok(()) => {
+                let current = self
+                    .store
+                    .selected()
+                    .map(|p| p.id.as_str())
+                    .unwrap_or("none");
+                self.status = format!("Strategy: {} (selected: {current})", next.as_str());
+            }
+            Err(err) => self.status = format!("save strategy failed: {err:#}"),
+        }
+    }
+
+    fn export_redacted(&mut self) {
+        let out_path = self
+            .store
+            .path()
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .join("relay-profiles.redacted.toml");
+        match self.store.export_to_file(&out_path, true) {
+            Ok(()) => self.status = format!("Exported redacted profiles to {}", out_path.display()),
+            Err(err) => self.status = format!("export failed: {err:#}"),
+        }
+    }
+
+    fn toggle_device_favorite(&mut self) {
+        if self.tab != Tab::Devices {
+            self.status = "Switch to Devices tab first.".to_string();
+            return;
+        }
+        match self.devices.toggle_favorite(self.selected) {
+            Ok(Some((id, fav))) => {
+                self.status = format!("Device {id}: favorite={fav}");
+            }
+            Ok(None) => self.status = "No device selected.".to_string(),
+            Err(err) => self.status = format!("save devices failed: {err:#}"),
+        }
+    }
+
+    fn launch_selected_device(&mut self) {
+        if self.tab != Tab::Devices {
+            return;
+        }
+        let Some(entry) = self.devices.entries.get(self.selected) else {
+            self.status = "No device selected.".to_string();
+            return;
+        };
+        let bin = find_dfy_binary();
+        let mut cmd = std::process::Command::new(&bin);
+        cmd.arg("view").arg("--ui").arg("--addr").arg(&entry.addr);
+        if entry.use_relay {
+            if let Some(relay) = self.store.selected() {
+                cmd.arg("--relay").arg(relay.endpoint());
+            }
+        }
+        match cmd.spawn() {
+            Ok(_child) => {
+                self.status = format!("Launched viewer for {} ({})", entry.name, entry.addr);
+            }
+            Err(err) => {
+                self.status = format!("launch {} failed: {err}", bin.display());
+            }
+        }
+    }
+
     /// 执行动作；Quit 由事件层处理（需要 `ActiveEventLoop`）。
     fn apply(&mut self, command: Command) {
         match command {
@@ -623,6 +844,9 @@ impl ManagerApp {
             Command::SwitchTab => {
                 self.tab = self.tab.next();
                 self.selected = 0;
+                if self.tab == Tab::Diagnostics {
+                    self.diagnostics = run_diagnostics(&self.store, &self.displays);
+                }
                 self.status = format!("Tab: {}", self.tab.label());
             }
             Command::Diagnostics => {
@@ -634,6 +858,10 @@ impl ManagerApp {
             Command::Test => self.test_selected(),
             Command::TestAll => self.test_all(),
             Command::Use => self.use_selected(),
+            Command::CycleStrategy => self.cycle_strategy(),
+            Command::ExportRedacted => self.export_redacted(),
+            Command::ToggleFavorite => self.toggle_device_favorite(),
+            Command::LaunchViewer => self.launch_selected_device(),
             Command::CreateDisplay => self.create_display(),
             Command::DestroyDisplay => self.destroy_display(),
             Command::RefreshDisplays => self.refresh_displays(),
@@ -656,9 +884,12 @@ impl ManagerApp {
         let (x, y) = (x as u32, y as u32);
         if y < LIST_TOP {
             if y < HEADER_H {
-                self.tab = if x >= 720 {
+                self.tab = if x >= 760 {
+                    Tab::Devices
+                } else if x >= 540 {
+                    self.diagnostics = run_diagnostics(&self.store, &self.displays);
                     Tab::Diagnostics
-                } else if x >= 320 {
+                } else if x >= 260 {
                     Tab::Displays
                 } else {
                     Tab::Relay
@@ -687,14 +918,15 @@ impl ManagerApp {
             canvas.fill(BG);
 
             canvas.fill_rect(0, 0, width, HEADER_H, HEADER);
-            canvas.draw_text(
-                &self.font,
-                "Dafeiyu Remote - Manager",
-                20.0,
-                18.0,
-                21.0,
-                TEXT,
+            let header_meta = format!(
+                "Dafeiyu Remote - Manager   [strategy: {} | active: {}]",
+                self.store.selection().strategy.as_str(),
+                self.store
+                    .selected()
+                    .map(|p| p.id.as_str())
+                    .unwrap_or("none")
             );
+            canvas.draw_text(&self.font, &header_meta, 20.0, 16.0, 19.0, TEXT);
             canvas.draw_text(
                 &self.font,
                 "[1] Relay Profiles",
@@ -709,8 +941,8 @@ impl ManagerApp {
             );
             canvas.draw_text(
                 &self.font,
-                "[2] Virtual Displays (F5 refresh)",
-                320.0,
+                "[2] Virtual Displays (F5)",
+                260.0,
                 47.0,
                 FONT_SIZE,
                 if self.tab == Tab::Displays {
@@ -722,7 +954,7 @@ impl ManagerApp {
             canvas.draw_text(
                 &self.font,
                 "[3] Diagnostics (G)",
-                720.0,
+                540.0,
                 47.0,
                 FONT_SIZE,
                 if self.tab == Tab::Diagnostics {
@@ -733,10 +965,22 @@ impl ManagerApp {
             );
             canvas.draw_text(
                 &self.font,
-                "Up/Down select  T/R test  U use  C/D display  G diagnostics  F5 refresh  Q quit",
+                "[4] Devices (F/Enter)",
+                760.0,
+                47.0,
+                FONT_SIZE,
+                if self.tab == Tab::Devices {
+                    ACCENT
+                } else {
+                    MUTED
+                },
+            );
+            canvas.draw_text(
+                &self.font,
+                "Up/Down select  Tab switch  T/R test  U use  S strategy  E export  C/D display  F fav  Enter view  Q quit",
                 20.0,
                 86.0,
-                14.0,
+                13.0,
                 MUTED,
             );
 
@@ -839,6 +1083,42 @@ impl ManagerApp {
                         );
                     }
                 }
+                Tab::Devices => {
+                    if self.devices.entries.is_empty() {
+                        canvas.draw_text(
+                            &self.font,
+                            "(no saved devices in devices.toml)",
+                            22.0,
+                            LIST_TOP as f32 + 3.0,
+                            FONT_SIZE,
+                            MUTED,
+                        );
+                    }
+                    for (index, entry) in self.devices.entries.iter().enumerate() {
+                        let y = row_y(LIST_TOP, ROW_H, index);
+                        if y + ROW_H > list_bottom {
+                            break;
+                        }
+                        canvas.fill_rect(
+                            12,
+                            y,
+                            width.saturating_sub(24),
+                            ROW_H - 2,
+                            if index == self.selected {
+                                SELECTED
+                            } else {
+                                ROW
+                            },
+                        );
+                        let star = if entry.favorite { "*" } else { " " };
+                        let mode = if entry.use_relay { "relay" } else { "direct" };
+                        let line = format!(
+                            "[{star}] {:<12} {:<18} {:<24} ({mode})",
+                            entry.id, entry.name, entry.addr
+                        );
+                        canvas.draw_text(&self.font, &line, 22.0, y as f32 + 3.0, FONT_SIZE, TEXT);
+                    }
+                }
             }
 
             canvas.fill_rect(0, height.saturating_sub(36), width, 36, HEADER);
@@ -862,9 +1142,12 @@ impl ApplicationHandler for ManagerApp {
         if self.window.is_some() {
             return;
         }
-        let attributes = WindowAttributes::default()
+        let mut attributes = WindowAttributes::default()
             .with_title("Dafeiyu Remote - Manager")
             .with_inner_size(winit::dpi::LogicalSize::new(WINDOW_W, WINDOW_H));
+        if let Some(icon) = load_app_icon() {
+            attributes = attributes.with_window_icon(Some(icon));
+        }
         let Ok(window) = event_loop.create_window(attributes) else {
             self.status = "create_window failed".to_string();
             return;
@@ -885,6 +1168,7 @@ impl ApplicationHandler for ManagerApp {
             NonZeroU32::new(width).unwrap_or(NonZeroU32::new(1).unwrap()),
             NonZeroU32::new(height).unwrap_or(NonZeroU32::new(1).unwrap()),
         );
+        window.request_redraw();
         self.surface = Some(surface);
         self.context = Some(context);
         self.window = Some(window);
@@ -939,15 +1223,9 @@ impl ApplicationHandler for ManagerApp {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    if !args.config.exists() {
-        bail!(
-            "中继配置不存在：{}（先用 dfy relay-profile 创建）",
-            args.config.display()
-        );
-    }
     let app = ManagerApp::new(args)?;
     let event_loop = EventLoop::with_user_event().build()?;
-    event_loop.set_control_flow(ControlFlow::Poll);
+    event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = app;
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -972,6 +1250,16 @@ mod tests {
             Some(Command::DestroyDisplay)
         );
         assert_eq!(command_for_key(KeyCode::KeyG), Some(Command::Diagnostics));
+        assert_eq!(command_for_key(KeyCode::KeyS), Some(Command::CycleStrategy));
+        assert_eq!(
+            command_for_key(KeyCode::KeyE),
+            Some(Command::ExportRedacted)
+        );
+        assert_eq!(
+            command_for_key(KeyCode::KeyF),
+            Some(Command::ToggleFavorite)
+        );
+        assert_eq!(command_for_key(KeyCode::Enter), Some(Command::LaunchViewer));
         assert_eq!(command_for_key(KeyCode::F5), Some(Command::RefreshDisplays));
         assert_eq!(command_for_key(KeyCode::KeyQ), Some(Command::Quit));
         assert_eq!(command_for_key(KeyCode::Escape), Some(Command::Quit));
@@ -1127,11 +1415,76 @@ mod tests {
         app.apply(Command::DestroyDisplay);
         assert!(
             app.status.contains("No virtual display selected")
+                || app.status.contains("Destroyed")
                 || app.status.contains("destroy")
                 || app.status.contains("Cannot parse"),
             "{}",
             app.status
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn app_icon_decodes_cleanly() {
+        assert!(load_app_icon().is_some());
+    }
+
+    #[test]
+    fn strategy_export_and_devices_work_with_missing_config() {
+        let dir = std::env::temp_dir().join(format!(
+            "dfy-manager-devices-{}-{}",
+            std::process::id(),
+            dfy_transport::now_us()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let missing_config = dir.join("missing-profiles.toml");
+        let devices_path = dir.join("devices.toml");
+        std::fs::write(
+            &devices_path,
+            "[[devices]]\n\
+             id = \"lab-b\"\n\
+             name = \"Lab B\"\n\
+             addr = \"127.0.0.1:21116\"\n\
+             favorite = false\n\
+             use_relay = false\n\
+             last_used_ms = 100\n\
+             [[devices]]\n\
+             id = \"lab-a\"\n\
+             name = \"Lab A\"\n\
+             addr = \"127.0.0.1:21117\"\n\
+             favorite = true\n\
+             use_relay = true\n\
+             last_used_ms = 50\n",
+        )
+        .expect("write devices");
+        let mut app = match ManagerApp::new(Args {
+            config: missing_config.clone(),
+            font: None,
+            tab: "devices".to_string(),
+            test_health: false,
+        }) {
+            Ok(app) => app,
+            Err(err) => {
+                eprintln!("skip: test font unavailable: {err:#}");
+                return;
+            }
+        };
+        assert_eq!(app.tab, Tab::Devices);
+        assert_eq!(app.devices.entries.len(), 2);
+        assert_eq!(app.devices.entries[0].id, "lab-a");
+        app.selected = 1;
+        app.apply(Command::ToggleFavorite);
+        assert!(app.devices.entries.iter().all(|d| d.favorite));
+
+        app.apply(Command::CycleStrategy);
+        assert_eq!(
+            app.store.selection().strategy,
+            SelectionStrategy::AutoFailover
+        );
+        app.apply(Command::ExportRedacted);
+        let redacted = std::fs::read_to_string(dir.join("relay-profiles.redacted.toml"))
+            .expect("redacted export exists");
+        assert!(!redacted.contains("6DpdECxB8"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

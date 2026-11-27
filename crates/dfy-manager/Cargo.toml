@@ -18,9 +18,12 @@ dfy-relay = { path = "../dfy-relay" }
 dfy-relay-profiles = { path = "../dfy-relay-profiles" }
 dfy-transport = { path = "../dfy-transport" }
 dfy-vdisplay = { path = "../dfy-vdisplay" }
+png = "0.18"
 rand.workspace = true
+serde = { version = "1", features = ["derive"] }
 softbuffer = "0.4"
 tokio.workspace = true
+toml = "0.8"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 winit = "0.30"

@@ -34,6 +34,10 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Audit dependency licenses & SBOM
+        if: runner.os == 'Linux'
+        run: python3 packaging/generate_sbom.py --check --output-sbom target/sbom.cdx.json
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -42,6 +46,16 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Windows audio device-backend tests
+        if: runner.os == 'Windows'
+        run: cargo test -p dfy-audio --features device-backend
+
+      - name: Packaging smoke tests
+        if: runner.os == 'Linux'
+        run: |
+          python3 -c "import yaml" 2>/dev/null || sudo apt-get install -y python3-yaml
+          python3 packaging/tests/smoke.py
 
       - name: Linux Xvfb virtual display integration
         if: runner.os == 'Linux'

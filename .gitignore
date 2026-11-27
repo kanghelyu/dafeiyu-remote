@@ -22,6 +22,10 @@
 !notes/manager-ui-20261127.md
 !notes/relay-profiles-acceptance-20261126.md
 !notes/vdisplay-linux-app-window-20261127.md
+!notes/ci-sbom-ui-release-20261127.md
+!notes/linux-rpm-systemd-accept-20261127.md
+!notes/nonblocking-migration-probe-20261127.md
+!notes/windows-installer-upgrade-20261127.md
 # 设备私钥（genkey 产物），绝不入库
 device.key
 device.pub

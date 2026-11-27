@@ -94,7 +94,7 @@ pub use frame::{
 pub use keymap::{hid_button, hid_usage, modifier_bit};
 pub use scroll::{scroll_to_wheel, WheelAccumulator, PIXELS_PER_LINE, WHEEL_DELTA};
 pub use source::{FrameIter, FramePoll, FrameSource, DEFAULT_POLL_INTERVAL};
-pub use stats::{RenderStats, FPS_WINDOW, TITLE_REFRESH_INTERVAL};
+pub use stats::{ConnectionStats, RenderStats, FPS_WINDOW, TITLE_REFRESH_INTERVAL};
 
 #[cfg(feature = "window")]
 pub use app::spawn_viewer;
@@ -334,6 +334,11 @@ impl PresenterHandle {
         if self.proxy.send_event(UiCommand::Close).is_err() {
             tracing::debug!("viewer 事件循环已退出，close 忽略");
         }
+    }
+
+    /// 更新连接质量统计快照，供标题栏展示完整 8 项指标。
+    pub fn update_stats(&self, stats: ConnectionStats) {
+        self.mailbox.store_stats(stats);
     }
 }
 

@@ -197,6 +197,7 @@ pub struct AgentHost {
 }
 
 impl AgentHost {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn bind(
         addr: SocketAddr,
         settings: AgentSettings,
@@ -208,6 +209,7 @@ impl AgentHost {
         Self::bind_with_identity(addr, identity, settings, initial_runtime, callbacks, stats)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn bind_with_identity(
         addr: SocketAddr,
         identity: TlsIdentity,

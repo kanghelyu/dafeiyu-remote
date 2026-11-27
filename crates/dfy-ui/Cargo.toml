@@ -14,8 +14,8 @@ publish = false
 # 默认带窗口上屏。关掉（`--no-default-features`）后本 crate 退化成纯逻辑库：
 # 帧校验/缩放、键位映射、滚轮换算、渲染统计、帧来源抽象都能在无显示环境编译并单测。
 default = ["window"]
-# 窗口 + 软件上屏（winit 事件循环 + softbuffer）。
-window = ["dep:softbuffer"]
+# 窗口 + 软件上屏（winit 事件循环 + softbuffer + 窗口图标）。
+window = ["dep:softbuffer", "dep:png"]
 
 [dependencies]
 anyhow.workspace = true
@@ -30,6 +30,7 @@ tokio = { version = "1", default-features = false, features = ["sync"] }
 # 不用 wgpu：当前 1080p/4K 的 CPU 最近邻缩放已经够快，先把正确性和依赖面控制住。
 winit = "0.30"
 softbuffer = { version = "0.4", optional = true }
+png = { version = "0.18", optional = true }
 
 [dev-dependencies]
 # 仅 examples/viewer_demo.rs 用来打日志（不引入 GUI 测试框架）。

@@ -14,7 +14,7 @@ TCP 降级通道可用于 UDP 不可达的环境。`relay_key` 只用于会合�
 
 ```bash
 # 建议先下载审阅，再执行；不要把管理端口暴露到公网。
-curl -fsSL https://raw.githubusercontent.com/kanghelyu/dafeiyu/main/deploy/install-relay.sh -o install-relay.sh
+curl -fsSL https://raw.githubusercontent.com/kanghelyu/dafeiyu-remote/main/deploy/install-relay.sh -o install-relay.sh
 sudo bash install-relay.sh --version v0.1.0
 ```
 
@@ -55,7 +55,7 @@ sudo DFY_VERSION=v0.1.0 DFY_CARGO_TARGET_DIR=/var/cache/dafeiyu/target \
 | 无 | `DFY_CONFIG_DIR` | `/etc/dfy-relay` |
 | 无 | `DFY_SYSTEMD_DIR` | `/etc/systemd/system` |
 | 无 | `DFY_OS_RELEASE_FILE` | `/etc/os-release`；主要供隔离测试覆盖 |
-| 无 | `DFY_REPO_OWNER` / `DFY_REPO_NAME` | `kanghelyu/dafeiyu` |
+| 无 | `DFY_REPO_OWNER` / `DFY_REPO_NAME` | `kanghelyu/dafeiyu-remote` |
 | 无 | `DFY_RELEASE_BASE_URL` | HTTPS 的 `releases/download/VERSION` 目录 |
 | 无 | `DFY_ARCHIVE_URL` | 完整 HTTPS 归档 URL |
 | 无 | `DFY_REQUIRE_CHECKSUM` | `0`；设为 `1` 时无校验和即失败 |
@@ -123,8 +123,8 @@ sudo systemctl enable --now dfy-relay
 ## 安装方式三：Docker Compose
 
 ```bash
-git clone https://github.com/kanghelyu/dafeiyu.git
-cd dafeiyu
+git clone https://github.com/kanghelyu/dafeiyu-remote.git
+cd dafeiyu-remote
 cargo run -p dfy-relay -- config init --out deploy/relay.toml
 docker compose -f deploy/docker-compose.yml up -d
 docker compose -f deploy/docker-compose.yml exec relay \

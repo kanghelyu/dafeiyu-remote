@@ -111,6 +111,9 @@ Requires: xorg-x11-server-utils
 %description
 Cross-platform remote-control command-line tools and an authenticated UDP relay.
 The relay service is not enabled or started by this package.
+%install
+mkdir -p %{buildroot}
+cp -a "$STAGE/usr" "$STAGE/etc" %{buildroot}/
 %pre
 if ! getent group dfy-relay >/dev/null 2>&1; then groupadd --system dfy-relay; fi
 if ! getent passwd dfy-relay >/dev/null 2>&1; then

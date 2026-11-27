@@ -319,7 +319,8 @@ def check_platform_builder_failures(directory: Path) -> None:
     for name in ("dfy.exe", "dfy-relay.exe"):
         write_pe(windows_bins / name)
     windows_args = ("bash", PACKAGING / "windows/build-installer.sh", "--binary-dir", windows_bins, "--version", "1.2.3", "--output-dir", directory / "windows-output")
-    if not (shutil.which("ISCC.exe") or shutil.which("iscc") or Path("/c/Program Files (x86)/Inno Setup 6/ISCC.exe").exists()):
+    local_iscc = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/Inno Setup 6/ISCC.exe"
+    if not (shutil.which("ISCC.exe") or shutil.which("iscc") or Path("/c/Program Files (x86)/Inno Setup 6/ISCC.exe").exists() or local_iscc.exists()):
         result = run(*windows_args, ok=False)
         assert "missing required tool: Inno Setup 6 ISCC.exe" in result.stderr
         print("PASS explicit missing-Inno-Setup failure (installer build not run on this host)")

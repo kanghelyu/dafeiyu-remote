@@ -33,9 +33,9 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - os: windows-2022
             target: x86_64-pc-windows-msvc
-          - os: macos-14
+          - os: macos-15
             target: x86_64-apple-darwin
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
@@ -51,8 +51,9 @@ jobs:
           from pathlib import Path
           import sys, tomllib
           tag = sys.argv[1].removeprefix("v")
+          base_tag = tag.split("+", 1)[0].split("-", 1)[0]
           version = tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"]
-          if tag != version:
+          if tag != version and base_tag != version:
               raise SystemExit(f"release tag {tag} does not match workspace version {version}")
           PY
 
@@ -76,6 +77,22 @@ jobs:
           cargo build --release --locked --target "${{ matrix.target }}" \
             -p dfy-cli -p dfy-relay
 
+      - name: 构建 Windows dfy-manager
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        run: |
+          cargo build --release --locked --target "${{ matrix.target }}" -p dfy-manager
+          mkdir -p dist-manager
+          cp "$CARGO_TARGET_DIR/${{ matrix.target }}/release/dfy-manager.exe" dist-manager/
+
+      - name: 上传 Windows dfy-manager
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dafeiyu-windows-manager
+          path: dist-manager/dfy-manager.exe
+          if-no-files-found: error
+
       - name: 创建架构正确的归档与校验和
         shell: bash
         run: |
@@ -84,6 +101,14 @@ jobs:
             --target "${{ matrix.target }}" \
             --version "$RELEASE_TAG" \
             --output-dir dist
+
+      - name: 生成 CycloneDX SBOM 与第三方许可声明
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          python3 packaging/generate_sbom.py --check \
+            --output-sbom "dist/dafeiyu-${RELEASE_TAG#v}-sbom.cdx.json" \
+            --output-notices "dist/THIRD-PARTY-NOTICES.txt"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -114,6 +139,10 @@ jobs:
           with zipfile.ZipFile(archive) as bundle:
               bundle.extractall("binaries")
           PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: dafeiyu-windows-manager
+          path: binaries
       - name: 确保 Inno Setup 可用
         shell: bash
         run: |
@@ -129,6 +158,37 @@ jobs:
             --binary-dir binaries \
             --version "$RELEASE_TAG" \
             --output-dir dist
+      - name: 校验 Windows 安装、覆盖升级与卸载清理
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ver = "$env:RELEASE_TAG".TrimStart("v")
+          $setup = (Get-Item "dist/dafeiyu-$ver-windows-x86_64-setup.exe").FullName
+          $app = "C:\dfy-install-test"
+          $reg = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{9DB56B13-75D0-4D95-A0E7-DF9E6294B984}_is1"
+          $p1 = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$app" -Wait -PassThru
+          if ($p1.ExitCode -ne 0) { throw "Initial install failed: $($p1.ExitCode)" }
+          & "$app\dfy.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "dfy.exe --version failed" }
+          & "$app\dfy-relay.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "dfy-relay.exe --version failed" }
+          & "$app\dfy-manager.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "dfy-manager.exe --help failed" }
+          if (-not (Test-Path "$app\dfy.ico")) { throw "missing dfy.ico" }
+          $lic = Get-Content "$app\docs\LICENSE" -Raw
+          if ($lic -notmatch "PolyForm Noncommercial License 1.0.0") { throw "LICENSE mismatch" }
+          $props = Get-ItemProperty $reg
+          if ($props.DisplayVersion -ne $ver) { throw "DisplayVersion mismatch: $($props.DisplayVersion)" }
+          $p2 = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$app" -Wait -PassThru
+          if ($p2.ExitCode -ne 0) { throw "In-place upgrade install failed: $($p2.ExitCode)" }
+          $p3 = Start-Process -FilePath "$app\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
+          if ($p3.ExitCode -ne 0) { throw "Uninstall failed: $($p3.ExitCode)" }
+          Start-Sleep -Seconds 3
+          foreach ($f in @("dfy.exe","dfy-relay.exe","dfy-manager.exe")) {
+            if (Test-Path "$app\$f") { throw "residual binary after uninstall: $f" }
+          }
+          if (Test-Path $reg) { throw "residual Uninstall registry key" }
+          Write-Host "WINDOWS INSTALLER E2E VERIFICATION PASS ($ver)"
       - uses: actions/upload-artifact@v4
         with:
           name: dafeiyu-windows-x86_64-installer
@@ -198,7 +258,7 @@ jobs:
   macos-installers:
     name: macOS ${{ matrix.arch }} PKG/DMG
     needs: build
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
@@ -256,6 +316,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: 安装 Rust Android 目标
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
       - uses: android-actions/setup-android@v3
       - name: 安装 Android SDK/NDK 与 cargo-ndk
         shell: bash
@@ -321,18 +385,25 @@ jobs:
           body: |
             ## 大肥鱼远程 ${{ github.event.inputs.tag || github.ref_name }}
 
-            包含 `dfy` / `dfy-relay` CLI、Linux DEB/RPM、Windows Inno Setup、
-            macOS PKG/DMG，以及 Android APK/AAB。macOS 包不是原生 GUI app；
-            Windows 包不安装服务包装器。未配置签名秘密的产物会明确标记为 unsigned。
+            许可证：`PolyForm Noncommercial License 1.0.0`（非商用源码可见）。
+            包含 `dfy` / `dfy-relay` CLI、`dfy-manager`（Windows 安装包）、Linux DEB/RPM、
+            Windows Inno Setup、macOS PKG/DMG、Android APK/AAB，以及 CycloneDX SBOM
+            (`dafeiyu-*-sbom.cdx.json`) 与 `THIRD-PARTY-NOTICES.txt`。
+            macOS 包不是原生 GUI app；Windows 包不安装服务包装器。
+            未配置签名秘密的产物会明确标记为 unsigned。
+
+            ### 已知边界（非商业/未签名说明）
+            - Windows IDD 虚拟显示驱动签名/HLK/WHQL、Windows/macOS/Android 正式代码签名与公证、macOS 原生 GUI 双角色、Android 真机与公网跨物理机压测仍未完成（详见 `docs/STATUS.md`）。
 
             ### 下载
             - `dafeiyu-*-unknown-linux-gnu.tar.gz`：Linux x86_64 / aarch64 CLI + relay
             - `dfy-relay-linux-<arch>.tar.gz`：一键脚本使用的中继归档
             - `dafeiyu_*_amd64.deb` / `dafeiyu_*_arm64.deb`：Linux DEB
             - `dafeiyu-*.rpm`：Linux RPM
-            - `dafeiyu-*-windows-x86_64-setup.exe`：Windows 安装程序
+            - `dafeiyu-*-windows-x86_64-setup.exe`：Windows 安装程序（含 `dfy`、`dfy-relay`、`dfy-manager`）
             - `dafeiyu-*-macos-*.pkg` / `.dmg`：macOS CLI 安装包
             - `dafeiyu-*-debug.apk` / `dafeiyu-*-release*.apk` / `.aab`
+            - `dafeiyu-*-sbom.cdx.json` / `THIRD-PARTY-NOTICES.txt`：CycloneDX 1.5 SBOM 与第三方许可声明
 
             SHA-256：`SHA256SUMS.txt`（也提供逐归档 `.sha256`）。
 

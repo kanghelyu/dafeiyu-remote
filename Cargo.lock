@@ -784,9 +784,12 @@ dependencies = [
  "dfy-relay-profiles",
  "dfy-transport",
  "dfy-vdisplay",
+ "png",
  "rand 0.8.8",
+ "serde",
  "softbuffer",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "winit",
@@ -886,6 +889,7 @@ name = "dfy-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "png",
  "softbuffer",
  "tokio",
  "tracing",

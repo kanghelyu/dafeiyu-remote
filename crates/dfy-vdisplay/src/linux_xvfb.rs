@@ -1012,7 +1012,7 @@ extern "C" {
 
 fn current_uid() -> u32 {
     // SAFETY: getuid has no arguments and cannot fail.
-    unsafe { getuid() as u32 }
+    unsafe { getuid() }
 }
 extern "C" {
     fn getuid() -> u32;

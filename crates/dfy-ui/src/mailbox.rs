@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use crate::frame::Frame;
+use crate::stats::ConnectionStats;
 
 /// 从任意线程发给 UI 事件循环的命令（`EventLoopProxy<UiCommand>` 的负载）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +28,7 @@ pub(crate) enum UiCommand {
 #[derive(Debug, Default)]
 pub(crate) struct FrameMailbox {
     latest: Mutex<Option<Frame>>,
+    stats: Mutex<Option<ConnectionStats>>,
     window_ready: AtomicBool,
 }
 
@@ -58,6 +60,21 @@ impl FrameMailbox {
     /// 标记窗口已创建（只在 `resumed` 里调用一次）。
     pub(crate) fn set_window_ready(&self) {
         self.window_ready.store(true, Ordering::Release);
+    }
+
+    /// 更新连接质量统计快照（非阻塞覆盖）。
+    pub(crate) fn store_stats(&self, stats: ConnectionStats) {
+        let mut guard = self.stats.lock().unwrap_or_else(|err| err.into_inner());
+        *guard = Some(stats);
+    }
+
+    /// 读取最近一次连接质量统计快照。
+    #[must_use]
+    pub(crate) fn latest_stats(&self) -> Option<ConnectionStats> {
+        self.stats
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
     }
 }
 

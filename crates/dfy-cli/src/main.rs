@@ -362,6 +362,9 @@ enum Command {
         /// 发送本地文件/目录到 Agent（可多次；需要 Agent 开启 --recv-dir）
         #[arg(long, value_name = "PATH")]
         send_file: Vec<PathBuf>,
+        /// 诊断用：候选路径主动探测包大小（64..=1200 字节，默认 1200）
+        #[arg(long, hide = true, default_value_t = 1200)]
+        probe_bytes: usize,
     },
 }
 
@@ -532,6 +535,7 @@ async fn main() -> Result<()> {
             quality_bitrate,
             reset_quality,
             send_file,
+            probe_bytes,
             audio_in,
             volume,
             mute,
@@ -584,6 +588,7 @@ async fn main() -> Result<()> {
                 quality_bitrate,
                 reset_quality,
                 send_files: send_file,
+                probe_bytes: probe_bytes.clamp(64, 1200),
             })
             .await
             .map(|_| ())

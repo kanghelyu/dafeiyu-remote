@@ -38,7 +38,7 @@
 | JPEG跨平台基础串流 | 009 | 软件JPEG/MJPEG后端 | 实现代码/测试定义E07 | Linux真实性能、帧率/CPU、跨机可用性 |
 | 自适应码率/分辨率/帧率 | 009 | 接收端500ms质量反馈、Quinn RTT/丢包、确定性ABR、共享 adaptation state、事务重建编码器；用户fps/码率/分辨率是上限，宽高为保持宿主比例的最大包围盒，fps支持1–120；全零请求恢复启动上限；首帧前发送已确认的初始`VideoConfig`；VBR实测吞吐只限制推荐码率，不再单独触发降级/恢复；Android外部编码器运行时控制及跨主机代际隔离已接线 | Windows真实WGC/H.264/QUIC 55秒受控排队验收：473重组/473解码/0解析失败、84反馈窗口，2944×1856/120fps逐级降至956×602/40fps，再恢复至1488×938/63fps；7次设置/7次重建/0错误；loopback恢复用户上限及关键帧回归通过；CLI已接编码器重建工厂。Android UI经认证控制请求320×200/30fps/2000kbps，宿主确认316×198/30fps/500kbps，Reset确认2940×1852/120fps/500kbps；两端各2次成功/0错误，见STATUS；Android Rust/Kotlin构建与竞态回归通过 | 恢复到120fps上限的长时复测、真实弱网推荐质量、Android设备端反复重建实测、H.264/MJPEG各路径与长稳 |
 | 区域更新与高效采集 | 009 | DXGI相关逻辑；Linux X11当前全帧GetImage | 局部实现E03 | Linux增量/共享内存等效率路径、端到端区域更新、性能量化 |
-| 质量档位与8项连接统计 | 009/017 | 窗口渲染统计/标题；View路径采样已读取QUIC RTT、丢包ppm、接收速率、stall并驱动切换；迁移后候选路径按`RequestProbe`发轻量QUIC探测并回填RTT/丢包 | 局部实现E08；弱网自动切换与主动探测实测见STATUS及`notes/active-path-probe-20261127.md`，但指标尚未全部在GUI可见 | 四档策略；RTT/丢包/码率/FPS/分辨率/编解码延迟/路径/Relay全可见；探测包大小/带宽口径标定 |
+| 质量档位与8项连接统计 | 009/017 | 窗口渲染统计/标题；`dfy-ui`新增`ConnectionStats`与`title_with_connection`展示分辨率/FPS/码率/RTT/丢包/解码与渲染耗时/路径/Relay并由`dfy-cli`每500ms推送；View路径采样驱动切换；候选路径按`RequestProbe`发轻量QUIC探测 | `dfy-ui` 62+3单测通过；弱网自动切换与64B/1200B MTU丢包探测对照实测见STATUS及`notes/nonblocking-migration-probe-20261127.md` | 四档策略与真实Windows交互桌面标题栏目视复核 |
 
 ## 网络、中继与安全
 
@@ -66,15 +66,15 @@
 | 能力 | 需求模块 | 阅读到的实现状态 | 当前证据范围 | 尚缺的验收 |
 | --- | --- | --- | --- | --- |
 | 桌面Viewer、全屏、缩放、输入 | 017 | winit/softbuffer窗口、帧邮箱、快捷键/滚轮 | 实现代码/纯逻辑测试E08 | 各OS真实窗口、DPI/焦点、多屏与性能 |
-| 商业级主界面和会话工具 | 017 | Viewer不是完整设备管理主界面；新增`dfy-manager`本地面板（winit+softbuffer+ab_glyph）列出中继档案健康状态与虚拟显示，支持选择/测试/设为当前、C/D预设虚拟屏创建/销毁、F5刷新、字体候选回退与只读Diagnostics一致性页 | Windows真实窗口截图可见三页签、两行档案及健康值，Diagnostics页显示两行OK；7单测通过，见STATUS与`notes/manager-ui-20261127.md` | 设备/在线/最近/收藏/搜索/历史、设置、显示/键映射/剪贴板/文件/音频/权限工具；击键路径未验收、Windows IDD未装机故GUI创建屏未实测 |
+| 商业级主界面和会话工具 | 017 | Viewer不是完整设备管理主界面；`dfy-manager`已接入`assets/icon-512.png`窗口图标、`ControlFlow::Wait`、空配置首次启动、Relay策略轮换(`S`)与脱敏导出(`E`)、Virtual Displays、Diagnostics及Devices书签页签(`F`收藏/`Enter`拉起Viewer) | `dfy-manager` 9单测在Linux guest全通过（含图标解码、策略轮换、脱敏导出、Devices排序）；Windows历史起窗截图见`notes/manager-ui-20261127.md` | 完整设备发现/在线状态/设置/键映射/剪贴板/文件/音频/权限UI、真实击键与Windows交互桌面复核 |
 | 1分钟Relay配置体验 | 013/017 | CLI参数，非普通用户完整流程 | 未测 | 新用户计时、错误诊断、导入导出、当前Relay明确显示 |
 | 文件传输与目录/断点/限流 | 018/020 | sender/receiver/path/目录计划、ACK/偏移/大小防护 | 集成测试定义E14；历史本机3MiB哈希报告E01；Windows→Linux同机QEMU真实51B文件offer/块/确认/完成及SHA-256一致；Linux→Windows同机QEMU真实50B文件offer/块/确认/完成及SHA-256一致，见STATUS | 两台独立设备、双向大文件/目录/断点/限流、迁移中恢复、UI授权与覆盖确认 |
 | 音频 | 009/018/020 | 未见完整audio模块链路 | 未实现/未测 | 原生采集/播放/设备/权限、单/双向、AV同步 |
 | 其余20项扩展评估 | 018 | 原文完整保留，未按需求全部实现 | 未完整实现 | 对每项记录必要性、成本、隐私许可与阶段；不阻塞核心 |
 | 稳定17模块架构 | 019 | 14个Rust crate承载若干模块；部分边界未落地 | 源码组织，不是全部17能力完成 | Discovery/Auth/Audio/Android/Server Mgmt等边界与稳定API |
 | 规定平台×路径×场景测试 | 021 | 单元/loopback/少量历史同机；覆盖率未完整给出 | 测试定义/历史证据 | 9组指定方向×P2P/Relay×16场景，记录真实环境与覆盖率，不把无环境记通过 |
-| 开源工程与CI/CD | 022/023 | 许可证、协议/设计、CI/release workflow存在 | 工程资产E15；起始CI有失败 | 本轮CI绿灯、依赖许可/SBOM、可复现构建、安全策略/双语文档准确性 |
-| 各平台可安装Release | 022/024 | 有发布流程不等于全部可安装产物 | Linux amd64 DEB已真实构建、安装并用已安装命令通过同机虚拟屏链路；新增`verify-deb.sh`与prerm/postrm，真实验收`dpkg -i`→帮助/许可→`dpkg -r`全链路（见STATUS）；Windows Release ZIP及用户级Inno Setup EXE已真实构建、静默安装/命令/卸载验收；APK/AAB构建记录另见Android行 | 代码签名、升级覆盖、发布验证、无密钥/专有内容；macOS PKG/DMG、RPM/ARM64、systemd服务启停及各平台完整功能验收仍未完成 |
+| 开源工程与CI/CD | 022/023 | 许可证、协议/设计、CI/release workflow与CycloneDX SBOM/许可审计(`packaging/generate_sbom.py`)已接线 | 本地`fmt`/`clippy`全绿、`generate_sbom.py --check`通过（18 workspace + 354依赖）、`smoke.py`通过、Linux 9包单测通过 | 远端GitHub CI/Release实跑绿灯（待push触发）、可复现构建、安全策略/双语文档全量复核 |
+| 各平台可安装Release | 022/024 | 全端打包脚本存在；Windows Inno已支持`dfy-manager.exe`与用户级ISCC；Linux RPM补齐`%install`段 | Linux x86_64 DEB/RPM真实构建、校验及`systemd` `dfy-relay.service`启停/健康检查全通过；Windows 0.1.0/0.1.1安装包真实构建（含`dfy-manager.exe`） | 代码签名/公证、Windows 0.1.0→0.1.1交互桌面覆盖安装回归、macOS PKG/DMG真机、Linux aarch64、Android签名发布包与真机 |
 
 ## 证据入口
 

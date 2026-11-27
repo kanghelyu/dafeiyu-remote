@@ -34,6 +34,8 @@ if [ -z "$ISCC_BIN" ]; then
   elif command -v ISCC.exe >/dev/null 2>&1; then ISCC_BIN="$(command -v ISCC.exe)"
   elif [ -x "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" ]; then ISCC_BIN="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
   elif [ -x "/c/Program Files/Inno Setup 6/ISCC.exe" ]; then ISCC_BIN="/c/Program Files/Inno Setup 6/ISCC.exe"
+  elif [ -n "${LOCALAPPDATA:-}" ] && [ -x "$(cygpath -u "$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe")" ]; then
+    ISCC_BIN="$(cygpath -u "$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe")"
   else die "missing required tool: Inno Setup 6 ISCC.exe (set ISCC to its full path)"; fi
 fi
 [ -f "$ISCC_BIN" ] || die "Inno Setup compiler not found: $ISCC_BIN"
@@ -44,6 +46,12 @@ python3 "$SCRIPT_DIR/../native_binary.py" x86_64-pc-windows-msvc \
 STAGE="$(mktemp -d)"
 trap 'rm -rf -- "$STAGE"' EXIT
 install -m 0755 "$BINARY_DIR/dfy.exe" "$BINARY_DIR/dfy-relay.exe" "$STAGE/"
+ISCC_EXTRA_ARGS=()
+if [ -f "$BINARY_DIR/dfy-manager.exe" ]; then
+  python3 "$SCRIPT_DIR/../native_binary.py" x86_64-pc-windows-msvc "$BINARY_DIR/dfy-manager.exe"
+  install -m 0755 "$BINARY_DIR/dfy-manager.exe" "$STAGE/"
+  ISCC_EXTRA_ARGS+=("/DHasManager=1")
+fi
 install -m 0644 "$ROOT/packaging/windows/dfy.ico" "$STAGE/dfy.ico"
 stage_docs "$ROOT" "$STAGE/docs"
 mkdir -p "$OUTPUT_DIR"
@@ -52,6 +60,7 @@ OUTPUT_WIN="$(cygpath -aw "$OUTPUT_DIR")"
 # Inno's /D switches must not be rewritten as Git Bash POSIX paths.
 MSYS2_ARG_CONV_EXCL='*' "$ISCC_BIN" \
   "/DSourceDir=$SOURCE_WIN" "/DOutputDir=$OUTPUT_WIN" "/DAppVersion=$VERSION" \
+  "${ISCC_EXTRA_ARGS[@]}" \
   "$(cygpath -aw "$SCRIPT_DIR/dfy.iss")"
 INSTALLER="$OUTPUT_DIR/dafeiyu-${VERSION}-windows-x86_64-setup.exe"
 [ -s "$INSTALLER" ] || die "Inno Setup returned success without producing $INSTALLER"
