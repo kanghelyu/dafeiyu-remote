@@ -450,6 +450,10 @@ impl<'a> ViewerApp<'a> {
 
 impl ApplicationHandler<UiCommand> for ViewerApp<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.sink_closed() || self.exit_requested {
+            event_loop.exit();
+            return;
+        }
         if self.window.is_some() {
             // 重复 resumed（挂起/恢复）：窗口还在，重绘即可。
             self.request_redraw();
@@ -488,7 +492,7 @@ impl ApplicationHandler<UiCommand> for ViewerApp<'_> {
                 event_loop.exit();
                 return;
             }
-            WindowEvent::Resized(_) => {
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 // 惰性 resize：把记录的尺寸标脏，下一次 render 里重新 resize surface。
                 // 若在这里直接记成新尺寸，render 会跳过 surface.resize，
                 // softbuffer 仍按旧尺寸取缓冲（或 surface 未设置尺寸时 panic）。
@@ -656,6 +660,39 @@ pub fn spawn_viewer(config: ViewerConfig) -> anyhow::Result<crate::ViewerHandle>
         event_rx,
         present: crate::PresenterHandle { mailbox, proxy },
     })
+}
+
+/// 必须在主线程运行的 viewer 事件循环句柄（macOS AppKit 要求在主线程创建与驱动窗口）。
+pub struct MainThreadViewer {
+    event_loop: EventLoop<UiCommand>,
+    app: ViewerApp<'static>,
+}
+
+impl MainThreadViewer {
+    /// 在当前线程（macOS 必须为主线程）阻塞运行窗口事件循环直到关闭。
+    pub fn run(mut self) -> anyhow::Result<()> {
+        let run_result = self.event_loop.run_app(&mut self.app);
+        if let Some(message) = self.app.init_error() {
+            anyhow::bail!("{message}");
+        }
+        run_result.map_err(anyhow::Error::from)
+    }
+}
+
+/// 创建主线程 viewer：返回可跨线程推帧/收事件的 [`crate::ViewerHandle`] 与必须在主线程执行的 [`MainThreadViewer`]。
+pub fn create_main_thread_viewer(
+    config: ViewerConfig,
+) -> anyhow::Result<(crate::ViewerHandle, MainThreadViewer)> {
+    let event_loop = build_event_loop()?;
+    let proxy = event_loop.create_proxy();
+    let mailbox = Arc::new(FrameMailbox::new());
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<ViewerEvent>();
+    let app = ViewerApp::new(config, EventSink::Channel(event_tx), mailbox.clone());
+    let handle = crate::ViewerHandle {
+        event_rx,
+        present: crate::PresenterHandle { mailbox, proxy },
+    };
+    Ok((handle, MainThreadViewer { event_loop, app }))
 }
 
 #[cfg(test)]

@@ -7,8 +7,8 @@ source "$SCRIPT_DIR/../common.sh"
 
 usage() {
   cat <<'EOF'
-Build macOS CLI installer packages (not a GUI application).
-  --binary-dir DIR   Directory containing native dfy and dfy-relay (required)
+Build macOS installer packages (CLI /usr/local/bin + optional Dafeiyu Remote.app).
+  --binary-dir DIR   Directory containing native dfy, dfy-relay, and optional dfy-manager (required)
   --version VERSION  Semantic version, optional v prefix (required)
   --arch ARCH        x86_64 or arm64 (required)
   --format FORMAT    pkg, dmg, or all (default pkg)
@@ -39,8 +39,13 @@ need python3
 [ "$ARCH" = aarch64 ] && ARCH=arm64
 TARGET_ARCH="$ARCH"
 [ "$TARGET_ARCH" = arm64 ] && TARGET_ARCH=aarch64
-python3 "$SCRIPT_DIR/../native_binary.py" "$TARGET_ARCH-apple-darwin" \
-  "$BINARY_DIR/dfy" "$BINARY_DIR/dfy-relay"
+HAS_APP=0
+CHECK_BINS=("$BINARY_DIR/dfy" "$BINARY_DIR/dfy-relay")
+if [ -f "$BINARY_DIR/dfy-manager" ]; then
+  HAS_APP=1
+  CHECK_BINS+=("$BINARY_DIR/dfy-manager")
+fi
+python3 "$SCRIPT_DIR/../native_binary.py" "$TARGET_ARCH-apple-darwin" "${CHECK_BINS[@]}"
 if [ "$FORMAT" = dmg ] || [ "$FORMAT" = all ]; then need hdiutil; fi
 ROOT="$(repo_root)"
 mkdir -p "$OUTPUT_DIR"
@@ -79,6 +84,8 @@ if [ "${MAC_REQUIRE_NOTARIZATION:-0}" = 1 ] && [ "$NOTARY_MODE" = none ]; then
 fi
 [ -z "${MAC_DMG_SIGNING_IDENTITY:-}" ] || [ -n "$IDENTITY" ] \
   || die "MAC_DMG_SIGNING_IDENTITY requires MAC_SIGNING_IDENTITY"
+[ -z "${MAC_APP_SIGNING_IDENTITY:-}" ] || [ -n "$IDENTITY" ] \
+  || die "MAC_APP_SIGNING_IDENTITY requires MAC_SIGNING_IDENTITY"
 for hook in MAC_PRE_NOTARIZE_HOOK MAC_POST_NOTARIZE_HOOK; do
   if [ -n "${!hook:-}" ]; then
     [ "$NOTARY_MODE" != none ] || die "$hook requires notarization credentials"
@@ -86,6 +93,59 @@ for hook in MAC_PRE_NOTARIZE_HOOK MAC_POST_NOTARIZE_HOOK; do
   fi
 done
 if [ "$NOTARY_MODE" != none ]; then need xcrun; xcrun --find notarytool >/dev/null; fi
+
+APP_BUNDLE=""
+APP_COMPONENT=""
+if [ "$HAS_APP" = 1 ]; then
+  APP_ROOT="$WORK/app-root"
+  APP_BUNDLE="$APP_ROOT/Dafeiyu Remote.app"
+  install -d -m 0755 "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources/docs"
+  install -m 0755 "$BINARY_DIR/dfy-manager" "$BINARY_DIR/dfy" "$BINARY_DIR/dfy-relay" \
+    "$APP_BUNDLE/Contents/MacOS/"
+  install -m 0644 "$ROOT/packaging/macos/DFY.icns" "$APP_BUNDLE/Contents/Resources/DFY.icns"
+  stage_docs "$ROOT" "$APP_BUNDLE/Contents/Resources/docs"
+  cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>zh_CN</string>
+  <key>CFBundleDisplayName</key>
+  <string>大肥鱼远程</string>
+  <key>CFBundleExecutable</key>
+  <string>dfy-manager</string>
+  <key>CFBundleIconFile</key>
+  <string>DFY.icns</string>
+  <key>CFBundleIdentifier</key>
+  <string>remote.dafeiyu.app</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Dafeiyu Remote</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${VERSION}</string>
+  <key>CFBundleVersion</key>
+  <string>${VERSION}</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.3</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>大肥鱼远程需要屏幕录制权限，以便作为被控端采集并传输当前显示器画面。</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>大肥鱼远程需要麦克风权限，以便在启用音频传输时采集并发送本机声音。</string>
+</dict>
+</plist>
+EOF
+  chmod 0644 "$APP_BUNDLE/Contents/Info.plist"
+  if [ -n "${MAC_APP_SIGNING_IDENTITY:-}" ]; then
+    need codesign
+    codesign --force --deep --options runtime --sign "$MAC_APP_SIGNING_IDENTITY" "$APP_BUNDLE"
+  fi
+fi
 
 LABEL=unsigned
 [ -z "$IDENTITY" ] || LABEL=signed
@@ -95,6 +155,13 @@ pkg_args=(--root "$STAGE" --identifier remote.dafeiyu.cli --version "$VERSION" -
 [ -z "$IDENTITY" ] || pkg_args+=(--sign "$IDENTITY")
 pkgbuild "${pkg_args[@]}" "$COMPONENT"
 product_args=(--package "$COMPONENT")
+if [ "$HAS_APP" = 1 ]; then
+  APP_COMPONENT="$WORK/app-component.pkg"
+  app_pkg_args=(--root "$APP_ROOT" --component-plist "$ROOT/packaging/macos/component.plist" --identifier remote.dafeiyu.app --version "$VERSION" --install-location /Applications)
+  [ -z "$IDENTITY" ] || app_pkg_args+=(--sign "$IDENTITY")
+  pkgbuild "${app_pkg_args[@]}" "$APP_COMPONENT"
+  product_args+=(--package "$APP_COMPONENT")
+fi
 [ -z "$IDENTITY" ] || product_args+=(--sign "$IDENTITY")
 productbuild "${product_args[@]}" "$PKG"
 [ -s "$PKG" ] || die "productbuild did not create $PKG"
@@ -122,6 +189,10 @@ if [ "$FORMAT" = dmg ] || [ "$FORMAT" = all ]; then
   DMG_SOURCE="$WORK/dmg-source"
   mkdir -p "$DMG_SOURCE"
   cp -- "$PKG" "$DMG_SOURCE/"
+  if [ "$HAS_APP" = 1 ]; then
+    cp -R -- "$APP_BUNDLE" "$DMG_SOURCE/"
+    ln -s /Applications "$DMG_SOURCE/Applications"
+  fi
   DMG="$OUTPUT_DIR/dafeiyu-${VERSION}-macos-${ARCH}-${LABEL}.dmg"
   rm -f -- "$DMG"
   hdiutil create -volname "Dafeiyu Remote $VERSION" -srcfolder "$DMG_SOURCE" -format UDZO -ov "$DMG" >/dev/null

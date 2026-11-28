@@ -12,7 +12,8 @@
 //! # 平台支持
 //!
 //! * Windows：完整实现（Media Foundation）。
-//! * 其他平台：stub，构造器返回明确错误，保证工作区在非 Windows 上照常
+//! * macOS：完整实现（VideoToolbox 硬件优先 H.264 编解码）。
+//! * 其他平台：stub，构造器返回明确错误，保证工作区在非 Windows/macOS 上照常
 //!   `cargo check`。
 //!
 //! # 输入像素格式
@@ -42,8 +43,10 @@ mod nal;
 
 #[cfg(windows)]
 mod mf;
+#[cfg(target_os = "macos")]
+mod vt;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 mod stub;
 
 /// 纯 Rust JPEG/MJPEG 兜底编解码（所有平台可用）。
@@ -365,8 +368,10 @@ pub fn available_encoders() -> Vec<EncoderInfo> {
 /// 后端实现模块导出（平台相关）。
 #[cfg(windows)]
 use mf as backend;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use stub as backend;
+#[cfg(target_os = "macos")]
+use vt as backend;
 
 /// crate 版本，便于握手/诊断日志。
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

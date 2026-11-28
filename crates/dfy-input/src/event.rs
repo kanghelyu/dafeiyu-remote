@@ -200,7 +200,7 @@ impl PressedState {
 #[derive(Debug, thiserror::Error)]
 pub enum InputError {
     /// 当前平台没有可用的注入后端。
-    #[error("当前平台不支持输入注入（已实现 Windows 与 Linux X11 后端）")]
+    #[error("当前平台不支持输入注入（已实现 Windows、Linux X11 与 macOS CGEvent 后端）")]
     Unsupported,
     /// 当前桌面会话不支持安全、已授权的输入注入。
     #[error("当前桌面会话不支持输入注入：{0}")]

@@ -37,7 +37,9 @@ mod r#win;
 
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 mod stub;
 #[cfg(any(target_os = "linux", test))]
 mod x11_state;
@@ -113,7 +115,11 @@ pub fn create_backend() -> Result<Box<dyn ClipboardBackend>> {
     {
         linux::create_backend()
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::create_backend()
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         stub::create_backend()
     }
@@ -156,9 +162,16 @@ impl LoopGuard {
                 self.last_written_seq = seq;
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         {
-            // 非 Windows 无序列号可查；保留旧值，调用方可用 with_last_written_seq 显式设置。
+            let seq = macos::current_change_count();
+            if seq > self.last_written_seq {
+                self.last_written_seq = seq;
+            }
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        {
+            // 非 Windows/macOS 无全局序列号可查；保留旧值，调用方可用 set_last_written_seq 显式设置。
         }
     }
 

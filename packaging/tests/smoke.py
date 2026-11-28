@@ -194,6 +194,7 @@ def check_static_metadata() -> None:
         plist_data = plistlib.load(stream)
         entry = plist_data[0] if isinstance(plist_data, list) else plist_data
         assert entry["BundleIsRelocatable"] is False
+        assert entry["RootRelativeBundlePath"] == "Dafeiyu Remote.app"
     mac = (PACKAGING / "macos/build-installer.sh").read_text(encoding="utf-8")
     assert "unsigned" in mac and "notarytool" in mac and "stapler" in mac
     android = (PACKAGING / "android/build.sh").read_text(encoding="utf-8")
@@ -347,14 +348,41 @@ def check_mocked_installers(directory: Path) -> None:
     tools.mkdir()
     log = directory / "macos-tools.log"
     for name in ("pkgbuild", "productbuild"):
-        executable(tools / name, '#!/usr/bin/env bash\nset -eu\nprintf "mock package\\n" > "${@: -1}"\n')
+        if name == "pkgbuild":
+            executable(tools / name, '''#!/usr/bin/env bash
+set -eu
+root=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --root ]; then root="$2"; shift 2
+  elif [ "$#" -eq 1 ]; then out="$1"; shift
+  else shift; fi
+done
+if [ -n "${MOCK_MAC_INSPECT_DIR:-}" ] && [ -n "$root" ] && [ -d "$root/Dafeiyu Remote.app" ]; then
+  mkdir -p "$MOCK_MAC_INSPECT_DIR"
+  rm -rf "$MOCK_MAC_INSPECT_DIR/Dafeiyu Remote.app"
+  cp -R "$root/Dafeiyu Remote.app" "$MOCK_MAC_INSPECT_DIR/"
+fi
+printf "mock package\\n" > "$out"
+''')
+        else:
+            executable(tools / name, '#!/usr/bin/env bash\nset -eu\nprintf "mock package\\n" > "${@: -1}"\n')
     executable(tools / "hdiutil", '''#!/usr/bin/env bash
 set -eu
 out=""
+src=""
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = -ov ]; then out="$2"; shift 2; else shift; fi
+  if [ "$1" = -ov ]; then out="$2"; shift 2
+  elif [ "$1" = -srcfolder ]; then src="$2"; shift 2
+  else shift; fi
 done
 [ -n "$out" ]
+if [ -n "${MOCK_MAC_INSPECT_DIR:-}" ] && [ -n "$src" ]; then
+  mkdir -p "$MOCK_MAC_INSPECT_DIR"
+  ls -1a "$src" > "$MOCK_MAC_INSPECT_DIR/dmg-entries.txt"
+  if [ -L "$src/Applications" ]; then
+    readlink "$src/Applications" > "$MOCK_MAC_INSPECT_DIR/dmg-apps-link.txt"
+  fi
+fi
 printf 'mock dmg\n' > "$out"
 ''')
     executable(tools / "shasum", '#!/usr/bin/env bash\nprintf "%064d  %s\\n" 0 "${@: -1}"\n')
@@ -373,7 +401,7 @@ if [ "$1" = --find ]; then printf '/mock/notarytool\n'; fi
             env.pop(key)
     env.update({"PATH": str(tools) + os.pathsep + env["PATH"], "MOCK_TOOL_LOG": str(log)})
     # GitHub sets secret-backed env keys even when their values are empty.
-    for key in ("MAC_SIGNING_IDENTITY", "MAC_DMG_SIGNING_IDENTITY", "MAC_NOTARY_KEY_BASE64", "MAC_NOTARY_KEY_ID", "MAC_NOTARY_ISSUER_ID", "APPLE_ID", "APPLE_PASSWORD", "APPLE_TEAM_ID", "MAC_REQUIRE_NOTARIZATION"):
+    for key in ("MAC_SIGNING_IDENTITY", "MAC_DMG_SIGNING_IDENTITY", "MAC_APP_SIGNING_IDENTITY", "MAC_NOTARY_KEY_BASE64", "MAC_NOTARY_KEY_ID", "MAC_NOTARY_ISSUER_ID", "APPLE_ID", "APPLE_PASSWORD", "APPLE_TEAM_ID", "MAC_REQUIRE_NOTARIZATION"):
         env[key] = ""
     run(*args, env=env)
     assert (output / "dafeiyu-1.2.3-macos-arm64-unsigned.pkg").is_file()
@@ -381,6 +409,41 @@ if [ "$1" = --find ]; then printf '/mock/notarytool\n'; fi
     assert "Signing: unsigned" in (output / "BUILD-INFO-macos-arm64.txt").read_text()
     assert "Target: aarch64-apple-darwin" in (output / "BUILD-INFO-macos-arm64.txt").read_text()
     assert not log.exists(), "unsigned build invoked signing/notarization tools"
+
+    # Exercise macOS GUI .app bundle + PKG/DMG layout when dfy-manager is present.
+    app_bins = directory / "macos-app-binaries"
+    app_bins.mkdir()
+    for item in binaries.iterdir():
+        shutil.copy2(item, app_bins / item.name)
+    write_mach(app_bins / "dfy-manager")
+    app_inspect = directory / "macos-app-inspect"
+    app_output = directory / "macos-app-mock-output"
+    app_env = env.copy()
+    app_env["MOCK_MAC_INSPECT_DIR"] = str(app_inspect)
+    run("bash", PACKAGING / "macos/build-installer.sh", "--binary-dir", app_bins, "--version", "1.2.3", "--arch", "arm64", "--format", "all", "--output-dir", app_output, env=app_env)
+    assert (app_output / "dafeiyu-1.2.3-macos-arm64-unsigned.pkg").is_file()
+    assert (app_output / "dafeiyu-1.2.3-macos-arm64-unsigned.dmg").is_file()
+    staged_app = app_inspect / "Dafeiyu Remote.app"
+    for rel in ("Contents/MacOS/dfy-manager", "Contents/MacOS/dfy", "Contents/MacOS/dfy-relay", "Contents/Resources/DFY.icns", "Contents/Resources/docs/LICENSE"):
+        assert (staged_app / rel).is_file(), f"missing {rel} in staged app bundle"
+    with (staged_app / "Contents/Info.plist").open("rb") as stream:
+        info_plist = plistlib.load(stream)
+    assert info_plist["CFBundleExecutable"] == "dfy-manager"
+    assert info_plist["CFBundleIdentifier"] == "remote.dafeiyu.app"
+    assert info_plist["CFBundleIconFile"] == "DFY.icns"
+    assert info_plist["NSHighResolutionCapable"] is True
+    assert info_plist.get("NSScreenCaptureUsageDescription")
+    assert info_plist.get("NSMicrophoneUsageDescription")
+    dmg_entries = set((app_inspect / "dmg-entries.txt").read_text().splitlines())
+    assert {"Dafeiyu Remote.app", "Applications", "dafeiyu-1.2.3-macos-arm64-unsigned.pkg"} <= dmg_entries
+    assert (app_inspect / "dmg-apps-link.txt").read_text().strip() == "/Applications"
+    wrong_mgr = directory / "macos-wrong-manager"
+    wrong_mgr.mkdir()
+    for item in binaries.iterdir():
+        shutil.copy2(item, wrong_mgr / item.name)
+    write_mach(wrong_mgr / "dfy-manager", 0x01000007)
+    result = run("bash", PACKAGING / "macos/build-installer.sh", "--binary-dir", wrong_mgr, "--version", "1.2.3", "--arch", "arm64", "--output-dir", directory / "macos-wrong-mgr-out", env=env, ok=False)
+    assert "architecture mismatch" in result.stderr
     required = env.copy()
     required["MAC_REQUIRE_NOTARIZATION"] = "1"
     result = run(*args, "--output-dir", directory / "mac-required", env=required, ok=False)
@@ -440,7 +503,11 @@ def check_mocked_linux_packages(directory: Path) -> None:
     executable(tools / "dpkg-deb", '''#!/usr/bin/env bash
 set -eu
 [ "$1" = --root-owner-group ] && [ "$2" = --build ]
-tar --force-local -czf "$4" -C "$3" .
+if tar --force-local --version >/dev/null 2>&1; then
+  tar --force-local -czf "$4" -C "$3" .
+else
+  tar -czf "$4" -C "$3" .
+fi
 ''')
     executable(tools / "rpmbuild", '''#!/usr/bin/env bash
 set -eu

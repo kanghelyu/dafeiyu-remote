@@ -372,24 +372,142 @@ impl AudioSink for NullSink {
     }
 }
 
-/// 从任意 cpal 样本类型转成 i16 并追加到队列。
+/// 声道下混：把多声道交错 PCM 帧求平均压成单声道。
+fn downmix_interleaved_to_mono(interleaved: &[i16], channels: usize) -> Vec<i16> {
+    if channels <= 1 {
+        return interleaved.to_vec();
+    }
+    let ch_i64 = channels as i64;
+    interleaved
+        .chunks_exact(channels)
+        .map(|frame| {
+            let sum: i64 = frame.iter().map(|&s| i64::from(s)).sum();
+            (sum / ch_i64).clamp(-32768, 32767) as i16
+        })
+        .collect()
+}
+
+/// 声道上混：把单声道 PCM 复制到多声道交错输出。
+fn upmix_mono_to_interleaved(mono: &[i16], channels: usize) -> Vec<i16> {
+    if channels <= 1 {
+        return mono.to_vec();
+    }
+    let mut out = Vec::with_capacity(mono.len() * channels);
+    for &sample in mono {
+        for _ in 0..channels {
+            out.push(sample);
+        }
+    }
+    out
+}
+
+/// 连续分块单声道线性重采样器（供 48 kHz CoreAudio/WASAPI 设备与 16 kHz 线格式互通）。
+struct MonoResampler {
+    src_rate: u32,
+    dst_rate: u32,
+    step: f64,
+    phase: f64,
+    prev: Option<i16>,
+}
+
+impl MonoResampler {
+    fn new(src_rate: u32, dst_rate: u32) -> Self {
+        let step = if src_rate == 0 || dst_rate == 0 {
+            1.0
+        } else {
+            f64::from(src_rate) / f64::from(dst_rate)
+        };
+        Self {
+            src_rate,
+            dst_rate,
+            step,
+            phase: 0.0,
+            prev: None,
+        }
+    }
+
+    fn process(&mut self, input: &[i16]) -> Vec<i16> {
+        if input.is_empty() {
+            return Vec::new();
+        }
+        if self.src_rate == self.dst_rate || self.src_rate == 0 || self.dst_rate == 0 {
+            return input.to_vec();
+        }
+        let scratch;
+        let samples: &[i16] = if let Some(prev) = self.prev {
+            let mut buf = Vec::with_capacity(input.len() + 1);
+            buf.push(prev);
+            buf.extend_from_slice(input);
+            scratch = buf;
+            &scratch
+        } else {
+            input
+        };
+        if samples.len() < 2 {
+            self.prev = samples.last().copied();
+            return Vec::new();
+        }
+        let limit = samples.len() - 1;
+        let est = ((limit as f64 / self.step).ceil() as usize).saturating_add(2);
+        let mut out = Vec::with_capacity(est);
+        let mut k = 0usize;
+        let src_f = f64::from(self.src_rate);
+        let dst_f = f64::from(self.dst_rate);
+        loop {
+            let pos = self.phase + ((k as f64) * src_f) / dst_f;
+            if pos >= limit as f64 {
+                self.phase = (pos - limit as f64).max(0.0);
+                break;
+            }
+            let idx = pos.floor() as usize;
+            if idx >= limit {
+                self.phase = 0.0;
+                break;
+            }
+            let frac = pos - idx as f64;
+            let s0 = f64::from(samples[idx]);
+            let s1 = f64::from(samples[idx + 1]);
+            out.push((s0 + (s1 - s0) * frac).round().clamp(-32768.0, 32767.0) as i16);
+            k += 1;
+        }
+        self.prev = input.last().copied();
+        out
+    }
+}
+
 #[cfg(feature = "device-backend")]
-fn append_samples<T: cpal::Sample>(data: &[T], queue: &Mutex<VecDeque<i16>>)
+struct CaptureBuffer {
+    queue: VecDeque<i16>,
+    resampler: MonoResampler,
+    channels: usize,
+    max_queue: usize,
+}
+
+/// 从任意 cpal 样本类型转成 16kHz 单声道 i16 并追加到队列。
+#[cfg(feature = "device-backend")]
+fn append_samples<T: cpal::Sample>(data: &[T], state: &Mutex<CaptureBuffer>)
 where
     i16: cpal::FromSample<T>,
 {
-    if let Ok(mut guard) = queue.lock() {
-        for sample in data {
-            guard.push_back(cpal::Sample::to_sample::<i16>(*sample));
+    let raw: Vec<i16> = data
+        .iter()
+        .map(|&sample| cpal::Sample::to_sample::<i16>(sample))
+        .collect();
+    if let Ok(mut guard) = state.lock() {
+        let mono = downmix_interleaved_to_mono(&raw, guard.channels);
+        let resampled = guard.resampler.process(&mono);
+        guard.queue.extend(resampled);
+        while guard.queue.len() > guard.max_queue {
+            guard.queue.pop_front();
         }
     }
 }
 
-/// cpal 默认输入设备采集器。回调只做入队，不阻塞设备线程。
+/// cpal 默认输入设备采集器。回调只做下混/重采样并入队，不阻塞设备线程。
 #[cfg(feature = "device-backend")]
 pub struct DeviceSource {
     _stream: cpal::Stream,
-    queue: Arc<Mutex<VecDeque<i16>>>,
+    state: Arc<Mutex<CaptureBuffer>>,
     per_frame: usize,
     wait: Duration,
 }
@@ -406,18 +524,25 @@ impl DeviceSource {
         let device_config = device
             .default_input_config()
             .context("读取默认输入音频格式失败")?;
-        let queue = Arc::new(Mutex::new(VecDeque::<i16>::new()));
-        let callback_queue = Arc::clone(&queue);
+        let device_channels = usize::from(device_config.channels().max(1));
+        let device_rate = device_config.sample_rate().max(1);
+        let state = Arc::new(Mutex::new(CaptureBuffer {
+            queue: VecDeque::new(),
+            resampler: MonoResampler::new(device_rate, config.sample_rate),
+            channels: device_channels,
+            max_queue: config.samples_per_frame() * 25,
+        }));
+        let callback_state = Arc::clone(&state);
         let stream = match device_config.sample_format() {
             cpal::SampleFormat::I16 => device.build_input_stream(
                 device_config.config(),
-                move |data: &[i16], _| append_samples(data, &callback_queue),
+                move |data: &[i16], _| append_samples(data, &callback_state),
                 |err| tracing::warn!(error = %err, "音频采集回调失败"),
                 None,
             ),
             cpal::SampleFormat::F32 => device.build_input_stream(
                 device_config.config(),
-                move |data: &[f32], _| append_samples(data, &callback_queue),
+                move |data: &[f32], _| append_samples(data, &callback_state),
                 |err| tracing::warn!(error = %err, "音频采集回调失败"),
                 None,
             ),
@@ -427,7 +552,7 @@ impl DeviceSource {
         stream.play().context("启动音频输入流失败")?;
         Ok(Self {
             _stream: stream,
-            queue,
+            state,
             per_frame: config.samples_per_frame(),
             wait: Duration::from_millis(config.frame_ms as u64),
         })
@@ -441,11 +566,11 @@ impl AudioSource for DeviceSource {
         loop {
             {
                 let mut guard = self
-                    .queue
+                    .state
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                if guard.len() >= self.per_frame {
-                    let samples: Vec<i16> = guard.drain(..self.per_frame).collect();
+                if guard.queue.len() >= self.per_frame {
+                    let samples: Vec<i16> = guard.queue.drain(..self.per_frame).collect();
                     return Ok(Some(PcmFrame {
                         ts_us: dfy_transport_now_us(),
                         samples,
@@ -465,6 +590,9 @@ impl AudioSource for DeviceSource {
 pub struct DeviceSink {
     _stream: cpal::Stream,
     queue: Arc<Mutex<VecDeque<i16>>>,
+    resampler: MonoResampler,
+    device_channels: usize,
+    max_queue: usize,
 }
 
 #[cfg(feature = "device-backend")]
@@ -478,6 +606,8 @@ impl DeviceSink {
         let device_config = device
             .default_output_config()
             .context("读取默认输出音频格式失败")?;
+        let device_channels = usize::from(device_config.channels().max(1));
+        let device_rate = device_config.sample_rate().max(1);
         let queue = Arc::new(Mutex::new(VecDeque::<i16>::new()));
         let callback_queue = Arc::clone(&queue);
         let stream = match device_config.sample_format() {
@@ -500,6 +630,9 @@ impl DeviceSink {
         Ok(Self {
             _stream: stream,
             queue,
+            resampler: MonoResampler::new(config.sample_rate, device_rate),
+            device_channels,
+            max_queue: (device_rate as usize / 2).saturating_mul(device_channels),
         })
     }
 }
@@ -520,11 +653,16 @@ fn drain_samples<T: cpal::Sample + cpal::FromSample<i16>>(
 #[cfg(feature = "device-backend")]
 impl AudioSink for DeviceSink {
     fn play(&mut self, frame: &PcmFrame) -> Result<()> {
+        let resampled = self.resampler.process(&frame.samples);
+        let interleaved = upmix_mono_to_interleaved(&resampled, self.device_channels);
         let mut guard = self
             .queue
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.extend(frame.samples.iter().copied());
+        guard.extend(interleaved);
+        while guard.len() > self.max_queue {
+            guard.pop_front();
+        }
         Ok(())
     }
 }
@@ -709,5 +847,49 @@ mod tests {
         let mut sink = NullSink;
         assert!(source.next_frame().unwrap().is_none());
         sink.play(&frame(1)).unwrap();
+    }
+
+    #[test]
+    fn downmix_stereo_and_resample_48k_to_16k() {
+        // Two consecutive 20ms stereo chunks at 48 kHz (960 frames each) -> ~320 + 320 mono 16kHz.
+        let mut resampler = MonoResampler::new(48_000, 16_000);
+        let mut total = Vec::new();
+        for _ in 0..2 {
+            let mut stereo = Vec::with_capacity(960 * 2);
+            for i in 0..960 {
+                // Constant DC average should stay close to 1000 across channel mix & resampling.
+                stereo.push(600 + ((i % 2) as i16 * 100));
+                stereo.push(1400 - ((i % 2) as i16 * 100));
+            }
+            let mono = downmix_interleaved_to_mono(&stereo, 2);
+            assert_eq!(mono.len(), 960);
+            total.extend(resampler.process(&mono));
+        }
+        assert_eq!(total.len(), 640);
+        assert!(total.iter().all(|&s| (s - 1000).abs() <= 2));
+    }
+
+    #[test]
+    fn resample_16k_to_48k_and_upmix_stereo() {
+        let mut resampler = MonoResampler::new(16_000, 48_000);
+        let mut mono_out = Vec::new();
+        for chunk_idx in 0..2 {
+            let chunk: Vec<i16> = (0..320)
+                .map(|i| (((chunk_idx * 320 + i) as f64 * 0.05).sin() * 10_000.0) as i16)
+                .collect();
+            mono_out.extend(resampler.process(&chunk));
+        }
+        // First chunk has 319 intervals -> 957 samples, second has 320 intervals -> 960 samples.
+        assert_eq!(mono_out.len(), 957 + 960);
+        let stereo = upmix_mono_to_interleaved(&mono_out, 2);
+        assert_eq!(stereo.len(), mono_out.len() * 2);
+        assert!(stereo.chunks_exact(2).all(|lr| lr[0] == lr[1]));
+    }
+
+    #[test]
+    fn resampler_passthrough_when_rates_match() {
+        let mut resampler = MonoResampler::new(16_000, 16_000);
+        let input = vec![10, -20, 300, -400];
+        assert_eq!(resampler.process(&input), input);
     }
 }

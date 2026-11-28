@@ -60,7 +60,7 @@ OUTPUT_WIN="$(cygpath -aw "$OUTPUT_DIR")"
 # Inno's /D switches must not be rewritten as Git Bash POSIX paths.
 MSYS2_ARG_CONV_EXCL='*' "$ISCC_BIN" \
   "/DSourceDir=$SOURCE_WIN" "/DOutputDir=$OUTPUT_WIN" "/DAppVersion=$VERSION" \
-  "${ISCC_EXTRA_ARGS[@]}" \
+  ${ISCC_EXTRA_ARGS[@]+"${ISCC_EXTRA_ARGS[@]}"} \
   "$(cygpath -aw "$SCRIPT_DIR/dfy.iss")"
 INSTALLER="$OUTPUT_DIR/dafeiyu-${VERSION}-windows-x86_64-setup.exe"
 [ -s "$INSTALLER" ] || die "Inno Setup returned success without producing $INSTALLER"

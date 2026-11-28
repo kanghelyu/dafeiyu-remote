@@ -683,6 +683,7 @@ name = "dfy-capture"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cc",
  "png",
  "windows",
  "x11rb",
@@ -730,6 +731,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "cc",
  "dfy-proto",
  "dfy-transport",
  "png",

@@ -281,8 +281,9 @@ fn font_candidates() -> Vec<PathBuf> {
     }
     #[cfg(target_os = "macos")]
     {
-        paths.push(PathBuf::from("/System/Library/Fonts/PingFang.ttc"));
         paths.push(PathBuf::from("/System/Library/Fonts/Hiragino Sans GB.ttc"));
+        paths.push(PathBuf::from("/System/Library/Fonts/STHeiti Medium.ttc"));
+        paths.push(PathBuf::from("/System/Library/Fonts/PingFang.ttc"));
         paths.push(PathBuf::from("/System/Library/Fonts/Helvetica.ttc"));
         paths.push(PathBuf::from(
             "/System/Library/Fonts/Supplemental/Arial.ttf",
@@ -293,7 +294,7 @@ fn font_candidates() -> Vec<PathBuf> {
 
 fn load_font(path: &Path) -> Result<FontVec> {
     let data = std::fs::read(path).with_context(|| format!("读取字体 {} 失败", path.display()))?;
-    FontVec::try_from_vec(data).map_err(|err| anyhow::anyhow!("字体解析失败：{err}"))
+    FontVec::try_from_vec_and_index(data, 0).map_err(|err| anyhow::anyhow!("字体解析失败：{err}"))
 }
 
 /// 显式 `--font` 优先；否则按候选链找第一个可解析的字体。
@@ -569,10 +570,25 @@ struct ManagerApp {
     displays: Vec<String>,
     diagnostics: Vec<Diagnostic>,
     cursor: PhysicalPosition<f64>,
+    scale_factor: f64,
+    modifiers: winit::keyboard::ModifiersState,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     context: Option<softbuffer::Context<Arc<Window>>>,
     window: Option<Arc<Window>>,
     size: (u32, u32),
+}
+
+fn scale_u32(value: u32, scale_factor: f64) -> u32 {
+    ((value as f64) * scale_factor.max(1.0)).round().max(1.0) as u32
+}
+
+fn scale_f32(value: f32, scale_factor: f64) -> f32 {
+    value * (scale_factor.max(1.0) as f32)
+}
+
+fn logical_click(x: f64, y: f64, scale_factor: f64) -> (u32, u32) {
+    let scale = scale_factor.max(1.0);
+    ((x / scale).max(0.0) as u32, (y / scale).max(0.0) as u32)
 }
 
 impl ManagerApp {
@@ -619,6 +635,8 @@ impl ManagerApp {
             displays,
             diagnostics,
             cursor: PhysicalPosition::new(0.0, 0.0),
+            scale_factor: 1.0,
+            modifiers: winit::keyboard::ModifiersState::empty(),
             surface: None,
             context: None,
             window: None,
@@ -914,7 +932,7 @@ impl ManagerApp {
     }
 
     fn handle_click(&mut self, x: f64, y: f64) {
-        let (x, y) = (x as u32, y as u32);
+        let (x, y) = logical_click(x, y, self.scale_factor);
         if y < LIST_TOP {
             if y < HEADER_H {
                 self.tab = if x >= 760 {
@@ -941,6 +959,17 @@ impl ManagerApp {
             return;
         };
         let (width, height) = self.size;
+        let s = self.scale_factor.max(1.0);
+        let header_h = scale_u32(HEADER_H, s);
+        let row_h = scale_u32(ROW_H, s);
+        let list_top = scale_u32(LIST_TOP, s);
+        let font_size = scale_f32(FONT_SIZE, s);
+        let margin_x = scale_u32(12, s);
+        let margin_w = scale_u32(24, s);
+        let row_gap = scale_u32(2, s);
+        let text_x = scale_f32(22.0, s);
+        let row_text_pad = scale_f32(3.0, s);
+        let footer_h = scale_u32(36, s);
         let Ok(mut buffer) = surface.buffer_mut() else {
             return;
         };
@@ -948,7 +977,7 @@ impl ManagerApp {
             let mut canvas = Surface::new(&mut buffer, width, height);
             canvas.fill(BG);
 
-            canvas.fill_rect(0, 0, width, HEADER_H, HEADER);
+            canvas.fill_rect(0, 0, width, header_h, HEADER);
             let header_meta = format!(
                 "Dafeiyu Remote - Manager   [strategy: {} | active: {}]",
                 self.store.selection().strategy.as_str(),
@@ -957,13 +986,20 @@ impl ManagerApp {
                     .map(|p| p.id.as_str())
                     .unwrap_or("none")
             );
-            canvas.draw_text(&self.font, &header_meta, 20.0, 16.0, 19.0, TEXT);
+            canvas.draw_text(
+                &self.font,
+                &header_meta,
+                scale_f32(20.0, s),
+                scale_f32(16.0, s),
+                scale_f32(19.0, s),
+                TEXT,
+            );
             canvas.draw_text(
                 &self.font,
                 "[1] Relay Profiles",
-                20.0,
-                47.0,
-                FONT_SIZE,
+                scale_f32(20.0, s),
+                scale_f32(47.0, s),
+                font_size,
                 if self.tab == Tab::Relay {
                     ACCENT
                 } else {
@@ -973,9 +1009,9 @@ impl ManagerApp {
             canvas.draw_text(
                 &self.font,
                 "[2] Virtual Displays (F5)",
-                260.0,
-                47.0,
-                FONT_SIZE,
+                scale_f32(260.0, s),
+                scale_f32(47.0, s),
+                font_size,
                 if self.tab == Tab::Displays {
                     ACCENT
                 } else {
@@ -985,9 +1021,9 @@ impl ManagerApp {
             canvas.draw_text(
                 &self.font,
                 "[3] Diagnostics (G)",
-                540.0,
-                47.0,
-                FONT_SIZE,
+                scale_f32(540.0, s),
+                scale_f32(47.0, s),
+                font_size,
                 if self.tab == Tab::Diagnostics {
                     ACCENT
                 } else {
@@ -997,9 +1033,9 @@ impl ManagerApp {
             canvas.draw_text(
                 &self.font,
                 "[4] Devices (F/Enter)",
-                760.0,
-                47.0,
-                FONT_SIZE,
+                scale_f32(760.0, s),
+                scale_f32(47.0, s),
+                font_size,
                 if self.tab == Tab::Devices {
                     ACCENT
                 } else {
@@ -1009,25 +1045,25 @@ impl ManagerApp {
             canvas.draw_text(
                 &self.font,
                 "Up/Down select  Tab switch  T/R test  U use  S strategy  E export  C/D display  F fav  Enter view  Q quit",
-                20.0,
-                86.0,
-                13.0,
+                scale_f32(20.0, s),
+                scale_f32(86.0, s),
+                scale_f32(13.0, s),
                 MUTED,
             );
 
-            let list_bottom = height.saturating_sub(40);
+            let list_bottom = height.saturating_sub(scale_u32(40, s));
             match self.tab {
                 Tab::Relay => {
                     for (index, profile) in self.store.profiles().iter().enumerate() {
-                        let y = row_y(LIST_TOP, ROW_H, index);
-                        if y + ROW_H > list_bottom {
+                        let y = row_y(list_top, row_h, index);
+                        if y + row_h > list_bottom {
                             break;
                         }
                         canvas.fill_rect(
-                            12,
+                            margin_x,
                             y,
-                            width.saturating_sub(24),
-                            ROW_H - 2,
+                            width.saturating_sub(margin_w),
+                            row_h.saturating_sub(row_gap),
                             if index == self.selected {
                                 SELECTED
                             } else {
@@ -1050,48 +1086,62 @@ impl ManagerApp {
                             health.loss_ppm,
                             health.bandwidth_bps
                         );
-                        canvas.draw_text(&self.font, &line, 22.0, y as f32 + 3.0, FONT_SIZE, TEXT);
+                        canvas.draw_text(
+                            &self.font,
+                            &line,
+                            text_x,
+                            y as f32 + row_text_pad,
+                            font_size,
+                            TEXT,
+                        );
                         canvas.draw_text(
                             &self.font,
                             state,
-                            width as f32 - 70.0,
-                            y as f32 + 3.0,
-                            FONT_SIZE,
+                            width as f32 - scale_f32(70.0, s),
+                            y as f32 + row_text_pad,
+                            font_size,
                             color,
                         );
                     }
                 }
                 Tab::Displays => {
                     for (index, line) in self.displays.iter().enumerate() {
-                        let y = row_y(LIST_TOP, ROW_H, index);
-                        if y + ROW_H > list_bottom {
+                        let y = row_y(list_top, row_h, index);
+                        if y + row_h > list_bottom {
                             break;
                         }
                         canvas.fill_rect(
-                            12,
+                            margin_x,
                             y,
-                            width.saturating_sub(24),
-                            ROW_H - 2,
+                            width.saturating_sub(margin_w),
+                            row_h.saturating_sub(row_gap),
                             if index == self.selected {
                                 SELECTED
                             } else {
                                 ROW
                             },
                         );
-                        canvas.draw_text(&self.font, line, 22.0, y as f32 + 3.0, FONT_SIZE, TEXT);
+                        canvas.draw_text(
+                            &self.font,
+                            line,
+                            text_x,
+                            y as f32 + row_text_pad,
+                            font_size,
+                            TEXT,
+                        );
                     }
                 }
                 Tab::Diagnostics => {
                     for (index, diagnostic) in self.diagnostics.iter().enumerate() {
-                        let y = row_y(LIST_TOP, ROW_H, index);
-                        if y + ROW_H > list_bottom {
+                        let y = row_y(list_top, row_h, index);
+                        if y + row_h > list_bottom {
                             break;
                         }
                         canvas.fill_rect(
-                            12,
+                            margin_x,
                             y,
-                            width.saturating_sub(24),
-                            ROW_H - 2,
+                            width.saturating_sub(margin_w),
+                            row_h.saturating_sub(row_gap),
                             if index == self.selected {
                                 SELECTED
                             } else {
@@ -1103,13 +1153,20 @@ impl ManagerApp {
                             Level::Warn => ("WARN", ACCENT),
                             Level::Fail => ("FAIL", BAD),
                         };
-                        canvas.draw_text(&self.font, tag, 22.0, y as f32 + 3.0, FONT_SIZE, color);
+                        canvas.draw_text(
+                            &self.font,
+                            tag,
+                            text_x,
+                            y as f32 + row_text_pad,
+                            font_size,
+                            color,
+                        );
                         canvas.draw_text(
                             &self.font,
                             &diagnostic.text,
-                            90.0,
-                            y as f32 + 3.0,
-                            FONT_SIZE,
+                            scale_f32(90.0, s),
+                            y as f32 + row_text_pad,
+                            font_size,
                             TEXT,
                         );
                     }
@@ -1119,22 +1176,22 @@ impl ManagerApp {
                         canvas.draw_text(
                             &self.font,
                             "(no saved devices in devices.toml)",
-                            22.0,
-                            LIST_TOP as f32 + 3.0,
-                            FONT_SIZE,
+                            text_x,
+                            list_top as f32 + row_text_pad,
+                            font_size,
                             MUTED,
                         );
                     }
                     for (index, entry) in self.devices.entries.iter().enumerate() {
-                        let y = row_y(LIST_TOP, ROW_H, index);
-                        if y + ROW_H > list_bottom {
+                        let y = row_y(list_top, row_h, index);
+                        if y + row_h > list_bottom {
                             break;
                         }
                         canvas.fill_rect(
-                            12,
+                            margin_x,
                             y,
-                            width.saturating_sub(24),
-                            ROW_H - 2,
+                            width.saturating_sub(margin_w),
+                            row_h.saturating_sub(row_gap),
                             if index == self.selected {
                                 SELECTED
                             } else {
@@ -1147,18 +1204,25 @@ impl ManagerApp {
                             "[{star}] {:<12} {:<18} {:<24} ({mode})",
                             entry.id, entry.name, entry.addr
                         );
-                        canvas.draw_text(&self.font, &line, 22.0, y as f32 + 3.0, FONT_SIZE, TEXT);
+                        canvas.draw_text(
+                            &self.font,
+                            &line,
+                            text_x,
+                            y as f32 + row_text_pad,
+                            font_size,
+                            TEXT,
+                        );
                     }
                 }
             }
 
-            canvas.fill_rect(0, height.saturating_sub(36), width, 36, HEADER);
+            canvas.fill_rect(0, height.saturating_sub(footer_h), width, footer_h, HEADER);
             canvas.draw_text(
                 &self.font,
                 &self.status,
-                20.0,
-                height as f32 - 28.0,
-                14.0,
+                scale_f32(20.0, s),
+                height as f32 - scale_f32(28.0, s),
+                scale_f32(14.0, s),
                 TEXT,
             );
         }
@@ -1193,6 +1257,7 @@ impl ApplicationHandler for ManagerApp {
             return;
         };
         let inner = window.inner_size();
+        self.scale_factor = window.scale_factor().max(1.0);
         self.size = (inner.width.max(1), inner.height.max(1));
         let (width, height) = self.size;
         let _ = surface.resize(
@@ -1227,6 +1292,23 @@ impl ApplicationHandler for ManagerApp {
                     window.request_redraw();
                 }
             }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                if let Some(window) = self.window.clone() {
+                    self.scale_factor = window.scale_factor().max(1.0);
+                    let inner = window.inner_size();
+                    let (width, height) = (inner.width.max(1), inner.height.max(1));
+                    if let Some(surface) = self.surface.as_mut() {
+                        let _ = surface.resize(
+                            NonZeroU32::new(width).unwrap_or(NonZeroU32::new(1).unwrap()),
+                            NonZeroU32::new(height).unwrap_or(NonZeroU32::new(1).unwrap()),
+                        );
+                    }
+                    self.size = (width, height);
+                    self.clamp_selection();
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::ModifiersChanged(mods) => self.modifiers = mods.state(),
             WindowEvent::CursorMoved { position, .. } => self.cursor = position,
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1240,6 +1322,10 @@ impl ApplicationHandler for ManagerApp {
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
+                    if self.modifiers.super_key() && matches!(code, KeyCode::KeyQ | KeyCode::KeyW) {
+                        event_loop.exit();
+                        return;
+                    }
                     self.handle_key(code, event_loop);
                 }
                 if let Some(window) = self.window.as_ref() {
@@ -1517,5 +1603,22 @@ mod tests {
             .expect("redacted export exists");
         assert!(!redacted.contains("6DpdECxB8"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_default_font_loads() {
+        assert!(
+            load_default_font(None).is_ok(),
+            "macOS system font candidate should load cleanly"
+        );
+    }
+
+    #[test]
+    fn hidpi_logical_click_scales_coordinates() {
+        assert_eq!(logical_click(520.0, 94.0, 2.0), (260, 47));
+        let (_, logical_y) = logical_click(100.0, 224.0, 2.0);
+        assert_eq!(row_from_y(logical_y, LIST_TOP, ROW_H, 3), Some(0));
+        assert_eq!(scale_u32(HEADER_H, 2.0), HEADER_H * 2);
     }
 }

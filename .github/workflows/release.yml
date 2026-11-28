@@ -97,6 +97,22 @@ jobs:
           path: dist-manager/dfy-manager.exe
           if-no-files-found: error
 
+      - name: 构建 macOS dfy-manager
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cargo build --release --locked --target "${{ matrix.target }}" -p dfy-manager
+          mkdir -p dist-manager
+          cp "$CARGO_TARGET_DIR/${{ matrix.target }}/release/dfy-manager" "dist-manager/dfy-manager-${{ matrix.target }}"
+
+      - name: 上传 macOS dfy-manager
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dafeiyu-macos-manager-${{ matrix.target }}
+          path: dist-manager/dfy-manager-${{ matrix.target }}
+          if-no-files-found: error
+
       - name: 创建架构正确的归档与校验和
         shell: bash
         run: |
@@ -284,11 +300,20 @@ jobs:
         run: |
           mkdir -p binaries
           tar -xzf archive/dafeiyu-*.tar.gz -C binaries
+      - uses: actions/download-artifact@v4
+        with:
+          name: dafeiyu-macos-manager-${{ matrix.target }}
+          path: binaries
+      - name: 准备 macOS GUI 二进制
+        run: |
+          mv "binaries/dfy-manager-${{ matrix.target }}" binaries/dfy-manager
+          chmod 0755 binaries/dfy-manager
       - name: 构建可选签名/公证的 PKG 与 DMG
         shell: bash
         env:
           MAC_SIGNING_IDENTITY: ${{ secrets.MAC_SIGNING_IDENTITY }}
           MAC_DMG_SIGNING_IDENTITY: ${{ secrets.MAC_DMG_SIGNING_IDENTITY }}
+          MAC_APP_SIGNING_IDENTITY: ${{ secrets.MAC_APP_SIGNING_IDENTITY }}
           MAC_NOTARY_KEY_BASE64: ${{ secrets.MAC_NOTARY_KEY_BASE64 }}
           MAC_NOTARY_KEY_ID: ${{ secrets.MAC_NOTARY_KEY_ID }}
           MAC_NOTARY_ISSUER_ID: ${{ secrets.MAC_NOTARY_ISSUER_ID }}
@@ -395,14 +420,14 @@ jobs:
             ## 大肥鱼远程 ${{ github.event.inputs.tag || github.ref_name }}
 
             许可证：`PolyForm Noncommercial License 1.0.0`（非商用源码可见）。
-            包含 `dfy` / `dfy-relay` CLI、`dfy-manager`（Windows 安装包）、Linux DEB/RPM、
+            包含 `dfy` / `dfy-relay` CLI、`dfy-manager`（Windows 安装包及 macOS `Dafeiyu Remote.app`）、Linux DEB/RPM、
             Windows Inno Setup、macOS PKG/DMG、Android APK/AAB，以及 CycloneDX SBOM
             (`dafeiyu-*-sbom.cdx.json`) 与 `THIRD-PARTY-NOTICES.txt`。
-            macOS 包不是原生 GUI app；Windows 包不安装服务包装器。
+            Windows 包不安装服务包装器。
             未配置签名秘密的产物会明确标记为 unsigned。
 
             ### 已知边界（非商业/未签名说明）
-            - Windows IDD 虚拟显示驱动签名/HLK/WHQL、Windows/macOS/Android 正式代码签名与公证、macOS 原生 GUI 双角色、Android 真机与公网跨物理机压测仍未完成（详见 `docs/STATUS.md`）。
+            - Windows IDD 虚拟显示驱动签名/HLK/WHQL、macOS 虚拟显示（不启用私有 CGVirtualDisplay API）、Windows/macOS/Android 正式代码签名与公证、Android 真机及 Mac↔Windows/公网跨物理机交互压测仍未完成（详见 `docs/STATUS.md`）。
 
             ### 下载
             - `dafeiyu-*-unknown-linux-gnu.tar.gz`：Linux x86_64 / aarch64 CLI + relay
@@ -410,7 +435,7 @@ jobs:
             - `dafeiyu_*_amd64.deb` / `dafeiyu_*_arm64.deb`：Linux DEB
             - `dafeiyu-*.rpm`：Linux RPM
             - `dafeiyu-*-windows-x86_64-setup.exe`：Windows 安装程序（含 `dfy`、`dfy-relay`、`dfy-manager`）
-            - `dafeiyu-*-macos-*.pkg` / `.dmg`：macOS CLI 安装包
+            - `dafeiyu-*-macos-*.pkg` / `.dmg`：macOS 安装包（含 `Dafeiyu Remote.app` 与 `/usr/local/bin/{dfy,dfy-relay}`）
             - `dafeiyu-*-debug.apk` / `dafeiyu-*-release*.apk` / `.aab`
             - `dafeiyu-*-sbom.cdx.json` / `THIRD-PARTY-NOTICES.txt`：CycloneDX 1.5 SBOM 与第三方许可声明
 

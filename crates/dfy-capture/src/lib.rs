@@ -11,7 +11,10 @@
 //!   the root window. Wayland compositors that do not expose XWayland are
 //!   *not* supported by this backend; see `design/025-linux-capture.md` for the
 //!   planned Wayland (portal + PipeWire) route.
-//! * **Other platforms** (macOS): a stub whose constructors return an
+//! * **macOS**: ScreenCaptureKit (`SCStream` + BGRA8 `CVPixelBuffer`) captures
+//!   displays at full physical resolution with cursor compositing, after checking
+//!   Screen Recording permission (`CGPreflightScreenCaptureAccess`).
+//! * **Other platforms**: a stub whose constructors return an
 //!   [`Unsupported`](CaptureError::Unsupported) error, so that the rest of the
 //!   workspace still `cargo check`s everywhere.
 //!
@@ -266,16 +269,21 @@ pub use dxgi::DxgiCapturer;
 #[cfg(windows)]
 pub use wgc::{WgcCapturer, WindowsCapturer};
 
-// Linux 走 X11 后端（`linux.rs`）；只有在既非 Windows 又非 Linux 的平台
-// （目前是 macOS）才退化成 stub，保证整个 workspace 仍可编译。
+// Linux 走 X11 后端（`linux.rs`），macOS 走 ScreenCaptureKit 后端（`macos.rs`），
+// 其它平台退化成 stub，保证整个 workspace 仍可编译。
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::LinuxCapturer;
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::MacCapturer;
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 mod stub;
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub use stub::DxgiCapturer;
 
 /// The crate version, for handshake/diagnostics messages.

@@ -51,6 +51,12 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo test -p dfy-audio --features device-backend
 
+      - name: macOS CoreAudio and VideoToolbox tests
+        if: runner.os == 'macOS'
+        run: |
+          cargo test -p dfy-audio --features device-backend
+          cargo test -p dfy-codec --test macos_vt
+
       - name: Packaging smoke tests
         if: runner.os == 'Linux'
         run: |

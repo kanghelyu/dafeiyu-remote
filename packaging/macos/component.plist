@@ -8,7 +8,7 @@
   <key>BundleOverwriteAction</key>
   <string>upgrade</string>
   <key>RootRelativeBundlePath</key>
-  <string>.</string>
+  <string>Dafeiyu Remote.app</string>
 </dict>
 </array>
 </plist>

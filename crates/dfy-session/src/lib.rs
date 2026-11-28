@@ -192,6 +192,26 @@ impl Capturer for dfy_capture::LinuxCapturer {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl Capturer for dfy_capture::MacCapturer {
+    fn capture(&mut self, timeout_ms: u32) -> anyhow::Result<Option<RawFrame>> {
+        let frame = dfy_capture::MacCapturer::capture(self, timeout_ms)?;
+        Ok(frame.map(|f| RawFrame {
+            width: f.width,
+            height: f.height,
+            stride: f.stride,
+            data: f.data,
+            pts_us: dfy_transport::now_us(),
+            full_frame: f.full_frame,
+        }))
+    }
+
+    fn dimensions(&self) -> Option<(u32, u32)> {
+        let monitor = dfy_capture::MacCapturer::monitor(self);
+        Some((monitor.w, monitor.h))
+    }
+}
+
 /// 接收侧的帧重组器：按 `frame_id` 收集分片，全部到齐（或收到 LAST 且分片齐）时交付整帧。
 ///
 /// 特性：

@@ -57,10 +57,12 @@ pub struct InputCapture {
     hooks: Option<win::Hooks>,
     #[cfg(target_os = "linux")]
     worker: Option<linux::Worker>,
+    #[cfg(target_os = "macos")]
+    worker: Option<macos::Worker>,
 }
 
 impl InputCapture {
-    /// 启动采集（Windows 低级钩子 / Linux X11 XInput2）。
+    /// 启动采集（Windows 低级钩子 / Linux X11 XInput2 / macOS CGEventTap）。
     ///
     /// 返回时采集线程已经装好；失败原因可直接打印给用户。
     pub fn start() -> Result<Self> {
@@ -82,9 +84,18 @@ impl InputCapture {
                 worker: Some(worker),
             })
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(target_os = "macos")]
         {
-            anyhow::bail!("当前平台暂不支持控制输入（Windows 与 Linux X11 已实现采集）")
+            let (tx, rx) = mpsc::unbounded_channel();
+            let worker = macos::Worker::start(tx)?;
+            Ok(Self {
+                rx: Some(rx),
+                worker: Some(worker),
+            })
+        }
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+        {
+            anyhow::bail!("当前平台暂不支持控制输入（Windows、Linux X11 与 macOS 已实现采集）")
         }
     }
 
@@ -97,6 +108,8 @@ impl InputCapture {
             hooks: None,
             #[cfg(target_os = "linux")]
             worker: None,
+            #[cfg(target_os = "macos")]
+            worker: None,
         }
     }
 
@@ -108,6 +121,10 @@ impl InputCapture {
             return hooks.held();
         }
         #[cfg(target_os = "linux")]
+        if let Some(worker) = &self.worker {
+            return worker.held();
+        }
+        #[cfg(target_os = "macos")]
         if let Some(worker) = &self.worker {
             return worker.held();
         }
@@ -134,6 +151,10 @@ impl InputCapture {
             hooks.stop();
         }
         #[cfg(target_os = "linux")]
+        if let Some(worker) = self.worker.take() {
+            worker.stop();
+        }
+        #[cfg(target_os = "macos")]
         if let Some(worker) = self.worker.take() {
             worker.stop();
         }
@@ -1782,6 +1803,822 @@ mod linux {
             assert!(stopped, "stop hotkey did not end capture");
             capture.stop();
             Ok(())
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    //! macOS 控制端输入采集：`CGEventTap` + `CFRunLoop`。
+    //!
+    //! 依赖「辅助功能（Accessibility）」权限（`AXIsProcessTrusted`）；支持 `Ctrl+Alt+Shift+Q`
+    //! 吞键停止、10ms 鼠标移动节流，以及断线/迁移时的 `HeldInput` 状态快照。
+
+    use std::collections::HashSet;
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
+    use std::thread::JoinHandle;
+    use std::time::{Duration, Instant};
+
+    use anyhow::{anyhow, Context, Result};
+    use tokio::sync::mpsc::UnboundedSender;
+    use tracing::{debug, trace};
+
+    use crate::real::{input_button_envelope, input_key_envelope, input_wheel_envelope};
+
+    use super::{CtrlMsg, HeldInput};
+
+    const MOVE_MERGE_INTERVAL: Duration = Duration::from_millis(10);
+
+    const K_CG_SESSION_EVENT_TAP: u32 = 1;
+    const K_CG_HEAD_INSERT_EVENT_TAP: u32 = 0;
+    const K_CG_EVENT_TAP_OPTION_DEFAULT: u32 = 0;
+
+    const K_CG_EVENT_LEFT_MOUSE_DOWN: u32 = 1;
+    const K_CG_EVENT_LEFT_MOUSE_UP: u32 = 2;
+    const K_CG_EVENT_RIGHT_MOUSE_DOWN: u32 = 3;
+    const K_CG_EVENT_RIGHT_MOUSE_UP: u32 = 4;
+    const K_CG_EVENT_MOUSE_MOVED: u32 = 5;
+    const K_CG_EVENT_LEFT_MOUSE_DRAGGED: u32 = 6;
+    const K_CG_EVENT_RIGHT_MOUSE_DRAGGED: u32 = 7;
+    const K_CG_EVENT_KEY_DOWN: u32 = 10;
+    const K_CG_EVENT_KEY_UP: u32 = 11;
+    const K_CG_EVENT_FLAGS_CHANGED: u32 = 12;
+    const K_CG_EVENT_SCROLL_WHEEL: u32 = 22;
+    const K_CG_EVENT_OTHER_MOUSE_DOWN: u32 = 25;
+    const K_CG_EVENT_OTHER_MOUSE_UP: u32 = 26;
+    const K_CG_EVENT_OTHER_MOUSE_DRAGGED: u32 = 27;
+    const K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
+    const K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
+
+    const K_CG_MOUSE_EVENT_BUTTON_NUMBER: u32 = 3;
+    const K_CG_KEYBOARD_EVENT_KEYCODE: u32 = 9;
+    const K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS1: u32 = 11;
+    const K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS2: u32 = 12;
+    const K_CG_SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS1: u32 = 96;
+    const K_CG_SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS2: u32 = 97;
+
+    const K_CG_EVENT_FLAG_MASK_ALPHA_SHIFT: u64 = 0x0001_0000;
+    const K_CG_EVENT_FLAG_MASK_SHIFT: u64 = 0x0002_0000;
+    const K_CG_EVENT_FLAG_MASK_CONTROL: u64 = 0x0004_0000;
+    const K_CG_EVENT_FLAG_MASK_ALTERNATE: u64 = 0x0008_0000;
+    const K_CG_EVENT_FLAG_MASK_COMMAND: u64 = 0x0010_0000;
+
+    const NX_DEVICELCTLKEYMASK: u64 = 0x0000_0001;
+    const NX_DEVICELSHIFTKEYMASK: u64 = 0x0000_0002;
+    const NX_DEVICERSHIFTKEYMASK: u64 = 0x0000_0004;
+    const NX_DEVICELCMDKEYMASK: u64 = 0x0000_0008;
+    const NX_DEVICERCMDKEYMASK: u64 = 0x0000_0010;
+    const NX_DEVICELALTKEYMASK: u64 = 0x0000_0020;
+    const NX_DEVICERALTKEYMASK: u64 = 0x0000_0040;
+    const NX_DEVICERCTLKEYMASK: u64 = 0x0000_2000;
+
+    const KVK_ANSI_Q: u16 = 0x0C;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default)]
+    struct CGSize {
+        width: f64,
+        height: f64,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default)]
+    struct CGRect {
+        origin: CGPoint,
+        size: CGSize,
+    }
+
+    #[repr(C)]
+    struct CFRunLoopTimerContext {
+        version: isize,
+        info: *mut c_void,
+        retain: Option<unsafe extern "C" fn(*const c_void) -> *const c_void>,
+        release: Option<unsafe extern "C" fn(*const c_void)>,
+        copy_description: Option<unsafe extern "C" fn(*const c_void) -> *const c_void>,
+    }
+
+    type CGEventTapCallBack = unsafe extern "C" fn(
+        proxy: *mut c_void,
+        event_type: u32,
+        event: *mut c_void,
+        user_info: *mut c_void,
+    ) -> *mut c_void;
+
+    #[allow(clippy::duplicated_attributes)]
+    #[link(name = "ApplicationServices", kind = "framework")]
+    #[link(name = "CoreFoundation", kind = "framework")]
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        static kCFRunLoopCommonModes: *const c_void;
+
+        fn AXIsProcessTrusted() -> bool;
+
+        fn CFRetain(cf: *const c_void) -> *const c_void;
+        fn CFRelease(cf: *const c_void);
+        fn CFMachPortCreateRunLoopSource(
+            allocator: *const c_void,
+            port: *mut c_void,
+            order: isize,
+        ) -> *mut c_void;
+        fn CFMachPortInvalidate(port: *mut c_void);
+        fn CFRunLoopGetCurrent() -> *mut c_void;
+        fn CFRunLoopAddSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
+        fn CFRunLoopRemoveSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
+        fn CFAbsoluteTimeGetCurrent() -> f64;
+        fn CFRunLoopTimerCreate(
+            allocator: *const c_void,
+            fire_date: f64,
+            interval: f64,
+            flags: usize,
+            order: isize,
+            callout: unsafe extern "C" fn(*mut c_void, *mut c_void),
+            context: *mut CFRunLoopTimerContext,
+        ) -> *mut c_void;
+        fn CFRunLoopAddTimer(rl: *mut c_void, timer: *mut c_void, mode: *const c_void);
+        fn CFRunLoopRemoveTimer(rl: *mut c_void, timer: *mut c_void, mode: *const c_void);
+        fn CFRunLoopTimerInvalidate(timer: *mut c_void);
+        fn CFRunLoopRun();
+        fn CFRunLoopStop(rl: *mut c_void);
+
+        fn CGMainDisplayID() -> u32;
+        fn CGDisplayBounds(display: u32) -> CGRect;
+        fn CGEventTapCreate(
+            tap: u32,
+            place: u32,
+            options: u32,
+            events_of_interest: u64,
+            callback: CGEventTapCallBack,
+            user_info: *mut c_void,
+        ) -> *mut c_void;
+        fn CGEventTapEnable(tap: *mut c_void, enable: bool);
+        fn CGEventGetLocation(event: *const c_void) -> CGPoint;
+        fn CGEventGetFlags(event: *const c_void) -> u64;
+        fn CGEventGetIntegerValueField(event: *const c_void, field: u32) -> i64;
+    }
+
+    struct RunLoopRef(*mut c_void);
+
+    // SAFETY: CFRunLoopStop on a retained CFRunLoopRef is documented thread-safe in CoreFoundation.
+    unsafe impl Send for RunLoopRef {}
+
+    impl Drop for RunLoopRef {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { CFRelease(self.0) };
+                self.0 = std::ptr::null_mut();
+            }
+        }
+    }
+
+    pub(super) struct Worker {
+        thread: JoinHandle<()>,
+        run_loop: RunLoopRef,
+        stopped: Arc<AtomicBool>,
+        held: Arc<Mutex<HeldInput>>,
+    }
+
+    impl Worker {
+        pub(super) fn start(tx: UnboundedSender<CtrlMsg>) -> Result<Self> {
+            if unsafe { !AXIsProcessTrusted() } {
+                anyhow::bail!(
+                    "缺少 macOS 辅助功能权限（Accessibility），无法全局采集控制输入；请在「系统设置 → 隐私与安全性 → 辅助功能」中授权，或改用 --ui 窗口转发输入"
+                );
+            }
+            let stopped = Arc::new(AtomicBool::new(false));
+            let held = Arc::new(Mutex::new(HeldInput::default()));
+            let (ready_tx, ready_rx) = mpsc::channel::<std::result::Result<RunLoopRef, String>>();
+            let stopped_for_thread = Arc::clone(&stopped);
+            let held_for_thread = Arc::clone(&held);
+            let thread = std::thread::Builder::new()
+                .name("dfy-input-tap".to_string())
+                .spawn(move || thread_main(tx, stopped_for_thread, held_for_thread, ready_tx))
+                .context("启动 macOS 输入采集线程失败")?;
+            match ready_rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(Ok(run_loop)) => Ok(Self {
+                    thread,
+                    run_loop,
+                    stopped,
+                    held,
+                }),
+                Ok(Err(message)) => {
+                    let _ = thread.join();
+                    Err(anyhow!("{message}"))
+                }
+                Err(err) => {
+                    stopped.store(true, Ordering::SeqCst);
+                    Err(anyhow!("等待 macOS 输入采集就绪超时：{err}"))
+                }
+            }
+        }
+
+        pub(super) fn held(&self) -> HeldInput {
+            self.held
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+
+        pub(super) fn stop(self) {
+            self.stopped.store(true, Ordering::SeqCst);
+            if !self.run_loop.0.is_null() {
+                unsafe { CFRunLoopStop(self.run_loop.0) };
+            }
+            let _ = self.thread.join();
+            drop(self.run_loop);
+        }
+    }
+
+    struct TapState {
+        tx: UnboundedSender<CtrlMsg>,
+        stopped: Arc<AtomicBool>,
+        held: Arc<Mutex<HeldInput>>,
+        pressed_keys: HashSet<u16>,
+        pressed_buttons: HashSet<u8>,
+        tap: *mut c_void,
+        run_loop: *mut c_void,
+        last_move: Option<Instant>,
+        pending_move: Option<(u32, u32)>,
+        last_position: Option<(i32, i32)>,
+    }
+
+    impl TapState {
+        fn publish_held(&self) {
+            let mut keys: Vec<u16> = self.pressed_keys.iter().copied().collect();
+            keys.sort_unstable();
+            let mut buttons: Vec<u8> = self.pressed_buttons.iter().copied().collect();
+            buttons.sort_unstable();
+            let mut guard = self
+                .held
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.keys = keys;
+            guard.buttons = buttons;
+        }
+
+        fn release_all_and_stop(&mut self, notify_stopped: bool) {
+            if self.stopped.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            for usage in self.pressed_keys.drain() {
+                let _ = self
+                    .tx
+                    .send(CtrlMsg::Event(input_key_envelope(usage, false, 0)));
+            }
+            for button in self.pressed_buttons.drain() {
+                let _ = self
+                    .tx
+                    .send(CtrlMsg::Event(input_button_envelope(button, false)));
+            }
+            self.publish_held();
+            if notify_stopped {
+                let _ = self.tx.send(CtrlMsg::Stopped);
+            }
+            if !self.run_loop.is_null() {
+                unsafe { CFRunLoopStop(self.run_loop) };
+            }
+        }
+
+        fn queue_move(&mut self, point: CGPoint) {
+            let bounds = unsafe { CGDisplayBounds(CGMainDisplayID()) };
+            let Some((nx, ny)) = normalize_point(point, bounds) else {
+                return;
+            };
+            let pos = (point.x.round() as i32, point.y.round() as i32);
+            if self.last_position == Some(pos) && self.pending_move.is_none() {
+                return;
+            }
+            self.last_position = Some(pos);
+            let now = Instant::now();
+            let due = match self.last_move {
+                Some(last) => now.saturating_duration_since(last) >= MOVE_MERGE_INTERVAL,
+                None => true,
+            };
+            if due {
+                self.pending_move = None;
+                self.last_move = Some(now);
+                let _ = self.tx.send(CtrlMsg::Move(move_event(nx, ny)));
+            } else {
+                self.pending_move = Some((nx, ny));
+            }
+        }
+
+        fn flush_pending_move(&mut self) {
+            if self.stopped.load(Ordering::SeqCst) {
+                if !self.run_loop.is_null() {
+                    unsafe { CFRunLoopStop(self.run_loop) };
+                }
+                return;
+            }
+            let Some((nx, ny)) = self.pending_move.take() else {
+                return;
+            };
+            let now = Instant::now();
+            let due = match self.last_move {
+                Some(last) => now.saturating_duration_since(last) >= MOVE_MERGE_INTERVAL,
+                None => true,
+            };
+            if due {
+                self.last_move = Some(now);
+                let _ = self.tx.send(CtrlMsg::Move(move_event(nx, ny)));
+            } else {
+                self.pending_move = Some((nx, ny));
+            }
+        }
+    }
+
+    fn thread_main(
+        tx: UnboundedSender<CtrlMsg>,
+        stopped: Arc<AtomicBool>,
+        held: Arc<Mutex<HeldInput>>,
+        ready_tx: mpsc::Sender<std::result::Result<RunLoopRef, String>>,
+    ) {
+        let mask: u64 = (1u64 << K_CG_EVENT_LEFT_MOUSE_DOWN)
+            | (1u64 << K_CG_EVENT_LEFT_MOUSE_UP)
+            | (1u64 << K_CG_EVENT_RIGHT_MOUSE_DOWN)
+            | (1u64 << K_CG_EVENT_RIGHT_MOUSE_UP)
+            | (1u64 << K_CG_EVENT_MOUSE_MOVED)
+            | (1u64 << K_CG_EVENT_LEFT_MOUSE_DRAGGED)
+            | (1u64 << K_CG_EVENT_RIGHT_MOUSE_DRAGGED)
+            | (1u64 << K_CG_EVENT_KEY_DOWN)
+            | (1u64 << K_CG_EVENT_KEY_UP)
+            | (1u64 << K_CG_EVENT_FLAGS_CHANGED)
+            | (1u64 << K_CG_EVENT_SCROLL_WHEEL)
+            | (1u64 << K_CG_EVENT_OTHER_MOUSE_DOWN)
+            | (1u64 << K_CG_EVENT_OTHER_MOUSE_UP)
+            | (1u64 << K_CG_EVENT_OTHER_MOUSE_DRAGGED);
+
+        let run_loop = unsafe { CFRunLoopGetCurrent() };
+        let state_ptr = Box::into_raw(Box::new(TapState {
+            tx,
+            stopped,
+            held,
+            pressed_keys: HashSet::new(),
+            pressed_buttons: HashSet::new(),
+            tap: std::ptr::null_mut(),
+            run_loop,
+            last_move: None,
+            pending_move: None,
+            last_position: None,
+        }));
+
+        let tap = unsafe {
+            CGEventTapCreate(
+                K_CG_SESSION_EVENT_TAP,
+                K_CG_HEAD_INSERT_EVENT_TAP,
+                K_CG_EVENT_TAP_OPTION_DEFAULT,
+                mask,
+                tap_callback,
+                state_ptr.cast(),
+            )
+        };
+        if tap.is_null() {
+            unsafe { drop(Box::from_raw(state_ptr)) };
+            let _ = ready_tx.send(Err(
+                "创建 macOS CGEventTap 失败（请确认已授予「辅助功能」和「输入监控」权限）"
+                    .to_string(),
+            ));
+            return;
+        }
+        unsafe { (*state_ptr).tap = tap };
+
+        let source = unsafe { CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0) };
+        if source.is_null() {
+            unsafe {
+                CFMachPortInvalidate(tap);
+                CFRelease(tap);
+                drop(Box::from_raw(state_ptr));
+            }
+            let _ = ready_tx.send(Err("创建 CFMachPort RunLoopSource 失败".to_string()));
+            return;
+        }
+
+        let mut timer_ctx = CFRunLoopTimerContext {
+            version: 0,
+            info: state_ptr.cast(),
+            retain: None,
+            release: None,
+            copy_description: None,
+        };
+        let timer = unsafe {
+            CFRunLoopTimerCreate(
+                std::ptr::null(),
+                CFAbsoluteTimeGetCurrent() + 0.01,
+                0.01,
+                0,
+                0,
+                flush_timer_callback,
+                &mut timer_ctx,
+            )
+        };
+
+        unsafe {
+            let mode = kCFRunLoopCommonModes;
+            CFRunLoopAddSource(run_loop, source, mode);
+            if !timer.is_null() {
+                CFRunLoopAddTimer(run_loop, timer, mode);
+            }
+            CGEventTapEnable(tap, true);
+            CFRetain(run_loop);
+        }
+        if ready_tx.send(Ok(RunLoopRef(run_loop))).is_err() {
+            unsafe {
+                let mode = kCFRunLoopCommonModes;
+                if !timer.is_null() {
+                    CFRunLoopRemoveTimer(run_loop, timer, mode);
+                    CFRunLoopTimerInvalidate(timer);
+                    CFRelease(timer);
+                }
+                CFRunLoopRemoveSource(run_loop, source, mode);
+                CFMachPortInvalidate(tap);
+                CFRelease(source);
+                CFRelease(tap);
+                drop(Box::from_raw(state_ptr));
+            }
+            return;
+        }
+
+        debug!("macOS CGEventTap 输入采集已就绪");
+        unsafe { CFRunLoopRun() };
+
+        // Tear down RunLoop attachments before reclaiming TapState so callbacks cannot fire after free.
+        unsafe {
+            let mode = kCFRunLoopCommonModes;
+            if !timer.is_null() {
+                CFRunLoopRemoveTimer(run_loop, timer, mode);
+                CFRunLoopTimerInvalidate(timer);
+                CFRelease(timer);
+            }
+            CFRunLoopRemoveSource(run_loop, source, mode);
+            CFMachPortInvalidate(tap);
+            CFRelease(source);
+            CFRelease(tap);
+            let mut state = Box::from_raw(state_ptr);
+            state.tap = std::ptr::null_mut();
+            state.release_all_and_stop(false);
+        }
+    }
+
+    unsafe extern "C" fn flush_timer_callback(_timer: *mut c_void, info: *mut c_void) {
+        if info.is_null() {
+            return;
+        }
+        let state = &mut *info.cast::<TapState>();
+        state.flush_pending_move();
+    }
+
+    unsafe extern "C" fn tap_callback(
+        _proxy: *mut c_void,
+        event_type: u32,
+        event: *mut c_void,
+        user_info: *mut c_void,
+    ) -> *mut c_void {
+        if user_info.is_null() {
+            return event;
+        }
+        let state = &mut *user_info.cast::<TapState>();
+        if event_type == K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT
+            || event_type == K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT
+        {
+            if !state.tap.is_null() && !state.stopped.load(Ordering::SeqCst) {
+                CGEventTapEnable(state.tap, true);
+            }
+            return event;
+        }
+        if state.stopped.load(Ordering::SeqCst) || event.is_null() {
+            return event;
+        }
+
+        let flags = CGEventGetFlags(event);
+        match event_type {
+            K_CG_EVENT_MOUSE_MOVED
+            | K_CG_EVENT_LEFT_MOUSE_DRAGGED
+            | K_CG_EVENT_RIGHT_MOUSE_DRAGGED
+            | K_CG_EVENT_OTHER_MOUSE_DRAGGED => {
+                state.queue_move(CGEventGetLocation(event));
+            }
+            K_CG_EVENT_LEFT_MOUSE_DOWN | K_CG_EVENT_LEFT_MOUSE_UP => {
+                let down = event_type == K_CG_EVENT_LEFT_MOUSE_DOWN;
+                emit_button(state, 1, down);
+            }
+            K_CG_EVENT_RIGHT_MOUSE_DOWN | K_CG_EVENT_RIGHT_MOUSE_UP => {
+                let down = event_type == K_CG_EVENT_RIGHT_MOUSE_DOWN;
+                emit_button(state, 2, down);
+            }
+            K_CG_EVENT_OTHER_MOUSE_DOWN | K_CG_EVENT_OTHER_MOUSE_UP => {
+                let num = CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_BUTTON_NUMBER);
+                if let Some(button) = map_other_button(num) {
+                    let down = event_type == K_CG_EVENT_OTHER_MOUSE_DOWN;
+                    emit_button(state, button, down);
+                }
+            }
+            K_CG_EVENT_SCROLL_WHEEL => {
+                let v_line =
+                    CGEventGetIntegerValueField(event, K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS1);
+                let h_line =
+                    CGEventGetIntegerValueField(event, K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS2);
+                let v_px =
+                    CGEventGetIntegerValueField(event, K_CG_SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS1);
+                let h_px =
+                    CGEventGetIntegerValueField(event, K_CG_SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS2);
+                let (dx, dy) = scroll_deltas_to_wheel(v_line, h_line, v_px, h_px);
+                if dx != 0 || dy != 0 {
+                    let _ = state.tx.send(CtrlMsg::Event(input_wheel_envelope(dx, dy)));
+                }
+            }
+            K_CG_EVENT_KEY_DOWN | K_CG_EVENT_KEY_UP => {
+                let down = event_type == K_CG_EVENT_KEY_DOWN;
+                let keycode_i64 = CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE);
+                let Ok(keycode) = u16::try_from(keycode_i64) else {
+                    return event;
+                };
+                if down && keycode == KVK_ANSI_Q && stop_combo_active(flags) {
+                    debug!("收到 Ctrl+Alt+Shift+Q，停止 macOS 控制输入采集");
+                    state.release_all_and_stop(true);
+                    return std::ptr::null_mut();
+                }
+                if let Some(usage) = dfy_input::macos_keycode_to_usage(keycode) {
+                    emit_key(state, usage, down, flags);
+                } else {
+                    trace!(keycode, "无法映射到 HID Usage，忽略 macOS 按键");
+                }
+            }
+            K_CG_EVENT_FLAGS_CHANGED => {
+                let keycode_i64 = CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE);
+                let Ok(keycode) = u16::try_from(keycode_i64) else {
+                    return event;
+                };
+                if let Some(usage) = dfy_input::macos_keycode_to_usage(keycode) {
+                    let down = modifier_keycode_is_down(keycode, flags);
+                    emit_key(state, usage, down, flags);
+                }
+            }
+            _ => {}
+        }
+        event
+    }
+
+    fn emit_button(state: &mut TapState, button: u8, down: bool) {
+        let changed = if down {
+            state.pressed_buttons.insert(button)
+        } else {
+            state.pressed_buttons.remove(&button)
+        };
+        if changed {
+            state.publish_held();
+            let _ = state
+                .tx
+                .send(CtrlMsg::Event(input_button_envelope(button, down)));
+        }
+    }
+
+    fn emit_key(state: &mut TapState, usage: u16, down: bool, flags: u64) {
+        let changed = if down {
+            state.pressed_keys.insert(usage)
+        } else {
+            state.pressed_keys.remove(&usage)
+        };
+        if changed || !is_modifier_usage(usage) {
+            state.publish_held();
+            let mods = hid_modifiers_from_flags(flags);
+            let _ = state
+                .tx
+                .send(CtrlMsg::Event(input_key_envelope(usage, down, mods)));
+        }
+    }
+
+    const fn is_modifier_usage(usage: u16) -> bool {
+        matches!(usage, 0x39 | 0xE0..=0xE7)
+    }
+
+    const fn map_other_button(button_number: i64) -> Option<u8> {
+        match button_number {
+            2 => Some(3), // Middle
+            3 => Some(4), // Back
+            4 => Some(5), // Forward
+            _ => None,
+        }
+    }
+
+    const fn stop_combo_active(flags: u64) -> bool {
+        let required = K_CG_EVENT_FLAG_MASK_CONTROL
+            | K_CG_EVENT_FLAG_MASK_ALTERNATE
+            | K_CG_EVENT_FLAG_MASK_SHIFT;
+        (flags & required) == required
+    }
+
+    const fn modifier_keycode_is_down(keycode: u16, flags: u64) -> bool {
+        match keycode {
+            0x3B => {
+                if flags & (NX_DEVICELCTLKEYMASK | NX_DEVICERCTLKEYMASK) != 0 {
+                    (flags & NX_DEVICELCTLKEYMASK) != 0
+                } else {
+                    (flags & K_CG_EVENT_FLAG_MASK_CONTROL) != 0
+                }
+            }
+            0x3E => {
+                if flags & (NX_DEVICELCTLKEYMASK | NX_DEVICERCTLKEYMASK) != 0 {
+                    (flags & NX_DEVICERCTLKEYMASK) != 0
+                } else {
+                    (flags & K_CG_EVENT_FLAG_MASK_CONTROL) != 0
+                }
+            }
+            0x38 => {
+                if flags & (NX_DEVICELSHIFTKEYMASK | NX_DEVICERSHIFTKEYMASK) != 0 {
+                    (flags & NX_DEVICELSHIFTKEYMASK) != 0
+                } else {
+                    (flags & K_CG_EVENT_FLAG_MASK_SHIFT) != 0
+                }
+            }
+            0x3C => {
+                if flags & (NX_DEVICELSHIFTKEYMASK | NX_DEVICERSHIFTKEYMASK) != 0 {
+                    (flags & NX_DEVICERSHIFTKEYMASK) != 0
+                } else {
+                    (flags & K_CG_EVENT_FLAG_MASK_SHIFT) != 0
+                }
+            }
+            0x3A => {
+                if flags & (NX_DEVICELALTKEYMASK | NX_DEVICERALTKEYMASK) != 0 {
+                    (flags & NX_DEVICELALTKEYMASK) != 0
+                } else {
+                    (flags & K_CG_EVENT_FLAG_MASK_ALTERNATE) != 0
+                }
+            }
+            0x3D => {
+                if flags & (NX_DEVICELALTKEYMASK | NX_DEVICERALTKEYMASK) != 0 {
+                    (flags & NX_DEVICERALTKEYMASK) != 0
+                } else {
+                    (flags & K_CG_EVENT_FLAG_MASK_ALTERNATE) != 0
+                }
+            }
+            0x37 => {
+                if flags & (NX_DEVICELCMDKEYMASK | NX_DEVICERCMDKEYMASK) != 0 {
+                    (flags & NX_DEVICELCMDKEYMASK) != 0
+                } else {
+                    (flags & K_CG_EVENT_FLAG_MASK_COMMAND) != 0
+                }
+            }
+            0x36 => {
+                if flags & (NX_DEVICELCMDKEYMASK | NX_DEVICERCMDKEYMASK) != 0 {
+                    (flags & NX_DEVICERCMDKEYMASK) != 0
+                } else {
+                    (flags & K_CG_EVENT_FLAG_MASK_COMMAND) != 0
+                }
+            }
+            0x39 => (flags & K_CG_EVENT_FLAG_MASK_ALPHA_SHIFT) != 0,
+            _ => false,
+        }
+    }
+
+    const fn hid_modifiers_from_flags(flags: u64) -> u8 {
+        let mut mods = 0u8;
+        if flags & K_CG_EVENT_FLAG_MASK_CONTROL != 0 {
+            if flags & NX_DEVICERCTLKEYMASK != 0 {
+                mods |= 1 << 4;
+            }
+            if flags & NX_DEVICELCTLKEYMASK != 0 || flags & NX_DEVICERCTLKEYMASK == 0 {
+                mods |= 1 << 0;
+            }
+        }
+        if flags & K_CG_EVENT_FLAG_MASK_SHIFT != 0 {
+            if flags & NX_DEVICERSHIFTKEYMASK != 0 {
+                mods |= 1 << 5;
+            }
+            if flags & NX_DEVICELSHIFTKEYMASK != 0 || flags & NX_DEVICERSHIFTKEYMASK == 0 {
+                mods |= 1 << 1;
+            }
+        }
+        if flags & K_CG_EVENT_FLAG_MASK_ALTERNATE != 0 {
+            if flags & NX_DEVICERALTKEYMASK != 0 {
+                mods |= 1 << 6;
+            }
+            if flags & NX_DEVICELALTKEYMASK != 0 || flags & NX_DEVICERALTKEYMASK == 0 {
+                mods |= 1 << 2;
+            }
+        }
+        if flags & K_CG_EVENT_FLAG_MASK_COMMAND != 0 {
+            if flags & NX_DEVICERCMDKEYMASK != 0 {
+                mods |= 1 << 7;
+            }
+            if flags & NX_DEVICELCMDKEYMASK != 0 || flags & NX_DEVICERCMDKEYMASK == 0 {
+                mods |= 1 << 3;
+            }
+        }
+        mods
+    }
+
+    fn normalize_point(point: CGPoint, bounds: CGRect) -> Option<(u32, u32)> {
+        if bounds.size.width < 2.0 || bounds.size.height < 2.0 {
+            return None;
+        }
+        let max_x = bounds.size.width - 1.0;
+        let max_y = bounds.size.height - 1.0;
+        let rx = (point.x - bounds.origin.x).clamp(0.0, max_x);
+        let ry = (point.y - bounds.origin.y).clamp(0.0, max_y);
+        let nx = ((rx * 65_535.0) / max_x).round().clamp(0.0, 65_535.0) as u32;
+        let ny = ((ry * 65_535.0) / max_y).round().clamp(0.0, 65_535.0) as u32;
+        Some((nx, ny))
+    }
+
+    fn scroll_deltas_to_wheel(v_line: i64, h_line: i64, v_px: i64, h_px: i64) -> (i16, i16) {
+        fn scale_axis(val: i64, factor: i64) -> i16 {
+            val.saturating_mul(factor)
+                .clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+        }
+        if v_line != 0 || h_line != 0 {
+            // macOS axis2 positive = LEFT; DFYP/1 dx positive = RIGHT.
+            (scale_axis(-h_line, 40), scale_axis(v_line, 40))
+        } else {
+            (scale_axis(-h_px, 4), scale_axis(v_px, 4))
+        }
+    }
+
+    fn move_event(x: u32, y: u32) -> dfy_proto::InputEvent {
+        dfy_proto::InputEvent {
+            kind: dfy_proto::INPUT_KIND_MOUSE_MOVE,
+            hid_usage: 0,
+            mods: 0,
+            state: dfy_proto::INPUT_STATE_DOWN,
+            x,
+            y,
+            dx: 0,
+            dy: 0,
+            unicode: 0,
+            ts_us: dfy_transport::now_us(),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn normalize_point_maps_bounds_to_full_range() {
+            let bounds = CGRect {
+                origin: CGPoint { x: 0.0, y: 0.0 },
+                size: CGSize {
+                    width: 1440.0,
+                    height: 900.0,
+                },
+            };
+            assert_eq!(
+                normalize_point(CGPoint { x: 0.0, y: 0.0 }, bounds),
+                Some((0, 0))
+            );
+            assert_eq!(
+                normalize_point(
+                    CGPoint {
+                        x: 1439.0,
+                        y: 899.0
+                    },
+                    bounds
+                ),
+                Some((65_535, 65_535))
+            );
+            assert_eq!(
+                normalize_point(
+                    CGPoint {
+                        x: -20.0,
+                        y: 5000.0
+                    },
+                    bounds
+                ),
+                Some((0, 65_535))
+            );
+        }
+
+        #[test]
+        fn hid_modifiers_track_left_and_right_flags() {
+            assert_eq!(
+                hid_modifiers_from_flags(K_CG_EVENT_FLAG_MASK_CONTROL | NX_DEVICELCTLKEYMASK),
+                1 << 0
+            );
+            assert_eq!(
+                hid_modifiers_from_flags(K_CG_EVENT_FLAG_MASK_COMMAND | NX_DEVICERCMDKEYMASK),
+                1 << 7
+            );
+            assert!(stop_combo_active(
+                K_CG_EVENT_FLAG_MASK_CONTROL
+                    | K_CG_EVENT_FLAG_MASK_ALTERNATE
+                    | K_CG_EVENT_FLAG_MASK_SHIFT
+            ));
+            assert!(!stop_combo_active(K_CG_EVENT_FLAG_MASK_CONTROL));
+        }
+
+        #[test]
+        fn scroll_deltas_preserve_direction_and_sign() {
+            assert_eq!(scroll_deltas_to_wheel(3, -1, 0, 0), (40, 120));
+            assert_eq!(scroll_deltas_to_wheel(0, 0, -10, 5), (-20, -40));
+            assert_eq!(scroll_deltas_to_wheel(0, 0, 0, 0), (0, 0));
         }
     }
 }

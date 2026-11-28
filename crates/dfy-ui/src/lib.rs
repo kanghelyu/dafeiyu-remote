@@ -97,7 +97,7 @@ pub use source::{FrameIter, FramePoll, FrameSource, DEFAULT_POLL_INTERVAL};
 pub use stats::{ConnectionStats, RenderStats, FPS_WINDOW, TITLE_REFRESH_INTERVAL};
 
 #[cfg(feature = "window")]
-pub use app::spawn_viewer;
+pub use app::{create_main_thread_viewer, spawn_viewer, MainThreadViewer};
 #[cfg(feature = "window")]
 pub use run::{run_viewer, run_viewer_with};
 

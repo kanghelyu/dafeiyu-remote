@@ -5,9 +5,9 @@
 // 除 Windows 输入采集模块外不允许 unsafe；`input_capture` 用 `#![allow(unsafe_code)]`
 // 局部放开（Win32 钩子 API 必须 unsafe）。这里用 `deny` 而非 `forbid`，否则无法覆盖。
 #![deny(unsafe_code)]
-// macOS 等平台的采集/注入后端尚未实现（M3），相应辅助类型暂不参与调用路径。
+// macOS/Windows/Linux 已实现采集与注入后端；其它未知平台仅保留框架以便检查。
 #![cfg_attr(
-    not(any(windows, target_os = "linux")),
+    not(any(windows, target_os = "linux", target_os = "macos")),
     allow(dead_code, unused_variables)
 )]
 
@@ -249,7 +249,7 @@ enum Command {
         /// 打洞窗口（毫秒）
         #[arg(long, default_value_t = 3000)]
         punch_timeout_ms: u64,
-        /// 视频编码格式：h264（Windows 默认，MF 硬编优先）/ mjpeg（跨平台兜底，非 Windows 默认）
+        /// 视频编码格式：h264（Windows/macOS 默认，硬编优先）/ mjpeg（Linux 默认，跨平台兜底）
         #[arg(long, value_name = "CODEC")]
         codec: Option<String>,
         /// 接收控制端发来的文件到该目录（默认关闭）
@@ -273,7 +273,7 @@ enum Command {
         /// 把第一帧解码结果存成裸 BGRA 文件
         #[arg(long, value_name = "FILE")]
         save_first: Option<PathBuf>,
-        /// 启用控制输入采集（Windows 低级钩子 / Linux X11 XInput2；Ctrl+Alt+Shift+Q 停止）
+        /// 启用控制输入采集（Windows 低级钩子 / Linux X11 XInput2 / macOS CGEventTap；Ctrl+Alt+Shift+Q 停止）
         #[arg(long, default_value_t = false)]
         control: bool,
         /// 打开图形窗口显示远端画面（需要图形环境）
@@ -333,7 +333,7 @@ enum Command {
         /// 打洞窗口（毫秒）
         #[arg(long, default_value_t = 3000)]
         punch_timeout_ms: u64,
-        /// 视频编码格式：h264 / mjpeg（必须与 Agent 一致；默认 Windows=h264，其它=mjpeg）
+        /// 视频编码格式：h264 / mjpeg（必须与 Agent 一致；默认 Windows/macOS=h264，其它=mjpeg）
         #[arg(long, value_name = "CODEC")]
         codec: Option<String>,
         /// 请求视频宽度上限（像素，必须为偶数；四个画质参数需一起提供）
@@ -368,10 +368,136 @@ enum Command {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     init_tracing();
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("创建 Tokio 运行时失败")?;
+
+    #[cfg(target_os = "macos")]
+    if let Command::View { ui: true, .. } = &cli.command {
+        let opts = runtime.block_on(build_view_options(cli.command))?;
+        let config = dfy_ui::ViewerConfig::new("大肥鱼远程")
+            .with_stats(true)
+            .with_fullscreen(opts.fullscreen);
+        return match dfy_ui::create_main_thread_viewer(config) {
+            Ok((handle, main_viewer)) => {
+                let task = runtime.spawn(real::run_view_with_ui(opts, Some(handle)));
+                let ui_res = main_viewer.run();
+                let view_res = runtime.block_on(task).context("View 会话任务异常退出")?;
+                match (view_res, ui_res) {
+                    (Err(err), _) => Err(err),
+                    (Ok(_), Err(err)) => Err(err),
+                    (Ok(_), Ok(())) => Ok(()),
+                }
+            }
+            Err(err) => {
+                println!("[view] UI 窗口不可用：{err:#}；继续只打印统计");
+                runtime
+                    .block_on(real::run_view_with_ui(opts, None))
+                    .map(|_| ())
+            }
+        };
+    }
+
+    runtime.block_on(run_command(cli.command))
+}
+
+async fn build_view_options(command: Command) -> Result<real::ViewOptions> {
+    let Command::View {
+        addr,
+        password,
+        expect_fingerprint,
+        seconds,
+        save_first,
+        control,
+        ui,
+        fullscreen,
+        clipboard,
+        relay,
+        relay_tag,
+        relay_key,
+        relay_profile,
+        relay_profiles_config,
+        auto_path,
+        force_switch_once,
+        auto_initial_path,
+        p2p,
+        stun,
+        peer,
+        p2p_port,
+        punch_timeout_ms,
+        codec,
+        quality_width,
+        quality_height,
+        quality_fps,
+        quality_bitrate,
+        reset_quality,
+        send_file,
+        probe_bytes,
+        audio_in,
+        volume,
+        mute,
+    } = command
+    else {
+        anyhow::bail!("internal error: expected View command");
+    };
+    let password = password.read()?;
+    let relay_options = build_relay(
+        relay,
+        relay_tag,
+        relay_key,
+        relay_profile,
+        &relay_profiles_config,
+    )
+    .await?;
+    let p2p_options = build_p2p(p2p, stun, peer, p2p_port, punch_timeout_ms)?;
+    let addr: SocketAddr = addr
+        .parse()
+        .with_context(|| format!("无法解析 Agent 地址 {addr}（示例：127.0.0.1:21116）"))?;
+    let expect = match expect_fingerprint {
+        Some(text) => Some(real::parse_fingerprint_arg(&text)?),
+        None => None,
+    };
+    Ok(real::ViewOptions {
+        addr,
+        password,
+        expect_fingerprint: expect,
+        seconds,
+        save_first_frame: save_first,
+        control,
+        ui,
+        fullscreen,
+        clipboard,
+        audio_in,
+        audio_volume: volume,
+        audio_mute: mute,
+        relay: relay_options,
+        auto_path,
+        force_switch_once: force_switch_once
+            .as_deref()
+            .map(parse_path_kind)
+            .transpose()?,
+        auto_initial_path: auto_initial_path
+            .as_deref()
+            .map(parse_path_kind)
+            .transpose()?,
+        p2p: p2p_options,
+        codec: parse_codec(codec)?,
+        quality_width,
+        quality_height,
+        quality_fps,
+        quality_bitrate,
+        reset_quality,
+        send_files: send_file,
+        probe_bytes: probe_bytes.clamp(64, 1200),
+    })
+}
+
+async fn run_command(command: Command) -> Result<()> {
+    match command {
         Command::Genkey { out } => genkey::run(&out),
         Command::DemoAgent {
             host,
@@ -505,93 +631,9 @@ async fn main() -> Result<()> {
             }))
             .await
         }
-        Command::View {
-            addr,
-            password,
-            expect_fingerprint,
-            seconds,
-            save_first,
-            control,
-            ui,
-            fullscreen,
-            clipboard,
-            relay,
-            relay_tag,
-            relay_key,
-            relay_profile,
-            relay_profiles_config,
-            auto_path,
-            force_switch_once,
-            auto_initial_path,
-            p2p,
-            stun,
-            peer,
-            p2p_port,
-            punch_timeout_ms,
-            codec,
-            quality_width,
-            quality_height,
-            quality_fps,
-            quality_bitrate,
-            reset_quality,
-            send_file,
-            probe_bytes,
-            audio_in,
-            volume,
-            mute,
-        } => {
-            let password = password.read()?;
-            let relay_options = build_relay(
-                relay,
-                relay_tag,
-                relay_key,
-                relay_profile,
-                &relay_profiles_config,
-            )
-            .await?;
-            let p2p_options = build_p2p(p2p, stun, peer, p2p_port, punch_timeout_ms)?;
-            let addr: SocketAddr = addr
-                .parse()
-                .with_context(|| format!("无法解析 Agent 地址 {addr}（示例：127.0.0.1:21116）"))?;
-            let expect = match expect_fingerprint {
-                Some(text) => Some(real::parse_fingerprint_arg(&text)?),
-                None => None,
-            };
-            Box::pin(real::run_view(real::ViewOptions {
-                addr,
-                password,
-                expect_fingerprint: expect,
-                seconds,
-                save_first_frame: save_first,
-                control,
-                ui,
-                fullscreen,
-                clipboard,
-                audio_in,
-                audio_volume: volume,
-                audio_mute: mute,
-                relay: relay_options,
-                auto_path,
-                force_switch_once: force_switch_once
-                    .as_deref()
-                    .map(parse_path_kind)
-                    .transpose()?,
-                auto_initial_path: auto_initial_path
-                    .as_deref()
-                    .map(parse_path_kind)
-                    .transpose()?,
-                p2p: p2p_options,
-                codec: parse_codec(codec)?,
-                quality_width,
-                quality_height,
-                quality_fps,
-                quality_bitrate,
-                reset_quality,
-                send_files: send_file,
-                probe_bytes: probe_bytes.clamp(64, 1200),
-            }))
-            .await
-            .map(|_| ())
+        view @ Command::View { .. } => {
+            let opts = build_view_options(view).await?;
+            Box::pin(real::run_view(opts)).await.map(|_| ())
         }
     }
 }
@@ -616,7 +658,7 @@ fn parse_path_kind(text: &str) -> Result<dfy_path::PathKind> {
     }
 }
 
-/// 解析视频编码格式；未指定时按平台给默认值（Windows 走 MF H.264，其它平台走 MJPEG 兜底）。
+/// 解析视频编码格式；未指定时按平台给默认值（Windows/macOS 走硬编 H.264，其它平台走 MJPEG 兜底）。
 fn parse_codec(text: Option<String>) -> Result<dfy_codec::Codec> {
     match text.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(value) => match value.to_ascii_lowercase().as_str() {
@@ -625,7 +667,7 @@ fn parse_codec(text: Option<String>) -> Result<dfy_codec::Codec> {
             "h265" | "hevc" => anyhow::bail!("--codec h265 暂不支持（v1 只有 h264 / mjpeg）"),
             other => anyhow::bail!("未知 --codec {other}（可选：h264 / mjpeg）"),
         },
-        None => Ok(if cfg!(windows) {
+        None => Ok(if cfg!(any(windows, target_os = "macos")) {
             dfy_codec::Codec::H264
         } else {
             dfy_codec::Codec::Mjpeg

@@ -8,9 +8,9 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::sync::Mutex;
@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use dfy_path::{Action, PathConfig, PathKind, PathMonitor, PathSample};
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use dfy_proto::consts::PERM_AUDIO_OUT;
 use dfy_proto::consts::{
     CAPABILITY_QUALITY_CONTROL, INPUT_KIND_KEY, INPUT_KIND_MOUSE_BTN, INPUT_KIND_MOUSE_MOVE,
@@ -30,7 +30,7 @@ use dfy_proto::msg::InputEvent as ProtoInputEvent;
 use dfy_relay::Role;
 #[cfg(target_os = "linux")]
 use dfy_session::Capturer;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use dfy_session::{
     serve_agent_shared, start_capture_loop_with_encoder_factory, AgentConfig, CaptureHandle,
     CaptureLoop, CaptureLoopConfig, MigrationContext, RuntimeSettings, SessionCoordinator,
@@ -38,7 +38,7 @@ use dfy_session::{
 use dfy_session::{
     Decoder as _, FrameAssembler, RawFrame, StreamFeedbackWindow, FEEDBACK_INTERVAL,
 };
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use dfy_transport::{
     agent_endpoint_on_socket, bind_agent, bind_agent_with_identity, ServerAuth, TlsIdentity,
 };
@@ -54,9 +54,9 @@ use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use crate::adapters::MftDecoderAdapter;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use crate::adapters::MftEncoderAdapter;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use crate::clipboard_bridge::AgentHandler;
 use crate::clipboard_bridge::ViewClipboard;
 use crate::credentials::SessionPassword;
@@ -293,18 +293,20 @@ fn quality_control_envelope(
 
 /// 启动真实 Agent：监听、握手、采集+编码、推流，直到 Ctrl+C。
 pub async fn run_agent(opts: AgentOptions) -> Result<()> {
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = &opts;
         anyhow::bail!(
-            "当前平台的采集后端尚未实现（v1 支持 Windows WGC/DXGI 与 Linux X11；macOS 待做）"
+            "当前平台的采集后端尚未实现（支持 Windows WGC/DXGI、Linux X11 与 macOS ScreenCaptureKit）"
         );
     }
 
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     {
         #[cfg(target_os = "linux")]
         use dfy_capture::LinuxCapturer as PlatformCapturer;
+        #[cfg(target_os = "macos")]
+        use dfy_capture::MacCapturer as PlatformCapturer;
         #[cfg(windows)]
         use dfy_capture::WindowsCapturer as PlatformCapturer;
 
@@ -366,6 +368,13 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
         let monitors = {
             if virtual_displays.is_some() {
                 anyhow::bail!("Windows 虚拟显示尚未接入 DXGI 采集端点；请先安装并验收 IddCx 驱动");
+            }
+            PlatformCapturer::monitors().context("枚举显示器失败")?
+        };
+        #[cfg(target_os = "macos")]
+        let monitors = {
+            if virtual_displays.is_some() {
+                anyhow::bail!("macOS 暂不支持虚拟显示（CGVirtualDisplay 为非公开私有 API，不适合公证分发）；请移除 --virtual-displays 使用物理显示器采集");
             }
             PlatformCapturer::monitors().context("枚举显示器失败")?
         };
@@ -659,6 +668,13 @@ pub async fn run_agent(opts: AgentOptions) -> Result<()> {
                             println!(
                                 "[agent] Windows 采集后端：{}，显示器 {} {}x{}",
                                 capturer.backend_name(),
+                                capturer.monitor().name,
+                                capturer.monitor().w,
+                                capturer.monitor().h
+                            );
+                            #[cfg(target_os = "macos")]
+                            println!(
+                                "[agent] macOS 采集后端：ScreenCaptureKit，显示器 {} {}x{}",
                                 capturer.monitor().name,
                                 capturer.monitor().w,
                                 capturer.monitor().h
@@ -1062,6 +1078,13 @@ async fn resume_on_path(
 }
 
 pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
+    run_view_with_ui(opts, None).await
+}
+
+pub async fn run_view_with_ui(
+    opts: ViewOptions,
+    precreated_ui: Option<dfy_ui::ViewerHandle>,
+) -> Result<ViewStats> {
     let tls = client_tls(opts.expect_fingerprint).context("构造客户端 TLS 失败")?;
     let initial_path = if opts.auto_path {
         opts.auto_initial_path.unwrap_or(PathKind::Direct)
@@ -1294,7 +1317,10 @@ pub async fn run_view(opts: ViewOptions) -> Result<ViewStats> {
     let mut next_file_tick = Instant::now() + Duration::from_millis(100);
 
     // 图形窗口上屏（--ui）：解码线程把 BGRA 帧推给 UI 线程；窗口键盘/鼠标事件转成输入事件。
-    let mut ui = if opts.ui {
+    let mut ui = if let Some(handle) = precreated_ui {
+        println!("[view] UI 窗口已启动（F11 全屏，Esc 关闭，Ctrl+Alt+Shift+Q 切换远控输入）");
+        Some(handle)
+    } else if opts.ui {
         let config = ViewerConfig::new("大肥鱼远程")
             .with_stats(true)
             .with_fullscreen(opts.fullscreen);

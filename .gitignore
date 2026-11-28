@@ -26,6 +26,7 @@
 !notes/linux-rpm-systemd-accept-20261127.md
 !notes/nonblocking-migration-probe-20261127.md
 !notes/windows-installer-upgrade-20261127.md
+!notes/macos-native-20261128.md
 # 设备私钥（genkey 产物），绝不入库
 device.key
 device.pub

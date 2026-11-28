@@ -5,7 +5,8 @@
 //!
 //! 本 crate 同时服务被控端与控制端：
 //! - 被控端：[`InputSink`] + [`create_sink`] 把 [`InputEvent`] 注入系统；Windows 使用
-//!   `SendInput`，Linux X11 使用 XTest + XKB 物理键名，并提供 `release_all`/`Drop` 防卡键；
+//!   `SendInput`，Linux X11 使用 XTest + XKB 物理键名，macOS 使用 `CGEvent`，
+//!   并提供 `release_all`/`Drop` 防卡键；
 //! - 控制端：[`HidKeymap`] 负责 HID Usage ↔ VK ↔ 扫描码换算，
 //!   [`decide_shortcut`] 负责快捷键四态决策（只发远端 / 只本地 / 两边 / 拦截）；
 //! - 通用：[`utf16_units`] 处理 Unicode 文本拆分，[`testing::RecordingSink`] 供测试记录事件。
@@ -14,7 +15,8 @@
 //! 与 XKB。Wayland 需要另行实现用户授权的 RemoteDesktop portal，本后端明确拒绝。
 //! Linux 的物理键事件使用目标端布局/IME；直接 [`InputEvent::Text`] 返回明确错误。
 //! XKB 物理键码表在建立 sink 时读取；重新配置物理键码后应重建 sink。
-//! macOS 和其他平台返回 [`InputError::Unsupported`]。
+//! macOS 需要「辅助功能（Accessibility）」权限（`AXIsProcessTrusted`）；其它未支持平台
+//! 返回 [`InputError::Unsupported`]。
 //!
 //! ```no_run
 //! # fn demo() -> anyhow::Result<()> {
@@ -29,11 +31,14 @@
 
 pub mod event;
 pub mod keymap;
+pub mod macos_keymap;
 pub mod shortcut;
 pub mod testing;
 
+#[cfg(target_os = "macos")]
+mod macos;
 mod normalize;
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 mod unsupported;
 #[cfg(windows)]
 mod win;
@@ -86,6 +91,7 @@ pub use event::{
     utf16_units, InputError, InputEvent, InputSink, KeyState, MouseButton, PressedState,
 };
 pub use keymap::{HidEntry, HidKeymap, EXTENDED_PREFIX, PAUSE_SCANCODE};
+pub use macos_keymap::{macos_keycode_to_usage, macos_usage_to_keycode};
 pub use shortcut::{decide_shortcut, ShortcutContext, ShortcutDecision, ShortcutTable};
 
 /// 创建 Windows `SendInput` 输入注入后端。
@@ -102,6 +108,14 @@ pub fn create_sink() -> anyhow::Result<Box<dyn InputSink>> {
     x11::create_sink()
 }
 
+/// 创建 macOS `CGEvent` 输入注入后端。
+///
+/// 当前进程未获「辅助功能（Accessibility）」授权时返回明确错误。
+#[cfg(target_os = "macos")]
+pub fn create_sink() -> anyhow::Result<Box<dyn InputSink>> {
+    macos::create_sink()
+}
+
 /// Creates an X11 input sink on an explicitly selected managed display.
 ///
 /// Unlike [`create_sink`], this does not require the process-wide desktop environment and
@@ -112,7 +126,7 @@ pub fn create_sink_on_display(display: &str) -> anyhow::Result<Box<dyn InputSink
 }
 
 /// 其他平台返回 [`InputError::Unsupported`]。
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn create_sink() -> anyhow::Result<Box<dyn InputSink>> {
     unsupported::create_sink()
 }
