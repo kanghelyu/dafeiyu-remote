@@ -373,6 +373,7 @@ impl AudioSink for NullSink {
 }
 
 /// 声道下混：把多声道交错 PCM 帧求平均压成单声道。
+#[cfg(any(feature = "device-backend", test))]
 fn downmix_interleaved_to_mono(interleaved: &[i16], channels: usize) -> Vec<i16> {
     if channels <= 1 {
         return interleaved.to_vec();
@@ -388,6 +389,7 @@ fn downmix_interleaved_to_mono(interleaved: &[i16], channels: usize) -> Vec<i16>
 }
 
 /// 声道上混：把单声道 PCM 复制到多声道交错输出。
+#[cfg(any(feature = "device-backend", test))]
 fn upmix_mono_to_interleaved(mono: &[i16], channels: usize) -> Vec<i16> {
     if channels <= 1 {
         return mono.to_vec();
@@ -402,6 +404,7 @@ fn upmix_mono_to_interleaved(mono: &[i16], channels: usize) -> Vec<i16> {
 }
 
 /// 连续分块单声道线性重采样器（供 48 kHz CoreAudio/WASAPI 设备与 16 kHz 线格式互通）。
+#[cfg(any(feature = "device-backend", test))]
 struct MonoResampler {
     src_rate: u32,
     dst_rate: u32,
@@ -410,6 +413,7 @@ struct MonoResampler {
     prev: Option<i16>,
 }
 
+#[cfg(any(feature = "device-backend", test))]
 impl MonoResampler {
     fn new(src_rate: u32, dst_rate: u32) -> Self {
         let step = if src_rate == 0 || dst_rate == 0 {

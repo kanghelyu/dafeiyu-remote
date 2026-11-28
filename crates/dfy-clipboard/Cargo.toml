@@ -26,7 +26,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["xfixes", "allow-unsafe-code"] }
 
-[target.'cfg(target_os = "macos")'.build-dependencies]
+[build-dependencies]
 cc = "1"
 
 [target.'cfg(windows)'.dependencies]
