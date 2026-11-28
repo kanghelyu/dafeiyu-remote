@@ -11,6 +11,8 @@
 //! `dfy-relay-profiles` 的同一份配置与原子保存。标签使用 ASCII，保证 Windows
 //! 系统字体与 Linux DejaVu 都能栅格化（中文字形依赖系统字体，不作保证）。
 
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod draw;
 
 use std::net::SocketAddr;
@@ -51,12 +53,36 @@ const ACCENT: u32 = 0x004FC3F7;
 const GOOD: u32 = 0x004ADE7A;
 const BAD: u32 = 0x00FF6B6B;
 
+fn default_config_path() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        return PathBuf::from(appdata)
+            .join("Dafeiyu Remote")
+            .join("relay-profiles.toml");
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            return PathBuf::from(xdg)
+                .join("dafeiyu")
+                .join("relay-profiles.toml");
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join(".config")
+                .join("dafeiyu")
+                .join("relay-profiles.toml");
+        }
+    }
+    PathBuf::from("relay-profiles.toml")
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "dfy-manager", about = "Dafeiyu Remote relay/display manager")]
 struct Args {
     /// 中继档案配置（含密钥，注意权限）
-    #[arg(long, default_value = "relay-profiles.toml")]
-    config: PathBuf,
+    #[arg(long)]
+    config: Option<PathBuf>,
     /// 可选系统字体路径；缺省按平台选择常见无衬线字体
     #[arg(long)]
     font: Option<PathBuf>,
@@ -551,8 +577,9 @@ struct ManagerApp {
 
 impl ManagerApp {
     fn new(args: Args) -> Result<Self> {
-        let store = RelayProfileStore::load(&args.config)?;
-        let devices = DeviceBook::load(DeviceBook::sibling_path(&args.config));
+        let config_path = args.config.unwrap_or_else(default_config_path);
+        let store = RelayProfileStore::load(&config_path)?;
+        let devices = DeviceBook::load(DeviceBook::sibling_path(&config_path));
         let font = load_default_font(args.font.as_deref())?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -820,6 +847,12 @@ impl ManagerApp {
         };
         let bin = find_dfy_binary();
         let mut cmd = std::process::Command::new(&bin);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         cmd.arg("view").arg("--ui").arg("--addr").arg(&entry.addr);
         if entry.use_relay {
             if let Some(relay) = self.store.selected() {
@@ -880,7 +913,7 @@ impl ManagerApp {
         self.apply(command);
     }
 
-    fn handle_click(&mut self, x: f64, y: f64, event_loop: &ActiveEventLoop) {
+    fn handle_click(&mut self, x: f64, y: f64) {
         let (x, y) = (x as u32, y as u32);
         if y < LIST_TOP {
             if y < HEADER_H {
@@ -900,8 +933,6 @@ impl ManagerApp {
         }
         if let Some(index) = row_from_y(y, LIST_TOP, ROW_H, self.row_count()) {
             self.selected = index;
-        } else if y + ROW_H >= WINDOW_H.saturating_sub(40) {
-            event_loop.exit();
         }
     }
 
@@ -1202,7 +1233,7 @@ impl ApplicationHandler for ManagerApp {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
-                self.handle_click(self.cursor.x, self.cursor.y, event_loop);
+                self.handle_click(self.cursor.x, self.cursor.y);
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -1338,7 +1369,7 @@ mod tests {
         )
         .expect("write config");
         let mut app = match ManagerApp::new(Args {
-            config: config.clone(),
+            config: Some(config.clone()),
             font: None,
             tab: "relay".to_string(),
             test_health: false,
@@ -1384,7 +1415,7 @@ mod tests {
         )
         .expect("write config");
         let mut app = match ManagerApp::new(Args {
-            config: config.clone(),
+            config: Some(config.clone()),
             font: None,
             tab: "relay".to_string(),
             test_health: false,
@@ -1458,7 +1489,7 @@ mod tests {
         )
         .expect("write devices");
         let mut app = match ManagerApp::new(Args {
-            config: missing_config.clone(),
+            config: Some(missing_config.clone()),
             font: None,
             tab: "devices".to_string(),
             test_health: false,

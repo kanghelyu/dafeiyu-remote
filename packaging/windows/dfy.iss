@@ -45,21 +45,25 @@ Source: "{#SourceDir}\dfy.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs
 
 [Icons]
-Name: "{group}\Dafeiyu CLI"; Filename: "{app}\dfy.exe"; WorkingDir: "{app}"; IconFilename: "{app}\dfy.ico"
-Name: "{group}\Dafeiyu Relay"; Filename: "{app}\dfy-relay.exe"; WorkingDir: "{app}"; IconFilename: "{app}\dfy.ico"
 #ifdef HasManager
-Name: "{group}\Dafeiyu Manager"; Filename: "{app}\dfy-manager.exe"; WorkingDir: "{app}"; IconFilename: "{app}\dfy.ico"
-Name: "{autodesktop}\Dafeiyu Manager"; Filename: "{app}\dfy-manager.exe"; WorkingDir: "{app}"; IconFilename: "{app}\dfy.ico"; Tasks: desktopicon
+Name: "{group}\Dafeiyu Remote"; Filename: "{app}\dfy-manager.exe"; WorkingDir: "{app}"; IconFilename: "{app}\dfy.ico"
+Name: "{autodesktop}\Dafeiyu Remote"; Filename: "{app}\dfy-manager.exe"; WorkingDir: "{app}"; IconFilename: "{app}\dfy.ico"; Tasks: desktopicon
+#else
+Name: "{group}\Dafeiyu Remote"; Filename: "{app}\dfy.exe"; WorkingDir: "{app}"; IconFilename: "{app}\dfy.ico"
+Name: "{autodesktop}\Dafeiyu Remote"; Filename: "{app}\dfy.exe"; WorkingDir: "{app}"; IconFilename: "{app}\dfy.ico"; Tasks: desktopicon
 #endif
-Name: "{group}\Relay deployment notes"; Filename: "{app}\docs\relay-deployment.md"
-Name: "{autodesktop}\Dafeiyu CLI"; Filename: "{app}\dfy.exe"; WorkingDir: "{app}"; IconFilename: "{app}\dfy.ico"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
+#ifdef HasManager
+[Run]
+Filename: "{app}\dfy-manager.exe"; Description: "Launch Dafeiyu Remote"; Flags: nowait postinstall skipifsilent
+#endif
+
 [Messages]
 #ifdef HasManager
-WelcomeLabel2=This installs Dafeiyu Manager, command-line tools, and relay. No Windows service is installed.
+WelcomeLabel2=This installs Dafeiyu Remote on your computer. No Windows service is installed.
 #else
 WelcomeLabel2=This installs the Dafeiyu command-line tools and relay. No Windows service is installed.
 #endif
