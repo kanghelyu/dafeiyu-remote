@@ -294,14 +294,15 @@ def check_android_builder(directory: Path) -> None:
     assert "clean assembleDebug assembleRelease bundleRelease" in (directory / "gradle.log").read_text()
     print("PASS Android clean APK/AAB tasks, unsigned labels and required-signing failure via fake Gradle wrapper")
 
-    # Exercise the signed path without real keys: apksigner is a local test double.
+    # Exercise the signed path without real keys: java/apksigner.jar is a local test double.
     write_fake_gradle(project, signed=True)
     sdk = directory / "fake-sdk"
     tools = sdk / "build-tools/36.0.0"
-    tools.mkdir(parents=True)
-    verifier = tools / "apksigner"
-    verifier.write_text('#!/usr/bin/env bash\n[ -s "$3" ] && printf "verified by test double\\n"\n', encoding="utf-8")
-    verifier.chmod(0o755)
+    (tools / "lib").mkdir(parents=True)
+    (tools / "lib/apksigner.jar").write_bytes(b"test apksigner jar")
+    java = tools / "java"
+    java.write_text('#!/usr/bin/env bash\n[ "$1" = -jar ] && [ -s "$2" ] && [ "$3" = verify ] && [ -s "$5" ] && printf "verified by test double\\n"\n', encoding="utf-8")
+    java.chmod(0o755)
     jar_verifier = tools / "jarsigner"
     jar_verifier.write_text('#!/usr/bin/env bash\n[ "$1" = -verify ] && [ -s "$2" ]\n', encoding="utf-8")
     jar_verifier.chmod(0o755)
@@ -309,6 +310,7 @@ def check_android_builder(directory: Path) -> None:
     keystore.write_bytes(b"not a real keystore")
     signed_output = directory / "android-signed-output"
     env = os.environ.copy()
+    env.pop("JAVA_HOME", None)
     env.update({"ANDROID_KEYSTORE_PATH": str(keystore), "ANDROID_KEYSTORE_PASSWORD": "test", "ANDROID_KEY_ALIAS": "test", "ANDROID_KEY_PASSWORD": "test", "ANDROID_SDK_ROOT": str(sdk), "MOCK_GRADLE_LOG": str(directory / "gradle.log"), "PATH": str(tools) + os.pathsep + env["PATH"]})
     run("bash", PACKAGING / "android/build.sh", "--android-dir", project, "--output-dir", signed_output, "--signing", "auto", env=env)
     assert (signed_output / "dafeiyu-1.2.3-release.apk").is_file()

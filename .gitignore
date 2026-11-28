@@ -28,9 +28,15 @@
 !notes/windows-installer-upgrade-20261127.md
 !notes/macos-native-20261128.md
 !notes/ui-all-platforms-20261128.md
+!notes/android-signing-release-20261128.md
 # 设备私钥（genkey 产物），绝不入库
 device.key
 device.pub
+# Android 发布签名材料，绝不入库
+*.jks
+*.keystore
+key.properties
+dafeiyu-release-credentials.properties
 # 客户端中继池（含预共享密钥），绝不入库
 dfy-relay-profiles.toml
 *.relay-profiles.toml

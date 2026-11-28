@@ -1,21 +1,25 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 // No credentials are stored here. Values are supplied only through process env vars.
-gradle.projectsEvaluated {
-    def app = rootProject.findProject(':app')
-    if (app == null || !app.plugins.hasPlugin('com.android.application')) return
-    app.android {
-        signingConfigs {
-            ciRelease {
-                storeFile file(System.getenv('DFY_KEYSTORE_PATH'))
-                storePassword System.getenv('DFY_KEYSTORE_PASSWORD')
-                keyAlias System.getenv('DFY_KEY_ALIAS')
-                keyPassword System.getenv('DFY_KEY_PASSWORD')
-            }
+gradle.beforeProject { project ->
+    project.pluginManager.withPlugin('com.android.application') {
+        def android = project.extensions.getByName('android')
+        def keyStorePath = System.getenv('DFY_KEYSTORE_PATH')
+        def storePassword = System.getenv('DFY_KEYSTORE_PASSWORD')
+        def keyAlias = System.getenv('DFY_KEY_ALIAS')
+        def keyPassword = System.getenv('DFY_KEY_PASSWORD')
+        if (!keyStorePath || !storePassword || !keyAlias || !keyPassword) {
+            throw new GradleException('Android release signing credentials are incomplete')
         }
-        buildTypes {
-            release {
-                signingConfig signingConfigs.ciRelease
-            }
+        def releaseSigning = android.signingConfigs.maybeCreate('ciRelease')
+        releaseSigning.storeFile file(keyStorePath)
+        releaseSigning.storePassword storePassword
+        releaseSigning.keyAlias keyAlias
+        releaseSigning.keyPassword keyPassword
+        def keyStore = java.security.KeyStore.getInstance('PKCS12')
+        new FileInputStream(keyStorePath).withCloseable { keyStore.load(it, storePassword.toCharArray()) }
+        if (keyStore.getKey(keyAlias, keyPassword.toCharArray()) == null) {
+            throw new GradleException('Android release signing alias was not found')
         }
+        android.buildTypes.getByName('release').signingConfig = releaseSigning
     }
 }

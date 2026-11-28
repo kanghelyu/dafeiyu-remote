@@ -366,7 +366,7 @@ jobs:
           printf 'y\ny\ny\ny\ny\ny\ny\ny\ny\ny\n' | "$SDKMGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null
           "$SDKMGR" --sdk_root="$SDK_ROOT" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
           cargo install cargo-ndk --locked
-      - name: 构建 APK/AAB（秘密缺失时明确输出 unsigned）
+      - name: 构建并验证签名 APK/AAB（签名凭据缺失即失败）
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -376,7 +376,7 @@ jobs:
         run: |
           bash packaging/android/build.sh \
             --version "$RELEASE_TAG" \
-            --signing auto \
+            --signing required \
             --output-dir dist
       - uses: actions/upload-artifact@v4
         with:
@@ -429,11 +429,10 @@ jobs:
             包含 `dfy` / `dfy-relay` CLI、`dfy-manager`（Windows 安装包及 macOS `Dafeiyu Remote.app`）、Linux DEB/RPM、
             Windows Inno Setup、macOS PKG/DMG、Android APK/AAB，以及 CycloneDX SBOM
             (`dafeiyu-*-sbom.cdx.json`) 与 `THIRD-PARTY-NOTICES.txt`。
-            Windows 包不安装服务包装器。
-            未配置签名秘密的产物会明确标记为 unsigned。
+            Windows 包不安装服务包装器。Android release APK/AAB 必须签名；签名凭据缺失时构建失败，不发布未签名包。
 
-            ### 已知边界（非商业/未签名说明）
-            - Windows IDD 虚拟显示驱动签名/HLK/WHQL、macOS 虚拟显示（不启用私有 CGVirtualDisplay API）、Windows/macOS/Android 正式代码签名与公证、Android 真机及 Mac↔Windows/公网跨物理机交互压测仍未完成（详见 `docs/STATUS.md`）。
+            ### 已知边界（代码签名/验收说明）
+            - Windows IDD 虚拟显示驱动签名/HLK/WHQL、macOS 虚拟显示（不启用私有 CGVirtualDisplay API）、Windows/macOS 正式代码签名与 Apple 公证仍未完成。Android release APK/AAB 由 CI 签名，不等同于 Google Play 发布或真机验收；Android 真机及 Mac↔Windows/公网跨物理机交互压测仍未完成（详见 `docs/STATUS.md`）。
 
             ### 下载
             - `dafeiyu-*-unknown-linux-gnu.tar.gz`：Linux x86_64 / aarch64 CLI + relay

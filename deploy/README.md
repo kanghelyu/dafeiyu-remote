@@ -142,7 +142,8 @@ Compose 从仓库构建镜像，只映射数据面端口；管理端口映射到
 - macOS Release 按 x86_64 / arm64 提供 `.pkg` 和含该 `.pkg` 的 `.dmg`，安装命令行
   `dfy`、`dfy-relay` 到 `/usr/local/bin`。本项目没有随包附带原生 GUI macOS app。
 - 未配置签名身份时，macOS 文件名明确包含 `unsigned`；配置身份但未配置公证凭据时
-  标记为已签名、未公证。Android release 未提供完整签名秘密时，输出明确带 `unsigned`。
+  标记为已签名、未公证。Android 本地构建未提供完整签名秘密时，输出明确带 `unsigned`；
+  Release workflow 使用 `--signing required`，凭据缺失即失败，不发布未签名 Android 包。
 
 ## 当前配置字段
 
@@ -197,7 +198,8 @@ packaging/android/build.sh --output-dir dist
   `APPLE_ID` + `APPLE_PASSWORD` + `APPLE_TEAM_ID`。可选 `MAC_DMG_SIGNING_IDENTITY` 用于签署 DMG；
   `MAC_PRE_NOTARIZE_HOOK` / `MAC_POST_NOTARIZE_HOOK` 是可执行脚本路径，分别接收待公证和已 staple 的产物路径。
 - Android：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、
-  `ANDROID_KEY_PASSWORD`。四项齐全才签名 release；否则生成带 `unsigned` 标记的 APK/AAB。
+  `ANDROID_KEY_PASSWORD`。本地构建四项齐全才签名 release，否则生成带 `unsigned` 标记的 APK/AAB；
+  Release workflow 四项必需，缺失时明确失败。私钥、keystore 与凭据文件不得入库。
 
 脚本、静态校验和模拟载荷测试可在任意有 Bash/Python 的机器运行；真正的安装、签名、公证和
 系统服务行为必须在对应操作系统上验证。

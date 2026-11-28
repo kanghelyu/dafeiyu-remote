@@ -158,11 +158,18 @@ for line in Path(sys.argv[1]).read_text().splitlines():
 PY
 )"
   fi
-  APKSIGNER="$(find "${SDK_DIR:-/nonexistent}/build-tools" -maxdepth 2 -name apksigner -type f 2>/dev/null | sort -V | tail -n 1 || true)"
-  [ -n "$APKSIGNER" ] || die "signed APK produced but apksigner was not found under ANDROID_SDK_ROOT/build-tools"
-  "$APKSIGNER" verify --verbose "$OUTPUT_DIR/dafeiyu-${VERSION}-release.apk"
-  need jarsigner
-  jarsigner -verify "$OUTPUT_DIR/dafeiyu-${VERSION}-release.aab" >/dev/null
+  APKSIGNER_JAR="$(find "${SDK_DIR:-/nonexistent}/build-tools" -maxdepth 3 -type f -path '*/lib/apksigner.jar' 2>/dev/null | sort -V | tail -n 1 || true)"
+  [ -n "$APKSIGNER_JAR" ] || die "signed APK produced but apksigner.jar was not found under ANDROID_SDK_ROOT/build-tools"
+  JAVA_CMD="${JAVA_HOME:+$JAVA_HOME/bin/java}"
+  if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java.exe" ]; then JAVA_CMD="$JAVA_HOME/bin/java.exe"; fi
+  if [ -z "$JAVA_CMD" ] || [ ! -x "$JAVA_CMD" ]; then JAVA_CMD="$(command -v java || command -v java.exe || true)"; fi
+  [ -n "$JAVA_CMD" ] && [ -x "$JAVA_CMD" ] || die "missing required tool: java"
+  JARSIGNER_CMD="${JAVA_HOME:+$JAVA_HOME/bin/jarsigner}"
+  if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/jarsigner.exe" ]; then JARSIGNER_CMD="$JAVA_HOME/bin/jarsigner.exe"; fi
+  if [ -z "$JARSIGNER_CMD" ] || [ ! -x "$JARSIGNER_CMD" ]; then JARSIGNER_CMD="$(command -v jarsigner || command -v jarsigner.exe || true)"; fi
+  [ -n "$JARSIGNER_CMD" ] && [ -x "$JARSIGNER_CMD" ] || die "missing required tool: jarsigner"
+  "$JAVA_CMD" -jar "$APKSIGNER_JAR" verify --verbose "$OUTPUT_DIR/dafeiyu-${VERSION}-release.apk"
+  "$JARSIGNER_CMD" -verify "$OUTPUT_DIR/dafeiyu-${VERSION}-release.aab" >/dev/null
 fi
 cat > "$OUTPUT_DIR/BUILD-INFO.txt" <<EOF
 Dafeiyu Android packaging metadata
