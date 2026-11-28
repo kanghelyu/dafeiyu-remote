@@ -37,8 +37,8 @@ pub struct AgentSettings {
 impl AgentSettings {
     pub fn new(password: String, allow_input: bool) -> Result<Self> {
         anyhow::ensure!(
-            (16..=1024).contains(&password.len()),
-            "会话口令必须为 16–1024 字节"
+            (6..=1024).contains(&password.len()) && !password.trim().is_empty(),
+            "会话口令至少 6 位（6–1024 字节），且不能全为空白"
         );
         Ok(Self {
             password: Zeroizing::new(password),
@@ -410,7 +410,9 @@ mod tests {
 
     #[test]
     fn password_policy_matches_cli() {
-        assert!(AgentSettings::new("short".into(), false).is_err());
+        assert!(AgentSettings::new("12345".into(), false).is_err());
+        assert!(AgentSettings::new("      ".into(), false).is_err());
+        assert!(AgentSettings::new("123456".into(), false).is_ok());
         assert!(AgentSettings::new("0123456789abcdef".into(), false).is_ok());
         assert!(AgentSettings::new("x".repeat(1025), false).is_err());
     }

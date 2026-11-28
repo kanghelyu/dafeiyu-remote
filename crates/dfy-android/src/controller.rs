@@ -52,8 +52,8 @@ impl ControllerSettings {
         );
         anyhow::ensure!(port != 0, "端口必须在 1–65535 之间");
         anyhow::ensure!(
-            (16..=1024).contains(&password.len()),
-            "会话口令必须为 16–1024 个 UTF-8 字节"
+            (6..=1024).contains(&password.len()) && !password.trim().is_empty(),
+            "会话口令至少 6 位（6–1024 字节），且不能全为空白"
         );
         anyhow::ensure!(
             fingerprint
@@ -727,10 +727,24 @@ mod tests {
         assert!(ControllerSettings::new(
             "127.0.0.1".into(),
             24443,
-            "short".into(),
+            "12345".into(),
             &"11".repeat(32)
         )
         .is_err());
+        assert!(ControllerSettings::new(
+            "127.0.0.1".into(),
+            24443,
+            "      ".into(),
+            &"11".repeat(32)
+        )
+        .is_err());
+        assert!(ControllerSettings::new(
+            "127.0.0.1".into(),
+            24443,
+            "123456".into(),
+            &"11".repeat(32)
+        )
+        .is_ok());
         assert!(ControllerSettings::new(
             "".into(),
             24443,

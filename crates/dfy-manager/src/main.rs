@@ -28,8 +28,9 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 const APP_TITLE: &str = "大肥鱼远程";
-const MIN_PASSWORD_BYTES: usize = 16;
+const MIN_PASSWORD_BYTES: usize = 6;
 const MAX_PASSWORD_BYTES: usize = 1024;
+const DEFAULT_PORT: u16 = 21116;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -307,7 +308,6 @@ struct ViewerRequest {
     device_id: Option<String>,
 }
 
-#[derive(Default)]
 struct ConnectForm {
     name: String,
     addr: String,
@@ -319,18 +319,24 @@ struct ConnectForm {
     show_password: bool,
 }
 
-impl Default for Secret {
+impl Default for ConnectForm {
     fn default() -> Self {
-        Self::new(String::new())
+        Self {
+            name: String::new(),
+            addr: String::new(),
+            password: Secret::default(),
+            use_relay: false,
+            relay_tag: String::new(),
+            fingerprint: String::new(),
+            clipboard: true,
+            show_password: false,
+        }
     }
 }
 
-impl ConnectForm {
-    fn with_addr(addr: &str) -> Self {
-        Self {
-            addr: addr.to_string(),
-            ..Self::default()
-        }
+impl Default for Secret {
+    fn default() -> Self {
+        Self::new(String::new())
     }
 }
 
@@ -352,11 +358,11 @@ impl Default for AgentForm {
     fn default() -> Self {
         Self {
             host: "0.0.0.0".into(),
-            port: "21116".into(),
-            password: Secret::default(),
-            show_password: false,
+            port: DEFAULT_PORT.to_string(),
+            password: Secret::new(generate_password()),
+            show_password: true,
             allow_input: true,
-            allow_clipboard: false,
+            allow_clipboard: true,
             audio_out: false,
             use_relay: false,
             relay_tag: String::new(),
@@ -529,9 +535,19 @@ struct ConfirmState {
     action: ConfirmAction,
 }
 
+struct ConnectDeviceModal {
+    device_id: String,
+    name: String,
+    addr: String,
+    password: Secret,
+    show_password: bool,
+    focus_requested: bool,
+}
+
 enum Modal {
     None,
     Device(DeviceForm),
+    ConnectDevice(ConnectDeviceModal),
     Relay(RelayForm),
     Confirm(ConfirmState),
 }
@@ -543,6 +559,7 @@ struct ManagerApp {
     store_error: Option<String>,
     book_error: Option<String>,
     dfy_path: PathBuf,
+    local_ip: String,
     connect: ConnectForm,
     agent: AgentForm,
     search: String,
@@ -602,7 +619,8 @@ impl ManagerApp {
             store_error,
             book_error,
             dfy_path: resolve_dfy_path(args.dfy),
-            connect: ConnectForm::with_addr("127.0.0.1:21116"),
+            local_ip: detect_local_lan_ip(),
+            connect: ConnectForm::default(),
             agent: AgentForm::default(),
             search: String::new(),
             display_draft: DisplayDraft::default(),
@@ -1014,11 +1032,10 @@ impl ManagerApp {
 
     fn save_device_form(&mut self, form: &DeviceForm) -> Result<()> {
         let name = form.name.trim().to_string();
-        let addr = form.addr.trim().to_string();
-        if name.is_empty() || addr.is_empty() {
-            bail!("请填写设备名称和地址");
+        let addr = normalize_addr(&form.addr)?;
+        if name.is_empty() {
+            bail!("请填写设备名称");
         }
-        validate_addr(&addr)?;
         let entry = if let Some(id) = &form.id {
             let mut entry = self.book.get(id).cloned().context("要编辑的设备不存在")?;
             entry.name = name;
@@ -1049,14 +1066,21 @@ impl ManagerApp {
     }
 
     fn connect_form(&mut self) {
+        let addr = match normalize_addr(&self.connect.addr) {
+            Ok(addr) => addr,
+            Err(err) => {
+                self.set_status(err.to_string(), true);
+                return;
+            }
+        };
         let password = Zeroizing::new(self.connect.password.get().to_string());
         let request = ViewerRequest {
             label: if self.connect.name.trim().is_empty() {
-                self.connect.addr.trim().to_string()
+                addr.clone()
             } else {
                 self.connect.name.trim().to_string()
             },
-            addr: self.connect.addr.trim().to_string(),
+            addr,
             use_relay: self.connect.use_relay,
             relay_tag: self.connect.relay_tag.trim().to_string(),
             fingerprint: self.connect.fingerprint.trim().to_string(),
@@ -1075,6 +1099,17 @@ impl ManagerApp {
             return;
         };
         let password = Zeroizing::new(self.connect.password.get().to_string());
+        if password.is_empty() {
+            self.set_modal(Modal::ConnectDevice(ConnectDeviceModal {
+                device_id: id,
+                name: entry.name,
+                addr: entry.addr,
+                password: Secret::default(),
+                show_password: false,
+                focus_requested: false,
+            }));
+            return;
+        }
         match self.launch_viewer(
             ViewerRequest {
                 label: entry.name,
@@ -1090,6 +1125,26 @@ impl ManagerApp {
             Ok(()) => self.connect.password.clear(),
             Err(err) => self.set_status(err.to_string(), true),
         }
+    }
+
+    fn connect_saved_with_password(&mut self, device_id: &str, password: &str) -> Result<()> {
+        let entry = self
+            .book
+            .get(device_id)
+            .cloned()
+            .context("设备已不存在，请刷新列表")?;
+        self.launch_viewer(
+            ViewerRequest {
+                label: entry.name,
+                addr: entry.addr,
+                use_relay: entry.use_relay,
+                relay_tag: entry.relay_tag,
+                fingerprint: entry.fingerprint,
+                clipboard: self.connect.clipboard,
+                device_id: Some(entry.id),
+            },
+            password,
+        )
     }
 
     fn launch_viewer(&mut self, request: ViewerRequest, password: &str) -> Result<()> {
@@ -1309,7 +1364,7 @@ fn view_command(
     relay_config: &Path,
     relay_id: Option<&str>,
 ) -> Result<Command> {
-    validate_addr(&request.addr)?;
+    let addr = normalize_addr(&request.addr)?;
     if !request.fingerprint.is_empty() {
         validate_fingerprint(&request.fingerprint)?;
     }
@@ -1321,7 +1376,7 @@ fn view_command(
     }
     let mut command = Command::new(dfy);
     command.args(["view", "--ui", "--control", "--password-stdin"]);
-    command.arg("--addr").arg(&request.addr);
+    command.arg("--addr").arg(addr);
     if request.clipboard {
         command.arg("--clipboard");
     }
@@ -1397,15 +1452,70 @@ fn validate_password(password: &str) -> Result<()> {
     if !(MIN_PASSWORD_BYTES..=MAX_PASSWORD_BYTES).contains(&password.len())
         || password.trim().is_empty()
     {
-        bail!("会话口令必须为 16–1024 字节，且不能全为空白");
+        bail!("连接密码至少 6 位（不超过 1024 字节），且不能全为空白");
     }
     Ok(())
 }
 
+fn normalize_addr(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("请输入设备地址，例如 192.168.1.20 或 192.168.1.20:{DEFAULT_PORT}");
+    }
+    if let Ok(addr) = trimmed.parse::<SocketAddr>() {
+        if addr.port() == 0 {
+            bail!("端口号不能为 0");
+        }
+        return Ok(addr.to_string());
+    }
+    let bare = trimmed
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(trimmed);
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        return Ok(SocketAddr::new(ip, DEFAULT_PORT).to_string());
+    }
+    bail!("地址格式无效，请输入 IP 或 IP:端口（例如 192.168.1.20 或 192.168.1.20:{DEFAULT_PORT}）")
+}
+
 fn validate_addr(addr: &str) -> Result<()> {
-    addr.parse::<std::net::SocketAddr>()
-        .with_context(|| format!("地址必须是 IP:端口，例如 192.168.1.20:21116；收到 {addr}"))?;
-    Ok(())
+    normalize_addr(addr).map(|_| ())
+}
+
+fn parse_connect_snippet(raw: &str) -> Option<(String, String)> {
+    let mut parts = raw.split_whitespace();
+    let first = parts.next()?;
+    let second = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let addr = normalize_addr(first).ok()?;
+    Some((addr, second.to_string()))
+}
+
+fn detect_local_lan_ip() -> String {
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = socket.local_addr() {
+                let ip = addr.ip();
+                if !ip.is_unspecified() {
+                    return ip.to_string();
+                }
+            }
+        }
+    }
+    "127.0.0.1".to_string()
+}
+
+fn display_agent_addr(host: &str, port: &str, lan_ip: &str) -> String {
+    let trimmed = host.trim();
+    if trimmed.is_empty() || trimmed == "0.0.0.0" || trimmed == "::" {
+        format!("{lan_ip}:{port}")
+    } else if trimmed.contains(':') && !trimmed.starts_with('[') {
+        format!("[{trimmed}]:{port}")
+    } else {
+        format!("{trimmed}:{port}")
+    }
 }
 
 fn validate_relay_tag(tag: &str) -> Result<()> {
@@ -1530,9 +1640,9 @@ fn random_suffix(length: usize) -> String {
 }
 
 fn generate_password() -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    const ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
     let mut rng = rand::thread_rng();
-    (0..24)
+    (0..6)
         .map(|_| char::from(ALPHABET[rng.gen_range(0..ALPHABET.len())]))
         .collect()
 }
@@ -1836,12 +1946,20 @@ impl ManagerApp {
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                     ui.add_space(8.0);
                     if compact {
-                        ui.label(RichText::new("v0.1").small().color(COLOR_FAINT));
-                    } else {
                         ui.label(
-                            RichText::new("v0.1 · PolyForm NC")
+                            RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
                                 .small()
                                 .color(COLOR_FAINT),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new(concat!(
+                                "v",
+                                env!("CARGO_PKG_VERSION"),
+                                " · PolyForm NC"
+                            ))
+                            .small()
+                            .color(COLOR_FAINT),
                         );
                         ui.label(
                             RichText::new("安全优先的远程连接")
@@ -1858,79 +1976,70 @@ impl ManagerApp {
             ui,
             "远程连接",
             "连接设备",
-            "输入对方提供的地址和会话口令。密码只用于本次连接，不会保存。",
+            "只需输入对方地址和连接密码（不少于 6 位），也可直接粘贴连接码。密码不会保存到磁盘。",
         );
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("快速连接").size(17.0).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    status_pill(ui, "口令仅用于本次会话", StatusPill::Accent);
+                    status_pill(ui, "支持直接粘贴“地址 密码”", StatusPill::Accent);
                 });
             });
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new("直连适合同一网络；跨网络连接可使用已配置的中继。")
-                    .small()
-                    .color(COLOR_MUTED),
-            );
-            ui.add_space(16.0);
+            ui.add_space(14.0);
+            let mut submit_connect = false;
             form_grid(ui, "quick-connect", |ui| {
-                grid_label(ui, "名称（可选）", "connect-name", |ui, width| {
-                    ui.add_sized(
-                        [width, 0.0],
-                        egui::TextEdit::singleline(&mut self.connect.name),
-                    );
-                });
-                grid_label(ui, "设备地址", "connect-addr", |ui, width| {
-                    ui.add_sized(
+                grid_label(ui, "对方地址", "connect-addr", |ui, width| {
+                    let response = ui.add_sized(
                         [width, 0.0],
                         egui::TextEdit::singleline(&mut self.connect.addr)
-                            .hint_text("192.168.1.20:21116"),
+                            .hint_text("192.168.1.20（默认端口 21116）或粘贴“地址 密码”"),
                     );
+                    if response.changed() {
+                        if let Some((addr, pw)) = parse_connect_snippet(&self.connect.addr) {
+                            self.connect.addr = addr;
+                            self.connect.password = Secret::new(pw);
+                            self.set_status(
+                                "已自动填入地址和连接密码，按回车或点“连接”即可",
+                                false,
+                            );
+                        }
+                    }
+                    if response.lost_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                    {
+                        submit_connect = true;
+                    }
                 });
-                grid_label(ui, "会话口令", "connect-password", |ui, width| {
-                    ui.add_sized(
-                        [width, 0.0],
-                        egui::TextEdit::singleline(self.connect.password.get_mut())
-                            .password(!self.connect.show_password)
-                            .hint_text("至少 16 字节"),
-                    );
-                });
-                ui.label("显示口令");
-                ui.checkbox(&mut self.connect.show_password, "");
-                ui.end_row();
-                grid_label(ui, "中继会合 tag", "connect-tag", |ui, width| {
-                    ui.add_enabled(
-                        self.connect.use_relay,
-                        egui::TextEdit::singleline(&mut self.connect.relay_tag)
-                            .desired_width(width)
-                            .hint_text("使用中继时填写 32 位 hex"),
-                    );
-                });
-                ui.label("使用当前中继");
-                ui.checkbox(&mut self.connect.use_relay, "");
-                ui.end_row();
-                grid_label(
-                    ui,
-                    "证书指纹（可选）",
-                    "connect-fingerprint",
-                    |ui, width| {
-                        ui.add_sized(
-                            [width, 0.0],
-                            egui::TextEdit::singleline(&mut self.connect.fingerprint)
-                                .hint_text("64 位 hex，用于固定校验对端"),
+                grid_label(ui, "连接密码", "connect-password", |ui, width| {
+                    ui.horizontal(|ui| {
+                        let toggle_label = if self.connect.show_password {
+                            "隐藏"
+                        } else {
+                            "显示"
+                        };
+                        let response = ui.add_sized(
+                            [(width - 62.0).max(120.0), 0.0],
+                            egui::TextEdit::singleline(self.connect.password.get_mut())
+                                .password(!self.connect.show_password)
+                                .hint_text("不少于 6 位"),
                         );
-                    },
-                );
-                ui.label("剪贴板同步");
-                ui.checkbox(&mut self.connect.clipboard, "需对端授权");
-                ui.end_row();
+                        if response.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                        {
+                            submit_connect = true;
+                        }
+                        if ui.button(toggle_label).clicked() {
+                            self.connect.show_password = !self.connect.show_password;
+                        }
+                    });
+                });
             });
             ui.add_space(16.0);
             ui.horizontal_wrapped(|ui| {
                 if ui
                     .add_sized([128.0, 38.0], primary_button("连接"))
                     .clicked()
+                    || submit_connect
                 {
                     self.connect_form();
                 }
@@ -1944,11 +2053,51 @@ impl ManagerApp {
                         ..DeviceForm::default()
                     }));
                 }
-                if ui.button("清空口令").clicked() {
+                if !self.connect.password.get().is_empty() && ui.button("清空密码").clicked() {
                     self.connect.password.clear();
-                    self.set_status("会话口令已清空", false);
+                    self.set_status("连接密码已清空", false);
                 }
             });
+            ui.add_space(10.0);
+            egui::CollapsingHeader::new("更多连接选项（备注、中继、证书指纹）")
+                .default_open(self.connect.use_relay || !self.connect.fingerprint.is_empty())
+                .show(ui, |ui| {
+                    ui.add_space(8.0);
+                    form_grid(ui, "quick-connect-extra", |ui| {
+                        grid_label(ui, "名称（可选）", "connect-name", |ui, width| {
+                            ui.add_sized(
+                                [width, 0.0],
+                                egui::TextEdit::singleline(&mut self.connect.name),
+                            );
+                        });
+                        grid_label(ui, "中继会合 tag", "connect-tag", |ui, width| {
+                            ui.add_enabled(
+                                self.connect.use_relay,
+                                egui::TextEdit::singleline(&mut self.connect.relay_tag)
+                                    .desired_width(width)
+                                    .hint_text("使用中继时填写 32 位 hex"),
+                            );
+                        });
+                        ui.label("使用当前中继");
+                        ui.checkbox(&mut self.connect.use_relay, "");
+                        ui.end_row();
+                        grid_label(
+                            ui,
+                            "证书指纹（可选）",
+                            "connect-fingerprint",
+                            |ui, width| {
+                                ui.add_sized(
+                                    [width, 0.0],
+                                    egui::TextEdit::singleline(&mut self.connect.fingerprint)
+                                        .hint_text("64 位 hex，用于固定校验对端"),
+                                );
+                            },
+                        );
+                        ui.label("剪贴板同步");
+                        ui.checkbox(&mut self.connect.clipboard, "需对端授权");
+                        ui.end_row();
+                    });
+                });
             if self.connect.use_relay {
                 ui.add_space(10.0);
                 info_callout(
@@ -2102,84 +2251,84 @@ impl ManagerApp {
             ui,
             "被控端",
             "允许控制这台电脑",
-            "把连接地址和会话口令提供给已获得授权的控制端。权限仅在本次被控端会话中生效。",
+            "把下方地址和 6 位连接密码告诉对方，点“开始允许控制”即可等待接入。",
         );
+        let share_addr = display_agent_addr(&self.agent.host, &self.agent.port, &self.local_ip);
+        let running = self.agent_running();
         card(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                if self.agent_running() {
-                    status_pill(ui, "被控端正在运行", StatusPill::Success);
+                if running {
+                    status_pill(ui, "被控端正在运行 · 可连接", StatusPill::Success);
                 } else {
-                    status_pill(ui, "被控端未启动", StatusPill::Neutral);
+                    status_pill(ui, "准备就绪 · 点击下方按钮开启", StatusPill::Neutral);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new("口令通过标准输入传递，不进入命令行")
+                        RichText::new("密码不写入磁盘，不少于 6 位即可")
                             .small()
                             .color(COLOR_FAINT),
                     );
                 });
             });
             ui.add_space(16.0);
-            form_grid(ui, "agent-form", |ui| {
-                grid_label(ui, "监听地址", "agent-host", |ui, width| {
-                    ui.add_enabled(
-                        !self.agent_running(),
-                        egui::TextEdit::singleline(&mut self.agent.host).desired_width(width),
-                    );
-                });
-                grid_label(ui, "端口", "agent-port", |ui, width| {
-                    ui.add_enabled(
-                        !self.agent_running(),
-                        egui::TextEdit::singleline(&mut self.agent.port).desired_width(width),
-                    );
-                });
-                grid_label(ui, "会话口令", "agent-password", |ui, width| {
-                    ui.horizontal(|ui| {
-                        ui.add_enabled(
-                            !self.agent_running(),
-                            egui::TextEdit::singleline(self.agent.password.get_mut())
-                                .password(!self.agent.show_password)
-                                .desired_width(width - 82.0),
-                        );
-                        if ui.button("生成").clicked() {
-                            self.agent.password = Secret::new(generate_password());
-                        }
+            egui::Frame::none()
+                .fill(COLOR_SURFACE_RAISED)
+                .stroke(Stroke::new(1.0_f32, COLOR_BORDER))
+                .rounding(Rounding::same(10.0))
+                .inner_margin(Margin::same(14.0))
+                .show(ui, |ui| {
+                    form_grid(ui, "agent-share-card", |ui| {
+                        ui.label(RichText::new("本机地址").color(COLOR_MUTED));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(&share_addr)
+                                    .size(18.0)
+                                    .strong()
+                                    .monospace()
+                                    .color(COLOR_ACCENT),
+                            );
+                            if ui.button("复制").clicked() {
+                                ui.output_mut(|output| output.copied_text = share_addr.clone());
+                                self.set_status("已复制本机地址", false);
+                            }
+                        });
+                        ui.end_row();
+                        grid_label(ui, "连接密码", "agent-password", |ui, width| {
+                            ui.horizontal(|ui| {
+                                let reserved = 176.0;
+                                ui.add_enabled(
+                                    !running,
+                                    egui::TextEdit::singleline(self.agent.password.get_mut())
+                                        .password(!self.agent.show_password)
+                                        .hint_text("不少于 6 位")
+                                        .desired_width((width - reserved).max(120.0)),
+                                );
+                                if ui
+                                    .add_enabled(!running, egui::Button::new("换一个"))
+                                    .clicked()
+                                {
+                                    self.agent.password = Secret::new(generate_password());
+                                }
+                                let toggle_label = if self.agent.show_password {
+                                    "隐藏"
+                                } else {
+                                    "显示"
+                                };
+                                if ui.button(toggle_label).clicked() {
+                                    self.agent.show_password = !self.agent.show_password;
+                                }
+                                if ui.button("复制").clicked() {
+                                    let pw = self.agent.password.get().to_string();
+                                    ui.output_mut(|output| output.copied_text = pw);
+                                    self.set_status("已复制连接密码", false);
+                                }
+                            });
+                        });
                     });
                 });
-                ui.label("显示口令");
-                ui.checkbox(&mut self.agent.show_password, "仅在本窗口显示");
-                ui.end_row();
-                grid_label(ui, "中继会合 tag", "agent-tag", |ui, width| {
-                    ui.add_enabled(
-                        self.agent.use_relay,
-                        egui::TextEdit::singleline(&mut self.agent.relay_tag).desired_width(width),
-                    );
-                });
-                ui.label("使用当前中继");
-                ui.checkbox(&mut self.agent.use_relay, "同时提供直连地址");
-                ui.end_row();
-                ui.label("虚拟显示数量");
-                ui.add(egui::DragValue::new(&mut self.agent.virtual_displays).clamp_range(0..=16));
-                ui.end_row();
-                ui.label("采集虚拟显示索引");
-                ui.add_enabled(
-                    self.agent.virtual_displays > 0,
-                    egui::DragValue::new(&mut self.agent.virtual_monitor)
-                        .clamp_range(0..=self.agent.virtual_displays.saturating_sub(1)),
-                );
-                ui.end_row();
-            });
-            ui.add_space(18.0);
-            ui.separator();
-            ui.add_space(14.0);
-            ui.label(RichText::new("本次会话权限").size(15.0).strong());
-            ui.add_space(6.0);
-            ui.checkbox(&mut self.agent.allow_input, "允许远程键鼠输入");
-            ui.checkbox(&mut self.agent.allow_clipboard, "允许双向剪贴板同步");
-            ui.checkbox(&mut self.agent.audio_out, "发送本机音频");
             ui.add_space(16.0);
             ui.horizontal_wrapped(|ui| {
-                if self.agent_running() {
+                if running {
                     if ui.add(danger_button("停止被控端")).clicked() {
                         self.stop_agent();
                     }
@@ -2191,23 +2340,70 @@ impl ManagerApp {
                         self.set_status(err.to_string(), true);
                     }
                 }
+                if ui.button("一键复制连接码").clicked() {
+                    let snippet = format!("{share_addr} {}", self.agent.password.get());
+                    ui.output_mut(|output| output.copied_text = snippet);
+                    self.set_status("已复制连接码（地址 + 密码），在对方设备粘贴即可连接", false);
+                }
             });
-            ui.add_space(12.0);
-            info_callout(
-                ui,
-                "网络安全",
-                "0.0.0.0 会监听所有网卡；请在防火墙中仅允许可信网络。",
-                true,
-            );
-            if self.agent_running() {
-                ui.add_space(12.0);
-                info_callout(
-                    ui,
-                    "连接地址",
-                    &format!("{}:{}", self.agent.host, self.agent.port),
-                    false,
-                );
-            }
+            ui.add_space(14.0);
+            egui::CollapsingHeader::new("高级设置（端口、中继、权限、虚拟屏）")
+                .default_open(self.agent.use_relay || self.agent.virtual_displays > 0)
+                .show(ui, |ui| {
+                    ui.add_space(8.0);
+                    form_grid(ui, "agent-form", |ui| {
+                        grid_label(ui, "监听地址", "agent-host", |ui, width| {
+                            ui.add_enabled(
+                                !running,
+                                egui::TextEdit::singleline(&mut self.agent.host)
+                                    .desired_width(width),
+                            );
+                        });
+                        grid_label(ui, "端口", "agent-port", |ui, width| {
+                            ui.add_enabled(
+                                !running,
+                                egui::TextEdit::singleline(&mut self.agent.port)
+                                    .desired_width(width),
+                            );
+                        });
+                        grid_label(ui, "中继会合 tag", "agent-tag", |ui, width| {
+                            ui.add_enabled(
+                                self.agent.use_relay,
+                                egui::TextEdit::singleline(&mut self.agent.relay_tag)
+                                    .desired_width(width),
+                            );
+                        });
+                        ui.label("使用当前中继");
+                        ui.checkbox(&mut self.agent.use_relay, "同时提供直连地址");
+                        ui.end_row();
+                        ui.label("虚拟显示数量");
+                        ui.add(
+                            egui::DragValue::new(&mut self.agent.virtual_displays)
+                                .clamp_range(0..=16),
+                        );
+                        ui.end_row();
+                        ui.label("采集虚拟显示索引");
+                        ui.add_enabled(
+                            self.agent.virtual_displays > 0,
+                            egui::DragValue::new(&mut self.agent.virtual_monitor)
+                                .clamp_range(0..=self.agent.virtual_displays.saturating_sub(1)),
+                        );
+                        ui.end_row();
+                    });
+                    ui.add_space(12.0);
+                    ui.label(RichText::new("本次会话权限").size(15.0).strong());
+                    ui.add_space(6.0);
+                    ui.checkbox(&mut self.agent.allow_input, "允许远程键鼠输入");
+                    ui.checkbox(&mut self.agent.allow_clipboard, "允许双向剪贴板同步");
+                    ui.checkbox(&mut self.agent.audio_out, "发送本机音频");
+                    ui.add_space(10.0);
+                    info_callout(
+                        ui,
+                        "网络安全",
+                        "0.0.0.0 会监听所有网卡；请在防火墙中仅允许可信网络。",
+                        true,
+                    );
+                });
         });
     }
 
@@ -2999,6 +3195,68 @@ impl ManagerApp {
                     self.modal = Modal::Device(form);
                 }
             }
+            Modal::ConnectDevice(mut state) => {
+                egui::Window::new(format!("连接到 {}", state.name))
+                    .id(egui::Id::new("connect-device-modal"))
+                    .collapsible(false)
+                    .resizable(false)
+                    .default_width(420.0)
+                    .frame(modal_frame())
+                    .show(ctx, |ui| {
+                        ui.label(RichText::new(&state.addr).monospace().color(COLOR_MUTED));
+                        ui.add_space(12.0);
+                        let mut submit = false;
+                        ui.horizontal(|ui| {
+                            let response = ui.add_sized(
+                                [300.0, 0.0],
+                                egui::TextEdit::singleline(state.password.get_mut())
+                                    .password(!state.show_password)
+                                    .hint_text("输入对方连接密码（不少于 6 位）"),
+                            );
+                            if !state.focus_requested {
+                                response.request_focus();
+                                state.focus_requested = true;
+                            }
+                            if response.lost_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                            {
+                                submit = true;
+                            }
+                            if ui
+                                .button(if state.show_password {
+                                    "隐藏"
+                                } else {
+                                    "显示"
+                                })
+                                .clicked()
+                            {
+                                state.show_password = !state.show_password;
+                            }
+                        });
+                        if let Some(error) = &self.modal_error {
+                            ui.add_space(12.0);
+                            error_banner(ui, "无法连接", error);
+                        }
+                        ui.add_space(18.0);
+                        ui.separator();
+                        ui.add_space(12.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("取消").clicked() {
+                                keep_open = false;
+                            }
+                            if ui.add(primary_button("连接")).clicked() || submit {
+                                let pw = Zeroizing::new(state.password.get().to_string());
+                                match self.connect_saved_with_password(&state.device_id, &pw) {
+                                    Ok(()) => keep_open = false,
+                                    Err(err) => self.set_status(err.to_string(), true),
+                                }
+                            }
+                        });
+                    });
+                if keep_open {
+                    self.modal = Modal::ConnectDevice(state);
+                }
+            }
             Modal::Relay(mut form) => {
                 let title = if form.id.is_some() {
                     "编辑中继"
@@ -3686,13 +3944,43 @@ mod tests {
 
     #[test]
     fn password_validation_matches_cli_contract() {
-        assert!(validate_password("1234567890123456").is_ok());
-        assert!(validate_password("short").is_err());
-        assert!(validate_password("                ").is_err());
+        assert!(validate_password("123456").is_ok());
+        assert!(validate_password("12345").is_err());
+        assert!(validate_password("      ").is_err());
         assert!(validate_password(&"x".repeat(1025)).is_err());
         let password = generate_password();
-        assert_eq!(password.len(), 24);
+        assert_eq!(password.len(), 6);
         assert!(validate_password(&password).is_ok());
+    }
+
+    #[test]
+    fn normalize_addr_and_snippet_work() {
+        assert_eq!(
+            normalize_addr("192.168.1.20").unwrap(),
+            "192.168.1.20:21116"
+        );
+        assert_eq!(
+            normalize_addr(" 192.168.1.20:28116 ").unwrap(),
+            "192.168.1.20:28116"
+        );
+        assert_eq!(normalize_addr("::1").unwrap(), "[::1]:21116");
+        assert!(normalize_addr("").is_err());
+        assert!(normalize_addr("192.168.1.20:0").is_err());
+        assert!(normalize_addr("not-an-ip").is_err());
+
+        assert_eq!(
+            parse_connect_snippet("192.168.1.20 K7M9P2"),
+            Some(("192.168.1.20:21116".into(), "K7M9P2".into()))
+        );
+        assert_eq!(
+            parse_connect_snippet("192.168.1.20:28116 abc123"),
+            Some(("192.168.1.20:28116".into(), "abc123".into()))
+        );
+        assert_eq!(parse_connect_snippet("192.168.1.20:21116"), None);
+        assert_eq!(
+            display_agent_addr("0.0.0.0", "21116", "192.168.1.20"),
+            "192.168.1.20:21116"
+        );
     }
 
     #[test]

@@ -37,9 +37,9 @@
     <string name="host_privacy_title">由你决定何时分享</string>
     <string name="host_privacy_body">仅在明确授权录屏后采集画面。会话口令不会保存，停止后本次会话立即结束。</string>
     <string name="host_session_title">会话设置</string>
-    <string name="host_password_label">会话口令（16–1024 字节）</string>
+    <string name="host_password_label">会话口令（不少于 6 位）</string>
     <string name="host_password_hint">输入与查看端一致的口令</string>
-    <string name="host_password_error">口令必须为 16–1024 个 UTF-8 字节</string>
+    <string name="host_password_error">口令至少 6 位（6–1024 字节）且不能全为空白</string>
     <string name="host_port_label">监听端口</string>
     <string name="host_port_error">端口必须在 1–65535 之间</string>
     <string name="host_quality_title">画面质量</string>
@@ -75,7 +75,7 @@
     <string name="viewer_fingerprint_hint">64 位十六进制指纹，可包含冒号</string>
     <string name="viewer_connection_error">请输入有效的主机地址和端口</string>
     <string name="viewer_fingerprint_error">请输入被控端的 64 位十六进制 SPKI 指纹</string>
-    <string name="viewer_password_error">口令必须为 16–1024 个 UTF-8 字节</string>
+    <string name="viewer_password_error">口令至少 6 位（6–1024 字节）且不能全为空白</string>
     <string name="viewer_connect_failed">无法建立连接</string>
     <string name="viewer_control_title">控制与导航</string>
     <string name="viewer_local_control">允许本机指针和键盘输入</string>

@@ -8,12 +8,12 @@ use anyhow::{ensure, Context, Result};
 use clap::Args;
 use zeroize::Zeroizing;
 
-const MIN_PASSWORD_BYTES: usize = 16;
+const MIN_PASSWORD_BYTES: usize = 6;
 const MAX_PASSWORD_BYTES: usize = 1024;
 
 #[derive(Args)]
 pub struct PasswordArgs {
-    /// Session passphrase (16+ bytes); prefer hidden terminal entry or --password-stdin.
+    /// Session passphrase (6+ bytes); prefer hidden terminal entry or --password-stdin.
     #[arg(long, value_name = "SECRET", conflicts_with = "password_stdin")]
     password: Option<String>,
     /// Read one passphrase line from stdin, without echoing or saving it.
@@ -39,7 +39,7 @@ impl PasswordArgs {
                 "请使用 --password-stdin 提供会话口令，或在交互终端中输入；没有默认口令"
             );
             Zeroizing::new(rpassword::prompt_password(
-                "会话口令（至少 16 字节，不回显）: ",
+                "会话口令（至少 6 位，不回显）: ",
             )?)
         };
         SessionPassword::new(value)
@@ -55,7 +55,7 @@ impl SessionPassword {
         ensure!(
             (MIN_PASSWORD_BYTES..=MAX_PASSWORD_BYTES).contains(&value.len())
                 && !value.trim().is_empty(),
-            "会话口令长度必须为 16–1024 字节，且不能全为空白"
+            "会话口令至少 6 位（6–1024 字节），且不能全为空白"
         );
         Ok(Self(value))
     }
@@ -122,8 +122,9 @@ mod tests {
             .expect("passphrase");
         assert_eq!(password.expose(), "a long secret passphrase");
         assert!(!format!("{password:?}").contains(password.expose()));
-        assert!(SessionPassword::new(Zeroizing::new("test".into())).is_err());
-        assert!(SessionPassword::new(Zeroizing::new(" ".repeat(16))).is_err());
+        assert!(SessionPassword::new(Zeroizing::new("123456".into())).is_ok());
+        assert!(SessionPassword::new(Zeroizing::new("12345".into())).is_err());
+        assert!(SessionPassword::new(Zeroizing::new(" ".repeat(6))).is_err());
         assert!(SessionPassword::new(Zeroizing::new("x".repeat(1025))).is_err());
     }
 

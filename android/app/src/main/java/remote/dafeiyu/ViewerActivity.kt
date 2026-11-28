@@ -470,7 +470,7 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
             return
         }
         val secret = password.text.toString()
-        if (secret.toByteArray(Charsets.UTF_8).size !in 16..1024) {
+        if (secret.toByteArray(Charsets.UTF_8).size !in 6..1024 || secret.isBlank()) {
             password.error = getString(R.string.viewer_password_error)
             password.requestFocus()
             return

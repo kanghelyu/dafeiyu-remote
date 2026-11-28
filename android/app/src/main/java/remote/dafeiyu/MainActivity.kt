@@ -302,7 +302,7 @@ class MainActivity : ComponentActivity() {
         if (RemoteService.isRunning()) return
         clearFieldErrors()
         val password = passwordInput.text.toString()
-        if (password.toByteArray(Charsets.UTF_8).size !in 16..1024) {
+        if (password.toByteArray(Charsets.UTF_8).size !in 6..1024 || password.isBlank()) {
             passwordInput.error = getString(R.string.host_password_error)
             passwordInput.requestFocus()
             return
