@@ -247,8 +247,8 @@ cargo run --release -p dfy-cli -- view --addr 127.0.0.1:21116 --password-stdin -
 
 ## 图标
 
-全端统一使用同一份像素风图标（深蓝底/薄荷绿显示器/橙鱼/奶油色指针）：
-`assets/icon-source.svg` 为源，`python packaging/icons/generate_icons.py` 生成
+全端统一使用用户提供的原始图标（深蓝圆角底/薄荷绿显示器/橙鱼/奶油色指针）：
+`assets/icon-source.png` 为源，`python packaging/icons/generate_icons.py` 使用 Lanczos 抗锯齿缩放，生成
 Windows ICO、macOS ICNS、Linux PNG+desktop、Android mipmap，接线见
 `notes/icons-all-platforms-20261127.md`。
 

@@ -27,3 +27,15 @@
 - 像素母版是**按图面手工重建**，不是用户上传的原始位图逐像素拷贝；视觉接近但不保证完全一致。
 - macOS/Windows 安装包图标只在脚本与制品结构层验证，本机没有 ISCC / macOS 打包环境，未做安装后的桌面图标显示验收。
 - `dfy-manager` 的 winit 窗口图标尚未接线（当前仍是系统默认窗口图标）。
+
+## 2026-11-28 修正：直接使用用户原图的抗锯齿弧边
+
+用户指出旧图标外缘是阶梯像素而非原图光滑弧边。复核确认旧生成器把原图手工重画为64×64像素母版并最近邻放大，既改变了鱼和显示器的构图，也丢掉了原图的透明抗锯齿边缘。
+
+- 当前唯一生成源：`assets/icon-source.png`，即用户提供的1254×1254 RGBA原图，SHA-256 `24cc416c3775c0f813680f15b0de045d09b57e8bfdc2cca67740fa294d44d5fd`。
+- `assets/icon-source.svg` 仅保留为历史草图，不再参与生成；README已改为指向PNG源。
+- 生成脚本改为Lanczos缩放并保留RGBA，不再重画图案或最近邻放大。脚本SHA-256 `4ac1d086825cb2e76c43c3de44bbf7ed9d7c0ffdbd52a8e7cc6428b6d258ff73`。
+- 新预览SHA-256 `4469dd254c999e4d7d4d307f3ce508d69ad45ea6cd722809271caf193f6aad9f`；512×512产物有242,527个部分透明像素，证明弧边抗锯齿被保留。
+- ICO包含16/32/48/64/128/256六档；ICNS包含ic07/ic08/ic09/ic10四chunk且长度自洽；Linux六档PNG与Android五档mipmap均重新生成。
+- `cargo test --locked -p dfy-manager -p dfy-ui`：8+78+3通过；`MSYS=winsymlinks:nativestrict python packaging/tests/smoke.py`所有宿主机可运行检查通过。
+- 仍未做安装后的桌面图标目视验收；本节取代上文“手工重建/最近邻”作为当前实现说明，上文仅保留历史上下文。
