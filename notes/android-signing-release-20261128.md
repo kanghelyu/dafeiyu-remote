@@ -120,3 +120,9 @@
 - 从公开 Release 重新下载 APK：`apksigner verify --verbose --print-certs` 通过，APK Signature Scheme v2 有效、单一 RSA 3072 签名者，证书 SHA-256 仍为 `1ee8ac5891bca0e00d4f4029059c25a8060e796bc307d6ac07d307c73aaff3b8`；AAPT 读到 `remote.dafeiyu` versionCode 4/versionName 0.2.1，唯一 launchable activity 为 `remote.dafeiyu.MainActivity`，二进制清单仅 1 个 `LAUNCHER`。公开 CI 包与本地候选字节不同，但版本、签名者和单入口结构一致。
 - 个人主页提交 `fd4f212` 已推送，Pages run [`46130274090`](https://github.com/kanghelyu/kanghelyu.github.io/actions/runs/46130274090) 成功。在线 [`apps/dafeiyu/`](https://kanghelyu.org/apps/dafeiyu/) 返回 200，标题与 10 个 ci2 下载链接已更新；`manager-current.png`、`android-current.png`、图标、CSS 和 JS 全部返回 200。线上 390px CDP 检查 `innerWidth=clientWidth=scrollWidth=bodyScrollWidth=390`，滚动后 4 个图像引用均加载完成；`projects.html` 与 `assets/js/projects.js` 的中英文项目卡片文案均已在线。
 - 本次公开复核只证明 CI 构建、资产集合、链接可达、APK 签名/版本/单入口和网页部署；不证明 Windows/macOS/Linux 新包在对应系统安装运行、Android 物理真机、Google Play、跨机控制、弱网长稳、Windows/macOS 签名或 Apple 公证。
+
+## 线上截图复核与首屏标题修复（2026-11-28）
+
+- 对线上 `apps/dafeiyu/` 重新截取桌面首屏、功能、实际界面、下载区、390px 移动端首屏/下载区和 `projects.html` 项目卡片，逐张目视检查。发现 1440px 桌面首屏标题断成“大肥鱼远 / 程”，末字孤行；其余已检查区块未发现截图缺失、按钮截断或横向溢出。
+- 将首屏标题字号从 `clamp(3.2rem, 7.6vw, 6.8rem)` 调整为 `clamp(3.2rem, 7vw, 5.8rem)`。本地 CDP 在 320/390/700/768/960/1024/1280/1440px 八档宽度测量，标题文本均为 1 行，`scrollWidth=clientWidth`，无横向溢出。
+- 个人主页修复提交 `f9192d4` 已推送，Pages run [`46150741021`](https://github.com/kanghelyu/kanghelyu.github.io/actions/runs/46150741021) 成功。使用带缓存键的线上页面重新截图，确认标题已单行显示；移动端标题与下载区保持原布局。该复核是浏览器渲染证据，不替代 Android 真机或各端安装验收。
