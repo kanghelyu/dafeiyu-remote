@@ -76,7 +76,7 @@
 - 候选版本：`versionName=0.2.1`、`versionCode=4`，包名仍为 `remote.dafeiyu`。同包名、同签名覆盖安装公开 ci1 成功；升级后查询仅 1 个启动项。卸载后全新安装也仅 1 个启动项，主界面冷启动成功，点击“进入查看端”后 `ViewerActivity` 成为前台 Activity，crash buffer 为空。
 - 静态与自动检查：AAPT 二进制清单仅 1 个 `LAUNCHER`；36 个单测全部通过、lint 0 错误/19 警告；`packaging/tests/smoke.py` 与 `git diff --check` 通过；Release APK v2 签名有效，证书 SHA-256 仍为 `1ee8ac5891bca0e00d4f4029059c25a8060e796bc307d6ac07d307c73aaff3b8`；AAB `jarsigner -verify` 退出 0。
 
-本地候选产物位于 `.tmp/android-single-launcher-v0.2.1-ci2/`，不代表已经公开：
+当时生成的本地候选产物位于 `.tmp/android-single-launcher-v0.2.1-ci2/`，发布状态以本文末节为准：
 
 | 文件 | 字节 | SHA-256 |
 | --- | ---: | --- |
@@ -88,7 +88,7 @@
 
 ## Release 只保留安装包与介绍页重写（2026-11-28）
 
-- 公开 `v0.2.1+ci1` 的 Release 同时挂有安装包、ZIP、AAB、Debug APK、`SHA256SUMS.txt`、SBOM 与 notices。源码、构建脚本和文档已经随 tag 进入仓库，发布页不再重复挂这些开发/辅助产物。
+- 公开 `v0.2.1+ci1` 的 Release 共有 58 个资产，同时挂有安装包、ZIP、AAB、Debug APK、`SHA256SUMS.txt`、SBOM 与 notices。源码、构建脚本和文档已经随 tag 进入仓库，发布页不再重复挂这些开发/辅助产物。
 - `release.yml` 的发布任务改为从 CI artifacts 中只整理 10 个安装包：Windows Setup、macOS Intel/Apple Silicon 各 DMG+PKG、Linux amd64/arm64 各 DEB+RPM、Android 已签名 Release APK。AAB、Debug APK、ZIP、校验和、SBOM 和 notices 仍可作为 CI artifact 获取，但不上传到公开 Release。
 - Android 构建参数由 `--version "$RELEASE_TAG"` 改为 `--version "${RELEASE_TAG#v}"`，统一公开文件名为 `dafeiyu-0.2.1+ci2-release.apk`，不再产生 `dafeiyu-v0.2.1+ci2-release.apk` 这种带双版本前缀的名称。
 - 发布说明改为中文直链列表，每个平台/架构一个安装包链接；同时保留口令、签名/公证、Wayland 和非商用许可证边界。
@@ -96,4 +96,27 @@
 - 个人主页 `apps/dafeiyu/index.html` 重写为“从另一台设备，操作你的电脑”的直白介绍，说明能做什么、三步怎么用、实际界面、各端安装包和源码/许可证；`projects.html` 与 `assets/js/projects.js` 的中英文项目卡片同步为同一口径。
 - 介绍页只使用检查后的当前应用截图：Windows Manager 为重新构建 `target/release/dfy-manager.exe` 后实际起窗捕获的 1122×660 画面；Android 为 ci2 候选在 API36 x86_64 模拟器 `emulator-5556` 捕获的 1080×2400 画面，页面明确标注“模拟器画面”。未使用含学生姓名、成绩或会话口令的旧截图。
 - 使用本机 Microsoft Edge headless + CDP 检查桌面与 390px 移动端；390px 下 `innerWidth=390`、`clientWidth=390`、`scrollWidth=390`、`bodyScrollWidth=390`，下载区经滚动定位后截图复核。该检查是浏览器渲染证据，不替代 Android 真机验收。
-- 此节记录的是本地完成、待提交/发布状态；真实 CI run、公开 Release URL、10 个公开直链及公开产物哈希须在发布后另行实测补记。
+- 以上为本地完成时的验证记录；真实 CI run、公开 Release URL、10 个公开直链及公开产物哈希见下一节。
+
+## v0.2.1+ci2 公开发布与在线复核（2026-11-28）
+
+- 应用提交 `55e1c3d` 已推送 `main`，annotated tag `v0.2.1+ci2` 指向该提交；Release workflow run [`46130282765`](https://github.com/kanghelyu/dafeiyu-remote/actions/runs/46130282765) 全部 job 成功。公开 Release：[`v0.2.1+ci2`](https://github.com/kanghelyu/dafeiyu-remote/releases/tag/v0.2.1+ci2)，非 draft、非 prerelease，并已由 GitHub `releases/latest` 确认为 latest。
+- 发布页恰好 10 个资产，全部为安装包；说明正文恰好 10 个 `releases/download/v0.2.1+ci2/...` 直链。逐个对直链发起 `Range: bytes=0-0` 请求，10/10 返回 HTTP 206 且读到 1 字节，确认不是仅“看起来可点”的 404 链接。
+- 旧 `v0.2.1+ci1` 的 58 个资产保留为历史记录，不删除、不改 tag；新 latest 已不再携带 ZIP、AAB、Debug APK、校验和、SBOM 或 notices。
+
+| 公开安装包 | 字节 | SHA-256 |
+| --- | ---: | --- |
+| `dafeiyu-0.2.1+ci2-windows-x86_64-setup.exe` | 8457660 | `556f7c8f8d50d8730f636c83927ad418194ea23e3ce4eccff1a3c5ccc80b3c0e` |
+| `dafeiyu-0.2.1+ci2-macos-arm64-unsigned.dmg` | 30847426 | `69ee7a477e26c674a8751986ba0980a83e89f2157e50756e6fe3e059f2f07a86` |
+| `dafeiyu-0.2.1+ci2-macos-arm64-unsigned.pkg` | 18635632 | `07856c967aa9dcf8fd11f55f194692a69a62c78cc10c105f02ce970919a9b749` |
+| `dafeiyu-0.2.1+ci2-macos-x86_64-unsigned.dmg` | 32002270 | `4150d86303b70b9bc94778bc54c3dd1ec886f6a015e0c65943654ecb530f7a6e` |
+| `dafeiyu-0.2.1+ci2-macos-x86_64-unsigned.pkg` | 19242083 | `7ae07b588a542ed3a1b53ec379d920cb08c74664a747cae482924a089c719d77` |
+| `dafeiyu_0.2.1+ci2_amd64.deb` | 12186788 | `1e6daafea02ee68e0d4d9d71a7636b589869de602fff60292662563e371585cc` |
+| `dafeiyu_0.2.1+ci2_arm64.deb` | 11834140 | `3952a709b7bd7843f3af9c2318797b4664af3ddfc2e970eb9fe6bd1dadf690d4` |
+| `dafeiyu-0.2.1+ci2-1.x86_64.rpm` | 15728482 | `fd27c5d4560803e10190fd607b401a088743110888c105cf0aeaf847ffb738b4` |
+| `dafeiyu-0.2.1+ci2-1.aarch64.rpm` | 15885640 | `665ed260fb765b88d5a3b7ac7f97a5068eeff0e8dcde639d509821dc251a2d43` |
+| `dafeiyu-0.2.1+ci2-release.apk` | 13772158 | `f98d79a76b1ef223556e26f96889a042b7914a288a130b745192e494459da7a7` |
+
+- 从公开 Release 重新下载 APK：`apksigner verify --verbose --print-certs` 通过，APK Signature Scheme v2 有效、单一 RSA 3072 签名者，证书 SHA-256 仍为 `1ee8ac5891bca0e00d4f4029059c25a8060e796bc307d6ac07d307c73aaff3b8`；AAPT 读到 `remote.dafeiyu` versionCode 4/versionName 0.2.1，唯一 launchable activity 为 `remote.dafeiyu.MainActivity`，二进制清单仅 1 个 `LAUNCHER`。公开 CI 包与本地候选字节不同，但版本、签名者和单入口结构一致。
+- 个人主页提交 `fd4f212` 已推送，Pages run [`46130274090`](https://github.com/kanghelyu/kanghelyu.github.io/actions/runs/46130274090) 成功。在线 [`apps/dafeiyu/`](https://kanghelyu.org/apps/dafeiyu/) 返回 200，标题与 10 个 ci2 下载链接已更新；`manager-current.png`、`android-current.png`、图标、CSS 和 JS 全部返回 200。线上 390px CDP 检查 `innerWidth=clientWidth=scrollWidth=bodyScrollWidth=390`，滚动后 4 个图像引用均加载完成；`projects.html` 与 `assets/js/projects.js` 的中英文项目卡片文案均已在线。
+- 本次公开复核只证明 CI 构建、资产集合、链接可达、APK 签名/版本/单入口和网页部署；不证明 Windows/macOS/Linux 新包在对应系统安装运行、Android 物理真机、Google Play、跨机控制、弱网长稳、Windows/macOS 签名或 Apple 公证。
