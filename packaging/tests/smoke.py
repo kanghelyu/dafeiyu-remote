@@ -59,7 +59,9 @@ def check_workflow() -> None:
     assert targets == {"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "x86_64-apple-darwin", "aarch64-apple-darwin"}
     text = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     assert "dfy-relay-linux-${arch}.tar.gz" in (ROOT / "deploy/install-relay.sh").read_text(encoding="utf-8")
-    assert "sha256sum * > SHA256SUMS.txt" in text and "|| true" not in text
+    assert "|| true" not in text
+    assert "files: release-assets/*" in text and "body_path: release-notes.md" in text
+    assert '[ "$count" -eq 10 ]' in text
     assert "ANDROID_KEYSTORE_BASE64" in text and "MAC_SIGNING_IDENTITY" in text
     assert workflow["permissions"]["contents"] == "read"
     assert jobs["publish"]["permissions"]["contents"] == "write"
@@ -73,7 +75,7 @@ def check_workflow() -> None:
         assert result.stdout == expected
     assert text.count("tar -xzf archive/dafeiyu-*.tar.gz -C binaries") == 2
     assert text.count("--binary-dir binaries") == 3
-    print("PASS workflow dependencies, matrix, tag/version checks, permissions, checksums and secret hooks")
+    print("PASS workflow dependencies, matrix, tag/version checks, permissions, installer filter and secret hooks")
 
 
 def write_elf(path: Path, machine: int = 62) -> None:

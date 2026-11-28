@@ -30,6 +30,7 @@ use zeroize::{Zeroize, Zeroizing};
 const APP_TITLE: &str = "大肥鱼远程";
 const MIN_PASSWORD_BYTES: usize = 16;
 const MAX_PASSWORD_BYTES: usize = 1024;
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 const COLOR_BG: Color32 = Color32::from_rgb(10, 16, 26);
@@ -54,10 +55,10 @@ const CONTENT_MAX_WIDTH: f32 = 1080.0;
 #[derive(Debug, Parser)]
 #[command(name = "dfy-manager", version, about = "大肥鱼远程桌面管理端")]
 struct Args {
-    #[arg(long, default_value = "dfy-relay-profiles.toml", value_name = "FILE")]
-    config: PathBuf,
-    #[arg(long, default_value = "dfy-devices.toml", value_name = "FILE")]
-    devices: PathBuf,
+    #[arg(long, value_name = "FILE")]
+    config: Option<PathBuf>,
+    #[arg(long, value_name = "FILE")]
+    devices: Option<PathBuf>,
     #[arg(long, value_name = "FILE")]
     dfy: Option<PathBuf>,
     #[arg(long, value_name = "TAB")]
@@ -566,18 +567,20 @@ struct ManagerApp {
 
 impl ManagerApp {
     fn new(args: Args) -> Self {
-        let (store, store_error) = match RelayProfileStore::load(&args.config) {
+        let config_path = default_data_path(args.config, "dfy-relay-profiles.toml");
+        let devices_path = default_data_path(args.devices, "dfy-devices.toml");
+        let (store, store_error) = match RelayProfileStore::load(&config_path) {
             Ok(store) => (store, None),
             Err(err) => (
-                RelayProfileStore::new(&args.config),
+                RelayProfileStore::new(&config_path),
                 Some(format!("中继配置读取失败：{err}")),
             ),
         };
-        let (book, book_error) = match DeviceBook::load(&args.devices) {
+        let (book, book_error) = match DeviceBook::load(&devices_path) {
             Ok(book) => (book, None),
             Err(err) => (
                 DeviceBook {
-                    path: args.devices.clone(),
+                    path: devices_path,
                     devices: Vec::new(),
                 },
                 Some(format!("设备列表读取失败：{err}")),
@@ -1559,6 +1562,78 @@ fn resolve_dfy_path(explicit: Option<PathBuf>) -> PathBuf {
         }
     }
     PathBuf::from(name)
+}
+
+fn is_macos_app_bundle_exe(exe: &Path) -> bool {
+    let components: Vec<_> = exe.components().collect();
+    let len = components.len();
+    if len < 4 {
+        return false;
+    }
+    let app_dir = components[len - 4].as_os_str().to_string_lossy();
+    app_dir.ends_with(".app")
+        && components[len - 3].as_os_str() == "Contents"
+        && components[len - 2].as_os_str() == "MacOS"
+}
+
+fn resolve_default_data_path(
+    explicit: Option<PathBuf>,
+    filename: &str,
+    exe: Option<&Path>,
+    cwd: Option<&Path>,
+    home: Option<&Path>,
+    is_macos: bool,
+) -> PathBuf {
+    if let Some(path) = explicit {
+        return path;
+    }
+    if is_macos {
+        let in_bundle = exe.is_some_and(is_macos_app_bundle_exe);
+        let root_cwd = cwd.is_some_and(|dir| dir == Path::new("/"));
+        if in_bundle || root_cwd {
+            if let Some(home_dir) = home {
+                return home_dir
+                    .join("Library")
+                    .join("Application Support")
+                    .join("Dafeiyu Remote")
+                    .join(filename);
+            }
+        }
+    }
+    PathBuf::from(filename)
+}
+
+fn default_data_path(explicit: Option<PathBuf>, filename: &str) -> PathBuf {
+    let exe = std::env::current_exe().ok();
+    let cwd = std::env::current_dir().ok();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    resolve_default_data_path(
+        explicit,
+        filename,
+        exe.as_deref(),
+        cwd.as_deref(),
+        home.as_deref(),
+        cfg!(target_os = "macos"),
+    )
+}
+
+fn filter_cli_args<I, S>(args: I, is_macos: bool) -> Vec<std::ffi::OsString>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut iter = args.into_iter().map(Into::into);
+    let mut filtered = Vec::new();
+    if let Some(program) = iter.next() {
+        filtered.push(program);
+    }
+    for arg in iter {
+        if is_macos && arg.to_string_lossy().starts_with("-psn_") {
+            continue;
+        }
+        filtered.push(arg);
+    }
+    filtered
 }
 
 impl eframe::App for ManagerApp {
@@ -3437,17 +3512,15 @@ fn install_font_file(
     path: &Path,
     family: FontFamily,
     index: usize,
-) -> bool {
-    let Ok(data) = fs::read(path) else {
-        return false;
-    };
+) -> Option<String> {
+    let data = fs::read(path).ok()?;
     let name = format!("manager-font-{}", fonts.font_data.len());
     fonts
         .font_data
         .insert(name.clone(), egui::FontData::from_owned(data));
     let fonts_for_family = fonts.families.entry(family).or_default();
-    fonts_for_family.insert(index.min(fonts_for_family.len()), name);
-    true
+    fonts_for_family.insert(index.min(fonts_for_family.len()), name.clone());
+    Some(name)
 }
 
 fn install_fonts(ctx: &egui::Context, custom: Option<PathBuf>) {
@@ -3459,22 +3532,29 @@ fn install_fonts(ctx: &egui::Context, custom: Option<PathBuf>) {
         return;
     }
 
+    let mut cjk_font = None;
     for path in [
         PathBuf::from(r"C:\Windows\Fonts\msyh.ttc"),
         PathBuf::from(r"C:\Windows\Fonts\simhei.ttf"),
+        PathBuf::from("/System/Library/Fonts/STHeiti Medium.ttc"),
+        PathBuf::from("/System/Library/Fonts/Hiragino Sans GB.ttc"),
+        PathBuf::from("/System/Library/Fonts/STHeiti Light.ttc"),
         PathBuf::from("/System/Library/Fonts/PingFang.ttc"),
+        PathBuf::from("/System/Library/Fonts/Supplemental/Songti.ttc"),
         PathBuf::from("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
     ] {
-        if install_font_file(&mut fonts, &path, FontFamily::Proportional, 0) {
+        if let Some(name) = install_font_file(&mut fonts, &path, FontFamily::Proportional, 0) {
+            cjk_font = Some(name);
             break;
         }
     }
     for path in [
         PathBuf::from(r"C:\Windows\Fonts\segoeui.ttf"),
         PathBuf::from("/System/Library/Fonts/Supplemental/Arial.ttf"),
+        PathBuf::from("/System/Library/Fonts/SFNS.ttf"),
         PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
     ] {
-        if install_font_file(&mut fonts, &path, FontFamily::Proportional, 0) {
+        if install_font_file(&mut fonts, &path, FontFamily::Proportional, 0).is_some() {
             break;
         }
     }
@@ -3482,11 +3562,19 @@ fn install_fonts(ctx: &egui::Context, custom: Option<PathBuf>) {
         PathBuf::from(r"C:\Windows\Fonts\consola.ttf"),
         PathBuf::from(r"C:\Windows\Fonts\CascadiaMono.ttf"),
         PathBuf::from("/System/Library/Fonts/Menlo.ttc"),
+        PathBuf::from("/System/Library/Fonts/SFNSMono.ttf"),
         PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
     ] {
-        if install_font_file(&mut fonts, &path, FontFamily::Monospace, 0) {
+        if install_font_file(&mut fonts, &path, FontFamily::Monospace, 0).is_some() {
             break;
         }
+    }
+    if let Some(cjk_name) = cjk_font {
+        fonts
+            .families
+            .entry(FontFamily::Monospace)
+            .or_default()
+            .push(cjk_name);
     }
     ctx.set_fonts(fonts);
 }
@@ -3532,7 +3620,10 @@ fn main() -> eframe::Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
         .try_init();
-    let args = Args::parse();
+    let args = Args::parse_from(filter_cli_args(
+        std::env::args_os(),
+        cfg!(target_os = "macos"),
+    ));
     let font = args.font.clone();
     let app = ManagerApp::new(args);
     let options = eframe::NativeOptions {
@@ -3679,5 +3770,110 @@ mod tests {
         assert!(draft.spec().is_err());
         draft.width = "1920".into();
         assert!(draft.spec().is_ok());
+    }
+
+    #[test]
+    fn macos_bundle_uses_application_support_default_paths() {
+        let home = Path::new("/Users/tester");
+        let bundle_exe = Path::new("/Applications/Dafeiyu Remote.app/Contents/MacOS/dfy-manager");
+        let expected = PathBuf::from(
+            "/Users/tester/Library/Application Support/Dafeiyu Remote/dfy-devices.toml",
+        );
+
+        assert_eq!(
+            resolve_default_data_path(
+                None,
+                "dfy-devices.toml",
+                Some(bundle_exe),
+                Some(Path::new("/tmp")),
+                Some(home),
+                true,
+            ),
+            expected
+        );
+        assert_eq!(
+            resolve_default_data_path(
+                None,
+                "dfy-devices.toml",
+                Some(Path::new("/usr/local/bin/dfy-manager")),
+                Some(Path::new("/")),
+                Some(home),
+                true,
+            ),
+            expected
+        );
+        assert_eq!(
+            resolve_default_data_path(
+                Some(PathBuf::from("custom.toml")),
+                "dfy-devices.toml",
+                Some(bundle_exe),
+                Some(Path::new("/")),
+                Some(home),
+                true,
+            ),
+            PathBuf::from("custom.toml")
+        );
+        assert_eq!(
+            resolve_default_data_path(
+                None,
+                "dfy-devices.toml",
+                Some(Path::new("/usr/local/bin/dfy-manager")),
+                Some(Path::new("/Users/tester/work")),
+                Some(home),
+                true,
+            ),
+            PathBuf::from("dfy-devices.toml")
+        );
+        assert_eq!(
+            resolve_default_data_path(
+                None,
+                "dfy-devices.toml",
+                Some(bundle_exe),
+                Some(Path::new("/")),
+                Some(home),
+                false,
+            ),
+            PathBuf::from("dfy-devices.toml")
+        );
+    }
+
+    #[test]
+    fn filter_cli_args_drops_macos_psn_flag() {
+        let filtered = filter_cli_args(
+            ["dfy-manager", "-psn_0_123456", "--tab", "diagnostics"],
+            true,
+        );
+        assert_eq!(filtered, vec!["dfy-manager", "--tab", "diagnostics"]);
+
+        let preserved = filter_cli_args(
+            ["dfy-manager", "-psn_0_123456", "--tab", "diagnostics"],
+            false,
+        );
+        assert_eq!(
+            preserved,
+            vec!["dfy-manager", "-psn_0_123456", "--tab", "diagnostics"]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_install_fonts_renders_cjk_glyphs() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx, None);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            ctx.fonts(|fonts| {
+                let galley = fonts.layout_no_wrap(
+                    "大肥鱼远程".to_owned(),
+                    FontId::proportional(14.0),
+                    Color32::WHITE,
+                );
+                assert_eq!(galley.rows.len(), 1);
+                assert_eq!(galley.rows[0].glyphs.len(), 5);
+                for glyph in &galley.rows[0].glyphs {
+                    assert!(glyph.size.x > 0.0, "expected non-zero CJK glyph width");
+                    assert_ne!(glyph.chr, '\u{FFFD}');
+                }
+            });
+        });
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "dfy-capture"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Windows DXGI Desktop Duplication screen capture for the Dafeiyu remote-desktop project"
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"

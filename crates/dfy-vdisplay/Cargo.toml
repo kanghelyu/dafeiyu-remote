@@ -1,6 +1,6 @@
 [package]
 name = "dfy-vdisplay"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Cross-platform virtual display control plane (Windows IddCx driver user-mode half) for the Dafeiyu remote-desktop project"
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"

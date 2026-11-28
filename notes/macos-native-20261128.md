@@ -45,3 +45,22 @@
 4. **macOS 虚拟显示（`dfy-vdisplay`）**：`CGVirtualDisplay` 为苹果未公开私有 API，无法满足公证与长期稳定性要求，继续诚实返回不支持错误，不伪造成功。
 5. **macOS 音频捕获边界**：`dfy-audio` 使用 `cpal`/CoreAudio 采集默认**麦克风**输入（需 `NSMicrophoneUsageDescription`），不采集系统内录声音。
 6. **代码签名与公证**：未配置 Apple Developer ID 证书与 Notary 凭据，PKG/DMG 保持 `-unsigned` 显式命名；实机首次从 `pkg`/`dmg` 安装后需配合 Apple ID 公证或本地允许策略运行。
+
+---
+
+## 4. `v0.2.2` 合入远端 UI 更新、CI/macOS 修复与本地真机校验（2026-11-28）
+
+- **基线同步**：同步远端 `origin/main`（`82d38e2`，含 `eframe` 重构 `dfy-manager`、`dfy-ui` 工具条与嵌入字体、`assets/icon-source.png` 图标刷新、`Dafeiyu Remote.app` 显示名更新及精简版 10 个安装包 `release.yml`）。
+- **修复项**：
+  1. `crates/dfy-manager/src/main.rs`：`CREATE_NO_WINDOW` 常量补充 `#[cfg(windows)]`，修复 `ubuntu-latest` 与 `macos-latest` CI `clippy --all-targets -- -D warnings` 的 `dead_code` 报错。
+  2. `crates/dfy-manager/src/main.rs`：补充现代 macOS 系统字体候选（`STHeiti Medium.ttc`、`Hiragino Sans GB.ttc`、`STHeiti Light.ttc`、`Songti.ttc`、`SFNS.ttf`、`SFNSMono.ttf`）与 `Monospace` 末尾中文回退，并新增无头 `egui::Context` 测试 `macos_install_fonts_renders_cjk_glyphs` 验证「大肥鱼远程」字形渲染非零宽且无替换符。
+  3. `crates/dfy-manager/src/main.rs`：从 macOS `.app/Contents/MacOS` 或只读根目录 `/` 启动且未显式传参时，默认配置/设备书签路径落盘至 `~/Library/Application Support/Dafeiyu Remote/`，并在 macOS 过滤 Finder 启动注入的 `-psn_*` 参数。
+  4. `packaging/tests/smoke.py`：对齐 `55e1c3d` 后精简版 10 个安装包（`release-assets/*` + `release-notes.md`）`release.yml` 契约，继续禁止 `|| true`。
+  5. 版本统一升至 `0.2.2`（Workspace、`Cargo.lock` 与 `android/app/build.gradle.kts` `versionCode = 5` / `versionName = "0.2.2"`）。
+- **本机 Apple Silicon (`arm64`, macOS `27.2.1`) 门禁与产物理实测**：
+  - `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo clippy -p dfy-audio --no-default-features --all-targets -- -D warnings` 通过。
+  - `cargo test --workspace` 全绿（含 `dfy-manager` 11 通过 / 0 失败、`dfy-ui` 78 单测 + 3 doctest 通过）、`cargo test -p dfy-codec --test macos_vt`（5 passed）、`cargo test -p dfy-audio --features device-backend`（12 passed）。
+  - `cargo build --release --locked -p dfy-cli -p dfy-relay -p dfy-manager`：`dfy`/`dfy-relay`/`dfy-manager` 均输出 `0.2.2`；`./target/release/dfy selftest` 返回 `SELFTEST OK`（60 帧 / 120 DATAGRAM / RTT 0.202 ms）。
+  - `python3 docs/requirements/split-and-verify.py --check` PASS（`sourceSha256 = 3db9a60032c0e801593be04f6094b376c97794521fa855d413acbade971cd4e3`）；`python3 packaging/generate_sbom.py --check` PASS（18 workspace crates / 598 第三方依赖）；`python3 packaging/tests/smoke.py` PASS。
+  - 本地 `bash packaging/macos/build-installer.sh --binary-dir target/release --version 0.2.2 --arch arm64 --format all --output-dir .tmp/macos-pkg-verify` 通过：`pkgutil --expand-full` + `plutil -lint` 校验 `Dafeiyu Remote.app/Contents/Info.plist` OK（`CFBundleDisplayName` / `CFBundleName = 大肥鱼远程`，`CFBundleShortVersionString = 0.2.2`），内置 `dfy-manager` / `dfy` / `dfy-relay` 均为 `arm64` Mach-O；`hdiutil attach` 挂载 DMG 确认包含 `Dafeiyu Remote.app`、`Applications` 符号链接及 `.pkg`（本机候选 PKG SHA-256 `d71e293c8e4126ec38776501ea068cba6e9188b775d8ccfe6f241cc3c8d0a850`，DMG SHA-256 `8cffbcb1991ebdde2126cca1dcaaf6205facd6cedae520ce4a00ba73de0d089f`，验包后已清理临时目录）。
+- **本轮边界**：仍无 Apple Developer ID 签名/公证；本机未在交互式桌面截图或做授权 TCC 后的 `dfy-manager` / `dfy view --ui` / `ScreenCaptureKit` 实屏互动目视，也未在本机重建 Android / Linux / Windows 安装包（由 GitHub Actions `CI` 与 `release` 负责）。
