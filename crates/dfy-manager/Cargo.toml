@@ -11,19 +11,19 @@ name = "dfy-manager"
 path = "src/main.rs"
 
 [dependencies]
-ab_glyph = "0.2"
 anyhow.workspace = true
 clap.workspace = true
 dfy-relay = { path = "../dfy-relay" }
 dfy-relay-profiles = { path = "../dfy-relay-profiles" }
 dfy-transport = { path = "../dfy-transport" }
 dfy-vdisplay = { path = "../dfy-vdisplay" }
+eframe = { version = "=0.27.2", default-features = true }
 png = "0.18"
 rand.workspace = true
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal"] }
 serde = { version = "1", features = ["derive"] }
-softbuffer = "0.4"
 tokio.workspace = true
 toml = "0.8"
 tracing.workspace = true
 tracing-subscriber.workspace = true
-winit = "0.30"
+zeroize = { version = "1", features = ["alloc"] }

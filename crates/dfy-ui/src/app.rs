@@ -11,23 +11,26 @@
 //! - [`spawn_viewer`]：UI 跑在独立 OS 线程，事件走 channel（常驻主控端模式）；
 //! - [`crate::run_viewer`]：UI 跑在调用线程，事件走回调（CLI `view` 子命令模式）。
 
+use std::collections::BTreeSet;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
+use winit::window::{CursorGrabMode, CursorIcon, Fullscreen, Window, WindowAttributes, WindowId};
 
 use crate::frame::{self, Frame};
 use crate::keymap;
 use crate::mailbox::{FrameMailbox, UiCommand};
 use crate::scroll::{self, WheelAccumulator};
-use crate::stats::RenderStats;
+use crate::stats::{ConnectionStats, RenderStats};
+use crate::toolbar;
+use crate::toolbar::{InputGate, ToolbarAction, ToolbarLayout, ToolbarState, MIN_CLIENT_SIZE};
 use crate::{ViewerConfig, ViewerControl, ViewerEvent};
 
 /// 左/右 Cha 位（bit0 + bit4）。
@@ -67,6 +70,19 @@ pub(crate) enum SinkOutcome {
     StopRequested,
 }
 
+/// 绘制浮层所需的只读快照；在借用可变 surface 前收集，避免借用整个 `ViewerApp`。
+struct OverlaySnapshot<'a> {
+    toolbar: ToolbarState,
+    hovered_action: Option<ToolbarAction>,
+    local_press: Option<(ToolbarAction, MouseButton)>,
+    toolbar_focus_index: usize,
+    fullscreen: bool,
+    paused: bool,
+    frame_size: Option<(u32, u32)>,
+    stats: &'a RenderStats,
+    scale_factor: f64,
+}
+
 /// winit 应用状态机。
 ///
 /// 字段顺序即析构顺序：`surface`/`context` 必须先于 `window` 释放。
@@ -90,6 +106,18 @@ pub(crate) struct ViewerApp<'a> {
     exit_requested: bool,
     init_error: Option<String>,
     stats: RenderStats,
+    toolbar: ToolbarState,
+    input_gate: InputGate,
+    stats_visible: bool,
+    scale_factor: f64,
+    pointer_position: Option<(f64, f64)>,
+    hovered_action: Option<ToolbarAction>,
+    local_press: Option<(ToolbarAction, MouseButton)>,
+    remote_buttons: BTreeSet<u8>,
+    remote_keys: BTreeSet<u16>,
+    suppressed_keys: BTreeSet<KeyCode>,
+    toolbar_focus_index: usize,
+    cursor_icon: CursorIcon,
 }
 
 impl<'a> ViewerApp<'a> {
@@ -98,11 +126,12 @@ impl<'a> ViewerApp<'a> {
         sink: EventSink<'a>,
         mailbox: Arc<FrameMailbox>,
     ) -> Self {
+        let fullscreen = config.fullscreen;
         Self {
             surface: None,
             context: None,
             window: None,
-            fullscreen: config.fullscreen,
+            fullscreen,
             config,
             sink,
             mailbox,
@@ -118,6 +147,18 @@ impl<'a> ViewerApp<'a> {
             exit_requested: false,
             init_error: None,
             stats: RenderStats::default(),
+            toolbar: ToolbarState::new(fullscreen),
+            input_gate: InputGate::default(),
+            stats_visible: false,
+            scale_factor: 1.0,
+            pointer_position: None,
+            hovered_action: None,
+            local_press: None,
+            remote_buttons: BTreeSet::new(),
+            remote_keys: BTreeSet::new(),
+            suppressed_keys: BTreeSet::new(),
+            toolbar_focus_index: 0,
+            cursor_icon: CursorIcon::Default,
         }
     }
 
@@ -155,6 +196,7 @@ impl<'a> ViewerApp<'a> {
             return;
         }
         self.closed_sent = true;
+        self.release_all_remote_input();
         self.emit(ViewerEvent::Closed);
     }
 
@@ -168,13 +210,176 @@ impl<'a> ViewerApp<'a> {
         }
     }
 
+    fn current_layout(&self) -> ToolbarLayout {
+        let (width, height) = self.window.as_ref().map_or((0, 0), |window| {
+            let size = window.inner_size();
+            (size.width, size.height)
+        });
+        ToolbarLayout::new(
+            width,
+            height,
+            self.scale_factor,
+            self.input_gate.paused(),
+            self.stats_visible,
+            self.toolbar.visible(),
+        )
+    }
+
+    fn refresh_overlay(&mut self, now: Instant) {
+        let layout = self.current_layout();
+        let Some((x, y)) = self.pointer_position else {
+            let changed = self.input_gate.set_overlay(false);
+            self.toolbar.set_hovered(false, now);
+            self.hovered_action = None;
+            self.update_cursor_icon(CursorIcon::Default);
+            if changed {
+                self.release_all_remote_input();
+                self.request_redraw();
+            }
+            return;
+        };
+        let overlay = layout.overlay_at(x, y);
+        let entered = self.input_gate.set_overlay(overlay);
+        let action = layout.action_at(x, y);
+        let hovered_changed = self.hovered_action != action;
+        self.hovered_action = action;
+        let was_visible = self.toolbar.visible();
+        self.toolbar.set_hovered(overlay, now);
+        if overlay && entered {
+            self.release_all_remote_input();
+            self.last_cursor_frame = None;
+            self.release_cursor_capture();
+        }
+        self.update_cursor_icon(if action.is_some() {
+            CursorIcon::Pointer
+        } else {
+            CursorIcon::Default
+        });
+        if entered || hovered_changed || was_visible != self.toolbar.visible() {
+            self.request_redraw();
+        }
+    }
+
+    fn update_cursor_icon(&mut self, icon: CursorIcon) {
+        if self.cursor_icon == icon {
+            return;
+        }
+        self.cursor_icon = icon;
+        if let Some(window) = &self.window {
+            window.set_cursor(icon);
+        }
+    }
+
+    fn release_cursor_capture(&self) {
+        if let Some(window) = &self.window {
+            if let Err(err) = window.set_cursor_grab(CursorGrabMode::None) {
+                tracing::debug!(%err, "释放 viewer 光标捕获失败");
+            }
+        }
+    }
+
+    fn enforce_minimum_client_size(&mut self) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let scale = if self.scale_factor.is_finite() && self.scale_factor > 0.0 {
+            self.scale_factor
+        } else {
+            1.0
+        };
+        window.set_min_inner_size(Some(LogicalSize::new(MIN_CLIENT_SIZE.0, MIN_CLIENT_SIZE.1)));
+        let min = PhysicalSize::new(
+            (MIN_CLIENT_SIZE.0 * scale).round().max(1.0) as u32,
+            (MIN_CLIENT_SIZE.1 * scale).round().max(1.0) as u32,
+        );
+        let size = window.inner_size();
+        if size.width < min.width || size.height < min.height {
+            let _ = window.request_inner_size(min);
+        }
+    }
+
+    fn release_remote_button(&mut self, button: u8) {
+        if !self.remote_buttons.remove(&button) {
+            return;
+        }
+        let Some((src_w, src_h)) = self.frame_size else {
+            return;
+        };
+        let (frame_x, frame_y) = self.last_cursor_frame.unwrap_or((0, 0));
+        self.emit(ViewerEvent::Mouse {
+            x: frame_x,
+            y: frame_y,
+            width: src_w,
+            height: src_h,
+            button: Some(button),
+            down: false,
+        });
+    }
+
+    fn release_remote_buttons(&mut self) {
+        let buttons: Vec<u8> = self.remote_buttons.iter().copied().collect();
+        self.remote_buttons.clear();
+        self.wheel_accum = WheelAccumulator::default();
+        let Some((src_w, src_h)) = self.frame_size else {
+            return;
+        };
+        let (frame_x, frame_y) = self.last_cursor_frame.unwrap_or((0, 0));
+        for button in buttons {
+            self.emit(ViewerEvent::Mouse {
+                x: frame_x,
+                y: frame_y,
+                width: src_w,
+                height: src_h,
+                button: Some(button),
+                down: false,
+            });
+            if self.exit_requested {
+                return;
+            }
+        }
+    }
+
+    fn release_all_remote_input(&mut self) {
+        self.release_remote_buttons();
+        if self.exit_requested {
+            return;
+        }
+        let keys: Vec<u16> = self.remote_keys.iter().copied().collect();
+        self.remote_keys.clear();
+        for usage in keys {
+            self.emit(ViewerEvent::Key {
+                usage,
+                down: false,
+                modifiers: 0,
+            });
+            if self.exit_requested {
+                return;
+            }
+        }
+    }
+
+    fn remote_input_allowed(&self) -> bool {
+        self.input_gate.allows_remote_input()
+    }
+
     fn size_window_to_frame(&mut self, frame_w: u32, frame_h: u32) {
         let Some(window) = self.window.clone() else {
             return;
         };
         let scale = self.config.effective_scale().unwrap_or(1.0);
-        let width = scaled_dimension(frame_w, scale);
-        let height = scaled_dimension(frame_h, scale);
+        let dpi = if self.scale_factor.is_finite() && self.scale_factor > 0.0 {
+            self.scale_factor
+        } else {
+            1.0
+        };
+        let min_width = (MIN_CLIENT_SIZE.0 * dpi).round().max(1.0) as u32;
+        let min_height = (MIN_CLIENT_SIZE.1 * dpi).round().max(1.0) as u32;
+        let width = scaled_dimension(frame_w, scale)
+            .max(min_width)
+            .min(ViewerConfig::MAX_INITIAL_SIZE);
+        let height = scaled_dimension(frame_h, scale)
+            .max(min_height)
+            .min(ViewerConfig::MAX_INITIAL_SIZE);
         if window
             .request_inner_size(PhysicalSize::new(width, height))
             .is_some()
@@ -189,8 +394,10 @@ impl<'a> ViewerApp<'a> {
         };
 
         // 1. 取最新帧（邮箱只留最新一帧；取走即空）。
+        let mut received_frame = false;
         if let Some(frame) = self.mailbox.take_latest() {
             self.last_frame = Some(frame);
+            received_frame = true;
         }
 
         // 2. 首帧定窗（仅当配置了 scale 且未全屏时）。
@@ -213,6 +420,21 @@ impl<'a> ViewerApp<'a> {
 
         let started = Instant::now();
         let mut presented = false;
+        let layout = self.current_layout();
+        let Some(content) = layout.content() else {
+            return;
+        };
+        let overlay = OverlaySnapshot {
+            toolbar: self.toolbar,
+            hovered_action: self.hovered_action,
+            local_press: self.local_press,
+            toolbar_focus_index: self.toolbar_focus_index,
+            fullscreen: self.fullscreen,
+            paused: self.input_gate.paused(),
+            frame_size: self.frame_size,
+            stats: &self.stats,
+            scale_factor: self.scale_factor,
+        };
         if let Some(surface) = self.surface.as_mut() {
             let Some(target) = surface_target(dst_w, dst_h) else {
                 return;
@@ -238,10 +460,20 @@ impl<'a> ViewerApp<'a> {
                             frame.width(),
                             frame.height(),
                             &mut buffer[..],
-                            dst_w,
-                            dst_h,
+                            content.width,
+                            content.height,
                         );
                     }
+                    let connection = self.mailbox.latest_stats();
+                    Self::paint_overlays(
+                        &mut buffer[..],
+                        dst_w,
+                        dst_h,
+                        &layout,
+                        connection.as_ref(),
+                        &overlay,
+                    );
+                    window.pre_present_notify();
                     match buffer.present() {
                         Ok(()) => presented = true,
                         Err(err) => tracing::warn!(%err, "softbuffer 上屏失败"),
@@ -254,7 +486,12 @@ impl<'a> ViewerApp<'a> {
         // 4. 渲染统计 + 标题节流刷新（只在真正上屏后统计）。
         if presented {
             let now = Instant::now();
-            if let Some(size) = self.frame_size {
+            let rendered_size = if received_frame {
+                self.frame_size
+            } else {
+                None
+            };
+            if let Some(size) = rendered_size {
                 self.stats.record_render(now, size, started.elapsed());
             }
             if self.config.show_stats && self.stats.should_refresh_title(now) {
@@ -268,6 +505,205 @@ impl<'a> ViewerApp<'a> {
         }
     }
 
+    fn paint_overlays(
+        buffer: &mut [u32],
+        width: u32,
+        height: u32,
+        layout: &ToolbarLayout,
+        connection: Option<&ConnectionStats>,
+        overlay: &OverlaySnapshot<'_>,
+    ) {
+        if overlay.toolbar.visible() && layout.bar().width > 0 && layout.bar().height > 0 {
+            fill_rect(buffer, width, height, layout.bar(), PANEL);
+            stroke_rect(buffer, width, height, layout.bar(), BORDER);
+            for (index, action) in ToolbarAction::ALL.into_iter().enumerate() {
+                let Some(rect) = layout.control(action) else {
+                    continue;
+                };
+                let hovered = overlay.hovered_action == Some(action);
+                let pressed = overlay
+                    .local_press
+                    .is_some_and(|(pressed_action, _)| pressed_action == action);
+                let focused = overlay.toolbar.focused() && overlay.toolbar_focus_index == index;
+                if pressed || hovered || focused {
+                    fill_rect(
+                        buffer,
+                        width,
+                        height,
+                        rect,
+                        if pressed { PRESSED } else { HOVER },
+                    );
+                }
+                if focused {
+                    stroke_rect(buffer, width, height, rect, ACCENT);
+                }
+                draw_text_centered(
+                    buffer,
+                    width,
+                    height,
+                    rect,
+                    layout.label(action, overlay.fullscreen, overlay.paused),
+                    layout.font_scale(),
+                    TEXT,
+                );
+            }
+            if let Some(rect) = layout.status() {
+                draw_text_centered(
+                    buffer,
+                    width,
+                    height,
+                    rect,
+                    if overlay.paused {
+                        "INPUT PAUSED"
+                    } else {
+                        "INPUT LIVE"
+                    },
+                    layout.font_scale(),
+                    if overlay.paused { WARNING } else { SUCCESS },
+                );
+            }
+            if let (Some(rect), Some((frame_w, frame_h))) = (layout.summary(), overlay.frame_size) {
+                let path = connection.map_or("Direct", |stats| {
+                    if stats.path.is_empty() {
+                        "Direct"
+                    } else {
+                        stats.path.as_str()
+                    }
+                });
+                let fps = overlay
+                    .stats
+                    .fps()
+                    .map_or_else(|| "--".to_string(), |fps| format!("{fps:.0}"));
+                let summary = format!("{frame_w}x{frame_h}  {fps} FPS  {path}");
+                draw_text(
+                    buffer,
+                    width,
+                    height,
+                    rect,
+                    &summary,
+                    layout.font_scale(),
+                    MUTED,
+                );
+            }
+            if let Some(rect) = layout.stats() {
+                Self::paint_stats(
+                    buffer,
+                    width,
+                    height,
+                    rect,
+                    layout.stats_font_scale(),
+                    connection,
+                    overlay,
+                );
+            }
+        }
+        if let Some(rect) = layout.paused_banner() {
+            fill_rect(buffer, width, height, rect, PAUSED_PANEL);
+            stroke_rect(buffer, width, height, rect, WARNING);
+            let scale = if overlay.scale_factor.is_finite() && overlay.scale_factor > 0.0 {
+                overlay.scale_factor
+            } else {
+                1.0
+            };
+            let full_label_width = (200.0 * scale).round().max(1.0) as u32;
+            let label = if rect.width >= full_label_width {
+                "INPUT PAUSED | CTRL+ALT+SHIFT+Q"
+            } else {
+                "INPUT PAUSED"
+            };
+            let banner_font_scale = (scale.round().max(1.0)) as u32;
+            draw_text_centered(
+                buffer,
+                width,
+                height,
+                rect,
+                label,
+                banner_font_scale,
+                WARNING,
+            );
+        }
+    }
+
+    fn paint_stats(
+        buffer: &mut [u32],
+        width: u32,
+        height: u32,
+        rect: crate::frame::Rect,
+        font_scale: u32,
+        connection: Option<&ConnectionStats>,
+        overlay: &OverlaySnapshot<'_>,
+    ) {
+        fill_rect(buffer, width, height, rect, PANEL);
+        stroke_rect(buffer, width, height, rect, BORDER);
+        let path = connection.map_or("Direct", |stats| {
+            if stats.path.is_empty() {
+                "Direct"
+            } else {
+                stats.path.as_str()
+            }
+        });
+        let rtt = connection
+            .and_then(|stats| stats.rtt_ms)
+            .map_or_else(|| "--".to_string(), |value| format!("{value:.1} MS"));
+        let loss = connection.and_then(|stats| stats.loss_ppm).map_or_else(
+            || "--".to_string(),
+            |value| format!("{:.2}%", f64::from(value) / 10_000.0),
+        );
+        let bitrate = connection
+            .and_then(|stats| stats.bitrate_kbps)
+            .map_or_else(|| "--".to_string(), |value| format!("{value} KBPS"));
+        let decode = connection
+            .and_then(|stats| stats.decode_ms)
+            .map_or_else(|| "--".to_string(), |value| format!("{value:.1} MS"));
+        let render = format!(
+            "{:.1} MS",
+            overlay.stats.last_render_time().as_secs_f64() * 1000.0
+        );
+        let frame = overlay
+            .frame_size
+            .map_or_else(|| "--".to_string(), |(w, h)| format!("{w}x{h}"));
+        let fps = overlay
+            .stats
+            .fps()
+            .map_or_else(|| "--".to_string(), |value| format!("{value:.1}"));
+        let relay = connection
+            .and_then(|stats| stats.relay_name.as_deref())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("--");
+        let lines = [
+            "CONNECTION".to_string(),
+            format!("PATH {path}"),
+            format!("RTT {rtt}  LOSS {loss}"),
+            format!("RATE {bitrate}"),
+            format!("DECODE {decode}  RENDER {render}"),
+            format!("FRAME {frame}  {fps} FPS"),
+            format!("RELAY {relay}"),
+        ];
+        let line_height = font_scale.saturating_mul(9);
+        let horizontal_padding = font_scale.saturating_mul(2);
+        let horizontal_margin = font_scale.saturating_mul(4);
+        for (index, line) in lines.iter().enumerate() {
+            let y = rect
+                .y
+                .saturating_add((index as u32).saturating_mul(line_height));
+            let line_rect = crate::frame::Rect {
+                x: rect.x.saturating_add(horizontal_padding),
+                y,
+                width: rect.width.saturating_sub(horizontal_margin),
+                height: line_height.min(rect.height.saturating_sub(y.saturating_sub(rect.y))),
+            };
+            draw_text(
+                buffer,
+                width,
+                height,
+                line_rect,
+                line,
+                font_scale,
+                if index == 0 { ACCENT } else { TEXT },
+            );
+        }
+    }
+
     fn on_keyboard(&mut self, event: &KeyEvent) {
         let KeyEvent {
             physical_key: PhysicalKey::Code(code),
@@ -278,40 +714,102 @@ impl<'a> ViewerApp<'a> {
         else {
             return;
         };
-        let down = *state == ElementState::Pressed;
+        self.on_key(*code, *state, *repeat);
+    }
 
-        // 修饰键位图先更新，保证同一次 Key 事件里的 modifiers 是「当前」状态。
-        if let Some(bit) = keymap::modifier_bit(*code) {
+    fn on_key(&mut self, code: KeyCode, state: ElementState, repeat: bool) {
+        let down = state == ElementState::Pressed;
+        if let Some(bit) = keymap::modifier_bit(code) {
             if down {
                 self.modifiers |= 1u8 << bit;
             } else {
                 self.modifiers &= !(1u8 << bit);
             }
         }
+        if !down {
+            if self.suppressed_keys.remove(&code) {
+                return;
+            }
+            if self.remote_input_allowed() {
+                if let Some(usage) = keymap::hid_usage(code) {
+                    if self.remote_keys.remove(&usage) {
+                        self.emit(ViewerEvent::Key {
+                            usage,
+                            down: false,
+                            modifiers: self.modifiers,
+                        });
+                    }
+                }
+            }
+            return;
+        }
 
-        // 原始按键（含修饰键本身）先转发；快捷键不吞原始事件。
-        if let Some(usage) = keymap::hid_usage(*code) {
-            self.emit(ViewerEvent::Key {
-                usage,
-                down,
-                modifiers: self.modifiers,
-            });
-            if self.exit_requested {
+        let now = Instant::now();
+        if !repeat {
+            if code == KeyCode::F6 {
+                let focused = !self.toolbar.focused();
+                self.toolbar_focus_index = 0;
+                self.toolbar.set_focused(focused, now);
+                self.suppressed_keys.insert(code);
+                self.request_redraw();
+                return;
+            }
+            if code == KeyCode::KeyQ && self.control_toggle_pressed() {
+                self.toggle_input(now);
+                self.suppressed_keys.insert(code);
+                return;
+            }
+            if code == KeyCode::F11 {
+                self.toggle_fullscreen();
+                self.suppressed_keys.insert(code);
+                return;
+            }
+            if code == KeyCode::Escape && !self.toolbar.focused() {
+                self.send_closed();
+                self.suppressed_keys.insert(code);
                 return;
             }
         }
-
-        // 非重复的「按下」才触发本地快捷键。
-        if !down || *repeat {
+        if self.toolbar.focused() {
+            self.suppressed_keys.insert(code);
+            if !repeat {
+                match code {
+                    KeyCode::ArrowRight | KeyCode::Tab => {
+                        self.toolbar_focus_index = (self.toolbar_focus_index + 1) % 4;
+                    }
+                    KeyCode::ArrowLeft => {
+                        self.toolbar_focus_index = (self.toolbar_focus_index + 3) % 4;
+                    }
+                    KeyCode::Enter | KeyCode::Space => {
+                        self.activate_toolbar(ToolbarAction::ALL[self.toolbar_focus_index], now);
+                    }
+                    KeyCode::Escape | KeyCode::F6 => {
+                        self.toolbar.set_focused(false, now);
+                    }
+                    _ => {}
+                }
+            }
+            self.request_redraw();
             return;
         }
-        match code {
-            KeyCode::F11 => self.toggle_fullscreen(),
-            KeyCode::Escape => self.send_closed(),
-            KeyCode::KeyQ if self.control_toggle_pressed() => {
-                self.emit(ViewerEvent::ToggleControl);
+
+        if !self.remote_input_allowed() {
+            self.suppressed_keys.insert(code);
+            return;
+        }
+        if let Some(usage) = keymap::hid_usage(code) {
+            if repeat && !self.remote_keys.contains(&usage) {
+                self.suppressed_keys.insert(code);
+                return;
             }
-            _ => {}
+            if !repeat {
+                self.remote_keys.insert(usage);
+            }
+            self.emit(ViewerEvent::Key {
+                usage,
+                down: true,
+                modifiers: self.modifiers,
+            });
         }
     }
 
@@ -319,11 +817,38 @@ impl<'a> ViewerApp<'a> {
         modifiers_have_control_toggle(self.modifiers)
     }
 
+    fn toggle_input(&mut self, now: Instant) {
+        if !self.input_gate.paused() {
+            self.release_all_remote_input();
+        }
+        self.input_gate.toggle_paused();
+        self.toolbar.reveal(now);
+        self.emit(ViewerEvent::ToggleControl);
+        self.refresh_overlay(now);
+        self.request_redraw();
+    }
+
+    fn activate_toolbar(&mut self, action: ToolbarAction, now: Instant) {
+        match action {
+            ToolbarAction::Fullscreen => self.toggle_fullscreen(),
+            ToolbarAction::ToggleInput => self.toggle_input(now),
+            ToolbarAction::Stats => {
+                self.stats_visible = !self.stats_visible;
+                self.toolbar.reveal(now);
+                self.refresh_overlay(now);
+                self.request_redraw();
+            }
+            ToolbarAction::Disconnect => self.send_closed(),
+        }
+    }
+
     fn toggle_fullscreen(&mut self) {
         let Some(window) = self.window.clone() else {
             return;
         };
         self.fullscreen = !self.fullscreen;
+        self.toolbar.set_fullscreen(self.fullscreen, Instant::now());
+        self.toolbar_focus_index = 0;
         if self.fullscreen {
             window.set_fullscreen(Some(Fullscreen::Borderless(None)));
         } else {
@@ -334,15 +859,28 @@ impl<'a> ViewerApp<'a> {
     }
 
     fn on_cursor_moved(&mut self, x: f64, y: f64) {
-        let Some(window) = self.window.clone() else {
+        if self.window.is_none() {
             return;
-        };
+        }
+        self.pointer_position = Some((x, y));
+        let now = Instant::now();
+        let revealed = self.toolbar.reveal(now);
+        self.refresh_overlay(now);
+        if revealed {
+            self.request_redraw();
+        }
+        if self.local_press.is_some() || !self.remote_input_allowed() {
+            return;
+        }
         let Some((src_w, src_h)) = self.frame_size else {
             return;
         };
-        let size = window.inner_size();
+        let layout = self.current_layout();
+        let Some(content) = layout.content() else {
+            return;
+        };
         let Some((frame_x, frame_y)) =
-            frame::cursor_to_frame(x, y, size.width, size.height, src_w, src_h)
+            toolbar::map_cursor_to_remote(x, y, content, (src_w, src_h), &self.input_gate, &layout)
         else {
             return;
         };
@@ -361,10 +899,81 @@ impl<'a> ViewerApp<'a> {
         let Some(hid_button) = keymap::hid_button(button) else {
             return;
         };
+        let now = Instant::now();
+        if let Some((action, pressed_button)) = self.local_press {
+            if state == ElementState::Released && button == pressed_button {
+                self.local_press = None;
+                self.toolbar.set_pressed(None, now);
+                let activate = self
+                    .pointer_position
+                    .and_then(|(x, y)| self.current_layout().action_at(x, y))
+                    == Some(action);
+                if activate {
+                    self.activate_toolbar(action, now);
+                }
+                self.refresh_overlay(now);
+                self.request_redraw();
+                return;
+            }
+        }
+        if self.local_press.is_some() {
+            return;
+        }
+
+        let layout = self.current_layout();
+        let overlay = self
+            .pointer_position
+            .is_some_and(|(x, y)| layout.overlay_at(x, y));
+        if state == ElementState::Pressed && (self.input_gate.paused() || overlay) {
+            self.release_remote_button(hid_button);
+            if overlay && button == MouseButton::Left {
+                if let Some(action) = self
+                    .pointer_position
+                    .and_then(|(x, y)| layout.action_at(x, y))
+                {
+                    self.local_press = Some((action, button));
+                    self.toolbar.set_pressed(Some(action), now);
+                    self.toolbar.reveal(now);
+                    self.release_cursor_capture();
+                    self.request_redraw();
+                }
+            }
+            return;
+        }
+        if !self.remote_input_allowed() {
+            if state == ElementState::Pressed {
+                self.release_remote_button(hid_button);
+            }
+            return;
+        }
         let Some((src_w, src_h)) = self.frame_size else {
             return;
         };
-        let (frame_x, frame_y) = self.last_cursor_frame.unwrap_or((0, 0));
+        let Some(content) = layout.content() else {
+            return;
+        };
+        if state == ElementState::Pressed {
+            let Some((x, y)) = self.pointer_position else {
+                return;
+            };
+            let Some(mapped) = toolbar::map_cursor_to_remote(
+                x,
+                y,
+                content,
+                (src_w, src_h),
+                &self.input_gate,
+                &layout,
+            ) else {
+                return;
+            };
+            self.last_cursor_frame = Some(mapped);
+            self.remote_buttons.insert(hid_button);
+        } else if !self.remote_buttons.remove(&hid_button) {
+            return;
+        }
+        let Some((frame_x, frame_y)) = self.last_cursor_frame else {
+            return;
+        };
         self.emit(ViewerEvent::Mouse {
             x: frame_x,
             y: frame_y,
@@ -376,8 +985,14 @@ impl<'a> ViewerApp<'a> {
     }
 
     fn on_wheel(&mut self, delta: MouseScrollDelta) {
+        let overlay = self
+            .pointer_position
+            .is_some_and(|(x, y)| self.current_layout().overlay_at(x, y));
+        if self.local_press.is_some() || !self.remote_input_allowed() || overlay {
+            self.wheel_accum = WheelAccumulator::default();
+            return;
+        }
         let (dx, dy) = scroll::scroll_to_wheel(delta, &mut self.wheel_accum);
-        // 像素级滚动可能不足一格：累加器继续攒，不产生 0 增量事件。
         if dx != 0 || dy != 0 {
             self.emit(ViewerEvent::Wheel { dx, dy });
         }
@@ -394,7 +1009,8 @@ impl<'a> ViewerApp<'a> {
         let (width, height) = self.config.effective_initial_size();
         let mut attributes = WindowAttributes::default()
             .with_title(self.config.title.clone())
-            .with_inner_size(PhysicalSize::new(width, height));
+            .with_inner_size(PhysicalSize::new(width, height))
+            .with_min_inner_size(LogicalSize::new(MIN_CLIENT_SIZE.0, MIN_CLIENT_SIZE.1));
         if let Some(icon) = load_app_icon() {
             attributes = attributes.with_window_icon(Some(icon));
         }
@@ -430,6 +1046,9 @@ impl<'a> ViewerApp<'a> {
         if self.fullscreen {
             window.set_fullscreen(Some(Fullscreen::Borderless(None)));
         }
+        self.scale_factor = window.scale_factor();
+        self.toolbar.set_fullscreen(self.fullscreen, Instant::now());
+        self.enforce_minimum_client_size();
         // 全屏或「不按首帧定窗」时，后续帧尺寸变化不再动窗口。
         self.sized_from_frame = self.fullscreen || self.config.effective_scale().is_none();
 
@@ -465,7 +1084,7 @@ impl ApplicationHandler<UiCommand> for ViewerApp<'_> {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiCommand) {
         match event {
-            UiCommand::Frame => self.request_redraw(),
+            UiCommand::Frame | UiCommand::StatsUpdated => self.request_redraw(),
             UiCommand::FramesEnded | UiCommand::Close => {
                 self.send_closed();
                 event_loop.exit();
@@ -492,11 +1111,20 @@ impl ApplicationHandler<UiCommand> for ViewerApp<'_> {
                 event_loop.exit();
                 return;
             }
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+            WindowEvent::Resized(_) => {
                 // 惰性 resize：把记录的尺寸标脏，下一次 render 里重新 resize surface。
                 // 若在这里直接记成新尺寸，render 会跳过 surface.resize，
                 // softbuffer 仍按旧尺寸取缓冲（或 surface 未设置尺寸时 panic）。
                 self.surface_size = (0, 0);
+                self.enforce_minimum_client_size();
+                self.refresh_overlay(Instant::now());
+                self.request_redraw();
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale_factor = scale_factor;
+                self.surface_size = (0, 0);
+                self.enforce_minimum_client_size();
+                self.refresh_overlay(Instant::now());
                 self.request_redraw();
             }
             WindowEvent::RedrawRequested => {
@@ -516,13 +1144,35 @@ impl ApplicationHandler<UiCommand> for ViewerApp<'_> {
             WindowEvent::CursorMoved { position, .. } => {
                 self.on_cursor_moved(position.x, position.y);
             }
+            WindowEvent::CursorEntered { .. } => self.refresh_overlay(Instant::now()),
+            WindowEvent::CursorLeft { .. } => {
+                self.pointer_position = None;
+                self.release_remote_buttons();
+                self.last_cursor_frame = None;
+                self.local_press = None;
+                self.toolbar.set_pressed(None, Instant::now());
+                self.refresh_overlay(Instant::now());
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 self.on_mouse_input(state, button);
             }
             WindowEvent::MouseWheel { delta, .. } => self.on_wheel(delta),
             WindowEvent::Focused(false) => {
-                // 失焦时窗口收不到抬起事件：清掉修饰键，避免远端「卡 Ctrl」。
+                self.release_all_remote_input();
                 self.modifiers = 0;
+                self.suppressed_keys.clear();
+                self.pointer_position = None;
+                self.local_press = None;
+                self.toolbar.set_pressed(None, Instant::now());
+                self.toolbar.set_focused(false, Instant::now());
+                self.toolbar.set_hovered(false, Instant::now());
+                self.update_cursor_icon(CursorIcon::Default);
+                self.release_cursor_capture();
+            }
+            WindowEvent::Focused(true) => {
+                self.toolbar.reveal(Instant::now());
+                self.refresh_overlay(Instant::now());
+                self.request_redraw();
             }
             _ => {}
         }
@@ -532,6 +1182,16 @@ impl ApplicationHandler<UiCommand> for ViewerApp<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        if self.toolbar.update(now) {
+            self.hovered_action = None;
+            self.update_cursor_icon(CursorIcon::Default);
+            self.request_redraw();
+        }
+        event_loop.set_control_flow(match self.toolbar.next_wakeup() {
+            Some(deadline) => ControlFlow::WaitUntil(deadline),
+            None => ControlFlow::Wait,
+        });
         if self.sink_closed() {
             self.exit_requested = true;
         }
@@ -545,6 +1205,247 @@ impl ApplicationHandler<UiCommand> for ViewerApp<'_> {
         self.surface = None;
         self.context = None;
         self.window = None;
+    }
+}
+
+const PANEL: u32 = 0x0018_1D24;
+const HOVER: u32 = 0x002D_3742;
+const PRESSED: u32 = 0x003C_4854;
+const BORDER: u32 = 0x0044_5160;
+const TEXT: u32 = 0x00E8_EDF2;
+const MUTED: u32 = 0x00A9_B4C0;
+const ACCENT: u32 = 0x004C_C9FF;
+const SUCCESS: u32 = 0x006B_D9A0;
+const WARNING: u32 = 0x00FF_B86B;
+const PAUSED_PANEL: u32 = 0x0035_1416;
+
+fn fill_rect(buffer: &mut [u32], width: u32, height: u32, rect: crate::frame::Rect, color: u32) {
+    let x0 = rect.x.min(width);
+    let y0 = rect.y.min(height);
+    let x1 = rect.x.saturating_add(rect.width).min(width);
+    let y1 = rect.y.saturating_add(rect.height).min(height);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    let row_width = (x1 - x0) as usize;
+    for row in y0..y1 {
+        let Some(start) = (row as usize).checked_mul(width as usize) else {
+            continue;
+        };
+        let Some(end) = start.checked_add(row_width) else {
+            continue;
+        };
+        if let Some(pixels) = buffer.get_mut(start..end) {
+            pixels.fill(color);
+        }
+    }
+}
+
+fn fill_rect_clipped(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    rect: crate::frame::Rect,
+    clip: crate::frame::Rect,
+    color: u32,
+) {
+    let x0 = rect.x.max(clip.x).min(width);
+    let y0 = rect.y.max(clip.y).min(height);
+    let x1 = rect
+        .x
+        .saturating_add(rect.width)
+        .min(clip.x.saturating_add(clip.width))
+        .min(width);
+    let y1 = rect
+        .y
+        .saturating_add(rect.height)
+        .min(clip.y.saturating_add(clip.height))
+        .min(height);
+    fill_rect(
+        buffer,
+        width,
+        height,
+        crate::frame::Rect {
+            x: x0,
+            y: y0,
+            width: x1.saturating_sub(x0),
+            height: y1.saturating_sub(y0),
+        },
+        color,
+    );
+}
+
+fn stroke_rect(buffer: &mut [u32], width: u32, height: u32, rect: crate::frame::Rect, color: u32) {
+    fill_rect(
+        buffer,
+        width,
+        height,
+        crate::frame::Rect {
+            y: rect.y,
+            height: 1,
+            ..rect
+        },
+        color,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        crate::frame::Rect {
+            y: rect.y.saturating_add(rect.height.saturating_sub(1)),
+            height: 1,
+            ..rect
+        },
+        color,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        crate::frame::Rect { width: 1, ..rect },
+        color,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        crate::frame::Rect {
+            x: rect.x.saturating_add(rect.width.saturating_sub(1)),
+            width: 1,
+            ..rect
+        },
+        color,
+    );
+}
+
+fn draw_text_centered(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    rect: crate::frame::Rect,
+    text: &str,
+    font_scale: u32,
+    color: u32,
+) {
+    let font_scale = font_scale.max(1);
+    let text_width = text
+        .chars()
+        .count()
+        .saturating_mul(6)
+        .saturating_sub(1)
+        .saturating_mul(font_scale as usize);
+    let glyph_height = 7u32.saturating_mul(font_scale);
+    let x = rect.x.saturating_add(
+        rect.width
+            .saturating_sub(text_width.min(u32::MAX as usize) as u32)
+            / 2,
+    );
+    let y = rect
+        .y
+        .saturating_add(rect.height.saturating_sub(glyph_height) / 2);
+    draw_text(
+        buffer,
+        width,
+        height,
+        crate::frame::Rect { x, y, ..rect },
+        text,
+        font_scale,
+        color,
+    );
+}
+
+fn draw_text(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    rect: crate::frame::Rect,
+    text: &str,
+    font_scale: u32,
+    color: u32,
+) {
+    let font_scale = font_scale.max(1);
+    let mut cursor_x = rect.x;
+    for character in text.chars() {
+        let glyph = glyph(character.to_ascii_uppercase());
+        for (row, bits) in glyph.iter().copied().enumerate() {
+            for column in 0..5u32 {
+                if bits & (1 << (4 - column)) == 0 {
+                    continue;
+                }
+                fill_rect_clipped(
+                    buffer,
+                    width,
+                    height,
+                    crate::frame::Rect {
+                        x: cursor_x.saturating_add(column.saturating_mul(font_scale)),
+                        y: rect
+                            .y
+                            .saturating_add((row as u32).saturating_mul(font_scale)),
+                        width: font_scale,
+                        height: font_scale,
+                    },
+                    rect,
+                    color,
+                );
+            }
+        }
+        cursor_x = cursor_x.saturating_add(6u32.saturating_mul(font_scale));
+    }
+}
+
+fn glyph(character: char) -> [u8; 7] {
+    match character {
+        ' ' => [0; 7],
+        'A' => [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        'B' => [0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E],
+        'C' => [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E],
+        'D' => [0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E],
+        'E' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
+        'F' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],
+        'G' => [0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E],
+        'H' => [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        'I' => [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        'J' => [0x07, 0x02, 0x02, 0x02, 0x12, 0x12, 0x0C],
+        'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+        'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],
+        'M' => [0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11],
+        'N' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
+        'O' => [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'P' => [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],
+        'Q' => [0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D],
+        'R' => [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],
+        'S' => [0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E],
+        'T' => [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
+        'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A],
+        'X' => [0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11],
+        'Y' => [0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04],
+        'Z' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],
+        '0' => [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],
+        '1' => [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        '2' => [0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F],
+        '3' => [0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E],
+        '4' => [0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02],
+        '5' => [0x1F, 0x10, 0x10, 0x1E, 0x01, 0x01, 0x1E],
+        '6' => [0x0E, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x0E],
+        '7' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
+        '8' => [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E],
+        '9' => [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E],
+        '-' => [0, 0, 0, 0x1F, 0, 0, 0],
+        '+' => [0, 0x04, 0x04, 0x1F, 0x04, 0x04, 0],
+        '.' => [0, 0, 0, 0, 0, 0x0C, 0x0C],
+        ':' => [0, 0x0C, 0x0C, 0, 0x0C, 0x0C, 0],
+        '/' => [0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10],
+        '%' => [0x11, 0x12, 0x04, 0x08, 0x11, 0x06, 0x10],
+        '(' => [0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02],
+        ')' => [0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08],
+        '|' => [0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        '_' => [0, 0, 0, 0, 0, 0, 0x1F],
+        '>' => [0x10, 0x08, 0x04, 0x02, 0x04, 0x08, 0x10],
+        '<' => [0x01, 0x02, 0x04, 0x08, 0x04, 0x02, 0x01],
+        '=' => [0, 0x1F, 0, 0, 0x1F, 0, 0],
+        _ => [0x0E, 0x11, 0x01, 0x02, 0x04, 0, 0x04],
     }
 }
 
@@ -698,6 +1599,129 @@ pub fn create_main_thread_viewer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn recording_app(events: &Rc<RefCell<Vec<ViewerEvent>>>) -> ViewerApp<'static> {
+        let events = Rc::clone(events);
+        ViewerApp::new(
+            ViewerConfig::default(),
+            EventSink::Callback(Box::new(move |event| {
+                events.borrow_mut().push(event);
+                ViewerControl::Continue
+            })),
+            Arc::new(FrameMailbox::new()),
+        )
+    }
+
+    #[test]
+    fn paused_input_is_suppressed_and_shortcut_resumes_with_held_modifiers() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut app = recording_app(&events);
+        app.modifiers = (1u8 << 0) | (1u8 << 1) | (1u8 << 2);
+        app.on_key(KeyCode::KeyQ, ElementState::Pressed, false);
+        assert!(app.input_gate.paused());
+        assert_eq!(&*events.borrow(), &[ViewerEvent::ToggleControl]);
+
+        events.borrow_mut().clear();
+        app.on_key(KeyCode::KeyA, ElementState::Pressed, false);
+        app.on_key(KeyCode::KeyA, ElementState::Pressed, true);
+        app.on_key(KeyCode::KeyA, ElementState::Released, false);
+        app.on_mouse_input(ElementState::Pressed, MouseButton::Left);
+        app.on_mouse_input(ElementState::Released, MouseButton::Left);
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, 1.0));
+        assert!(events.borrow().is_empty());
+
+        app.on_key(KeyCode::KeyQ, ElementState::Pressed, false);
+        assert!(!app.input_gate.paused());
+        assert_eq!(&*events.borrow(), &[ViewerEvent::ToggleControl]);
+        events.borrow_mut().clear();
+        app.on_key(KeyCode::KeyA, ElementState::Pressed, false);
+        assert_eq!(
+            &*events.borrow(),
+            &[ViewerEvent::Key {
+                usage: 0x04,
+                down: true,
+                modifiers: app.modifiers,
+            }]
+        );
+    }
+
+    #[test]
+    fn pausing_releases_held_remote_input_before_toggle_event() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut app = recording_app(&events);
+        app.frame_size = Some((1280, 720));
+        app.last_cursor_frame = Some((10, 20));
+        app.on_key(KeyCode::KeyA, ElementState::Pressed, false);
+        app.remote_buttons.insert(1);
+        events.borrow_mut().clear();
+
+        app.toggle_input(Instant::now());
+        assert!(app.input_gate.paused());
+        assert!(app.remote_keys.is_empty());
+        assert!(app.remote_buttons.is_empty());
+        assert_eq!(
+            &*events.borrow(),
+            &[
+                ViewerEvent::Mouse {
+                    x: 10,
+                    y: 20,
+                    width: 1280,
+                    height: 720,
+                    button: Some(1),
+                    down: false,
+                },
+                ViewerEvent::Key {
+                    usage: 0x04,
+                    down: false,
+                    modifiers: 0,
+                },
+                ViewerEvent::ToggleControl,
+            ]
+        );
+    }
+
+    #[test]
+    fn focused_keyboard_and_local_press_never_forward_repeats() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut app = recording_app(&events);
+        let now = Instant::now();
+        app.toolbar.set_focused(true, now);
+        app.on_key(KeyCode::ArrowRight, ElementState::Pressed, false);
+        app.on_key(KeyCode::ArrowRight, ElementState::Pressed, true);
+        app.on_key(KeyCode::KeyA, ElementState::Pressed, false);
+        app.on_key(KeyCode::KeyA, ElementState::Pressed, true);
+        app.on_key(KeyCode::KeyA, ElementState::Released, false);
+        app.frame_size = Some((1280, 720));
+        app.last_cursor_frame = Some((640, 360));
+        app.pointer_position = Some((320.0, 200.0));
+        app.local_press = Some((ToolbarAction::Fullscreen, MouseButton::Left));
+        app.on_mouse_input(ElementState::Pressed, MouseButton::Right);
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, 1.0));
+        app.on_mouse_input(ElementState::Released, MouseButton::Left);
+        assert!(app.local_press.is_none());
+        assert!(events.borrow().is_empty());
+    }
+
+    #[test]
+    fn toolbar_actions_use_existing_event_paths_and_close_once() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut app = recording_app(&events);
+        let now = Instant::now();
+        app.activate_toolbar(ToolbarAction::Stats, now);
+        assert!(app.stats_visible);
+        app.activate_toolbar(ToolbarAction::Stats, now);
+        assert!(!app.stats_visible);
+        app.activate_toolbar(ToolbarAction::ToggleInput, now);
+        assert_eq!(&*events.borrow(), &[ViewerEvent::ToggleControl]);
+        app.activate_toolbar(ToolbarAction::Disconnect, now);
+        app.send_closed();
+        assert_eq!(
+            &*events.borrow(),
+            &[ViewerEvent::ToggleControl, ViewerEvent::Closed]
+        );
+    }
 
     #[test]
     fn scaled_dimension_clamps_to_window_limits() {

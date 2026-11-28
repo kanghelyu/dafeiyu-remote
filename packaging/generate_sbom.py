@@ -27,10 +27,12 @@ ALLOWED_LICENSES = {
     "ISC",
     "MIT",
     "MPL-2.0",
+    "OFL-1.1",
     "OpenSSL",
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "Unlicense",
+    "LicenseRef-UFL-1.0",
     "Zlib",
     "bzip2-1.0.6",
 }

@@ -42,20 +42,20 @@
 | `apps/` | 四端 UI（Flutter，脚手架规划中） |
 | `research/` | 逆向/调研笔记（**仅本地保留，不随仓库发布**） |
 
-## 图形化管理面板（早期）
+## 图形化管理面板
 
-`dfy-manager` 是本地桌面面板，当前列出用户中继池（含真实 rtt/loss/bps）与虚拟显示；
-`↑↓` 选择、`T` 测试、`R` 全部测试、`U` 设为当前、`C`/`D` 创建/销毁虚拟屏（预设 1280×720）、
-`Tab` 切换页签、`F5` 刷新虚拟屏、`Q` 退出。字体按平台候选链回退（中文优先，拉丁兜底）。
+`dfy-manager` 使用 eframe/egui 原生桌面部件，提供设备、Agent、中继、虚拟显示和诊断五页。
+设备页支持地址/口令直连、收藏与搜索；Agent 页支持受控启停；中继和虚拟显示操作在后台执行，
+口令只经 stdin 传给子进程，不写入设备书签。默认窗口为 1120×720，窄窗口自动折叠侧栏。
 
 ```bash
-cargo run -p dfy-manager -- --config ./relay-profiles.toml
-# 直达状态一致性诊断页
-cargo run -p dfy-manager -- --config ./relay-profiles.toml --tab diagnostics
+cargo run -p dfy-manager -- --config ./dfy-relay-profiles.toml --devices ./dfy-devices.toml
+# 直达指定页面：devices / agent / relays / displays / diagnostics
+cargo run -p dfy-manager -- --config ./dfy-relay-profiles.toml --tab diagnostics
 ```
 
-它复用 `dfy relay-profile` 的同一份配置与原子保存，不发起到远端的会话；
-键盘交互与跨 OS 字体回退仍在完善中（详见 `notes/manager-ui-20261127.md`）。
+Windows 11 已实测五页渲染、设备保存和本机 Agent 启停；Relay 完整 GUI 流程、窄窗口/多 DPI、
+Linux/macOS 交互桌面及 Rust 1.75 依赖构建仍未验收，详见 `notes/manager-ui-20261127.md`。
 
 ## 文件传输（控制端 → Agent）
 

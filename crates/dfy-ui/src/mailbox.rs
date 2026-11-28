@@ -22,6 +22,7 @@ pub(crate) enum UiCommand {
     FramesEnded,
     /// 调用方要求关闭（[`crate::PresenterHandle::close`]）。
     Close,
+    StatsUpdated,
 }
 
 /// 只保留最新一帧的邮箱（可跨线程共享）。

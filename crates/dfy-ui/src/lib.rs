@@ -80,6 +80,7 @@ mod keymap;
 mod scroll;
 mod source;
 mod stats;
+mod toolbar;
 
 #[cfg(feature = "window")]
 mod app;
@@ -133,9 +134,9 @@ pub struct ViewerConfig {
     ///
     /// 每个分量独立处理：`0` 表示该分量取默认值，其余夹到
     /// `ViewerConfig::MIN_INITIAL_SIZE..=ViewerConfig::MAX_INITIAL_SIZE`（宽高都受限，
-    /// 防止首帧异常尺寸撑爆窗口）。
+    /// 防止首帧异常尺寸撑爆窗口）；实际窗口最小客户区为 640x360 逻辑像素。
     pub initial_size: (u32, u32),
-    /// 启动即无边框全屏（`Fullscreen::Borderless`）；`F11` 随时切换。
+    /// 窗口启动即无边框全屏（`Fullscreen::Borderless`）；`F11` 或工具栏随时切换。
     pub fullscreen: bool,
     /// 是否在窗口标题里显示「画面尺寸 · FPS · 单帧渲染耗时」。
     ///
@@ -277,9 +278,9 @@ pub enum ViewerEvent {
     },
     /// 窗口已关闭（用户点 X、`Esc`、帧来源结束、或调用方关闭）；这是**终态**事件。
     Closed,
-    /// `Ctrl+Alt+Shift+Q`：调用方应切换「是否允许远控输入」（只发事件，不实现业务）。
+    /// `Ctrl+Alt+Shift+Q` 或工具栏：调用方应切换「是否允许远控输入」（只发事件，不实现业务）。
     ToggleControl,
-    /// `F11`：调用方收到时窗口已切换全屏（事件仅作通知）。
+    /// `F11` 或工具栏：调用方收到时窗口已切换全屏（事件仅作通知）。
     ToggleFullscreen,
 }
 
@@ -336,9 +337,12 @@ impl PresenterHandle {
         }
     }
 
-    /// 更新连接质量统计快照，供标题栏展示完整 8 项指标。
+    /// 更新连接质量统计快照，供标题栏和工具栏统计浮层展示。
     pub fn update_stats(&self, stats: ConnectionStats) {
         self.mailbox.store_stats(stats);
+        if self.proxy.send_event(UiCommand::StatsUpdated).is_err() {
+            tracing::debug!("viewer 事件循环已退出，忽略统计更新");
+        }
     }
 }
 

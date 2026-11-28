@@ -19,3 +19,11 @@
 ## 4. Verification Summary
 - Windows: `cargo fmt --all -- --check` PASS; `cargo clippy --workspace --all-targets -- -D warnings` PASS; `packaging/generate_sbom.py --check` PASS; `packaging/tests/smoke.py` PASS; non-GUI crates (`dfy-proto`, `dfy-path`, `dfy-relay-profiles`, `dfy-relay`, `dfy-transport`, `dfy-p2p`, `dfy-files`, `dfy-audio`) `cargo test` PASS.
 - Debian 13 Linux guest: `cargo test --locked --config profile.test.package.argon2.opt-level=3 -p dfy-ui -p dfy-manager -p dfy-cli -p dfy-audio -p dfy-path -p dfy-proto -p dfy-relay-profiles -p dfy-vdisplay -p dfy-session` ALL PASS (`dfy-ui` 62+3, `dfy-manager` 9, `dfy-cli` 45+2 ignored, `dfy-session` 74+1, `dfy-path` 57+2, `dfy-proto` 22+1, `dfy-relay-profiles` 5, `dfy-audio` 7, `dfy-vdisplay` 22+1 ignored); `dfy selftest` Release PASS (`120` datagrams, `RTT = 4.395 ms`).
+
+## 2026-11-28 续：原生 UI 重构后的 SBOM 与许可审计
+
+- eframe/egui、rfd 等依赖进入锁文件后，重新执行 `python packaging/generate_sbom.py --check --output-sbom .tmp/ui-rework-20261128/SBOM-cyclonedx.json --output-notices .tmp/ui-rework-20261128/THIRD-PARTY-NOTICES.txt`。
+- 结果：`SBOM AUDIT PASS: 18 workspace crates (LicenseRef-PolyForm-Noncommercial-1.0.0), 598 third-party dependencies audited`。598 是当前锁文件的审计结果，取代上一节的 354；两节保留各自日期与依赖图上下文。
+- `epaint 0.27.2` 的许可表达式包含 `(MIT OR Apache-2.0) AND OFL-1.1 AND LicenseRef-UFL-1.0`。已检查其随包 `fonts/OFL.txt` 与 `fonts/UFL.txt`，并在审计脚本中增加 `OFL-1.1`、`LicenseRef-UFL-1.0` 两个已审阅 token；没有把字体许可误记为项目自身的 PolyForm 许可。
+- 本机仅安装 Rust 1.100，没有 Rust 1.75。锁文件新增依赖存在高于 1.75 的声明，且 HEAD 基线已有 MSRV 漂移；SBOM 通过不等于 MSRV 构建通过。
+- 本次没有提交、推送、更新 tag/Release 或发布安装包。

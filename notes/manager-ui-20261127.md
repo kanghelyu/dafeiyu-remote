@@ -39,3 +39,44 @@
 - 字体从系统路径读取，Windows 缺 Arial / Linux 缺 DejaVu 时窗口无法创建；未bundle 字体、未实现字体回退链。
 - 只有 Relay 与 Displays 两个页签；没有会话拨号、质量统计可视化、主题/布局配置、分辨率自适应、无障碍支持。
 - 不是设备发现/配对 GUI，也不替代 CLI；Linux/macOS 真机未验证。
+
+## 2026-11-28 续：原生管理端与 Viewer 工具栏重构
+
+以上各节记录 2026-11-27 的 winit/softbuffer/ab_glyph 原型，作为历史保留；当前 Manager 已换成 eframe/egui，旧绘制器 `src/draw.rs` 不再被入口引用。
+
+### 实现范围
+
+- 工作区起始 HEAD 为 `df627ecad0e4d5c2b361373ca2e5785cab7c8815`。改造前源码副本在 `.tmp/ui-rework-20261128/pre/{dfy-manager,dfy-ui}/`，清单 `.tmp/ui-rework-20261128/pre-sha256.txt` SHA-256 为 `5c2b44e74b1d68b7721448b070ae3aa6e053cca84de2aa47702147afba23a735`。
+- `dfy-manager` 使用 eframe/egui 0.27.2 原生桌面部件，移除 winit/softbuffer/ab_glyph 直接依赖；rfd 0.15 提供系统文件对话框，zeroize 1 清理口令缓冲区。默认窗口 1120×720、最小 760×520，侧栏在逻辑宽度低于 900 时折叠为图标。
+- 五页为设备、Agent、中继、虚拟显示、诊断。设备页有地址/口令直连、收藏、搜索、编辑/删除和指纹固定；Agent 页有绑定地址、权限、Relay、虚拟显示配置、随机口令和受控启停；中继页有四种策略、后台单点/全部探针、CRUD、导入与导出；显示页使用 typed `VirtualDisplayBackend` 并限制动态模式；诊断页显示可执行文件、配置、后端和子进程状态。
+- 设备书签使用临时文件加 rename 原子保存，Unix 权限 0600，显式解析 TOML 并显示损坏/写入错误；不保存口令。会话口令限 16–1024 字节且不能全为空白，只通过子进程 stdin 传递，不进入 argv。Windows 子进程使用 `CREATE_NO_WINDOW`。Relay 连接只传档案 id/tag，密钥继续留在受保护配置中。
+- Viewer 保留 winit/softbuffer 原生窗口和软件帧渲染，新增 `crates/dfy-ui/src/toolbar.rs`：全屏、暂停/恢复远控输入、八项统计浮层、断开；逻辑宽度自适应 32–56px 工具栏，最小逻辑客户区 640×360。全屏闲置 2 秒自动隐藏，F6 与方向键/Tab/Enter/空格提供键盘导航。
+- 渲染与远端坐标映射共用客户区内容矩形；工具栏/统计浮层激活时隔离远端点击、键盘、按钮和滚轮。暂停、进入浮层、离开客户区、失焦和关闭都会释放已按下的远端输入。
+
+### Windows 11 x64 实测
+
+- Manager Debug 真实起窗，五页均以原生控件渲染且中文可读。新增设备弹窗通过实际键盘输入并保存，列表出现该书签，设备文件没有口令字段。
+- Agent 页默认隐藏随机口令；本机 `127.0.0.1:28116` 启动后显示 running 和连接地址，Stop 后恢复未运行，测试 PID 5292 消失。观察到的子进程 argv 含 `agent --password-stdin --host 127.0.0.1 --port 28116 --allow-input`，不含口令。
+- Windows IddCx 后端不可用时页面如实显示不可用，创建按钮禁用；没有把无驱动路径记成创建成功。
+- Viewer 使用本机 WGC → 软件 H.264 → loopback QUIC，测试 Agent PID 19600、端口 28316。为安全起见 Viewer 未加 `--control`，因此本轮没有真实远控输入注入。
+- 同一 Viewer 180 秒日志 `.tmp/ui-rework-20261128/viewer-ui-diagnostic.log`：21,318 DATAGRAM / 21.73 MiB、1,502 重组、1,491 解码、19 关键帧、0 解析失败、RTT 0.76ms、259 个质量反馈窗口、0 次路径迁移、最后帧 #2485/2485。
+- 统计浮层已目视确认；临时动作日志直接记录 `ToggleInput`（逻辑坐标 128,44）和 `Fullscreen`（59,44）。全屏截图显示工具栏隐藏。临时诊断代码随后全部移除并重建最终二进制；自动隐藏的 2 秒边界由状态单测覆盖，不把截图外推成完整多屏几何验收。
+- 测试 Agent PID 19600 已终止并等待退出，未保留本轮启动的 Agent/Viewer。
+
+### 回归与产物
+
+- `cargo fmt --all -- --check` 通过。
+- `cargo test --locked -p dfy-manager -p dfy-ui`：Manager 7 项、Viewer 75 项、Viewer doctest 3 项，全部通过。Manager 旧原型相关测试随未引用绘制器退出，不把 9→7 解释为功能回归。
+- 同两包 `cargo clippy --locked --all-targets -- -D warnings`：0 告警；`cargo build --locked -p dfy-cli -p dfy-manager` 成功。工具链为 Rust 1.100.0，不是 Rust 1.75 构建证明。
+- 最终 `target/debug/dfy-manager.exe` SHA-256：`5f0fb8f83e39b68e3fa91c186eae865f911cee2765fc704761bd67bb3d5f6f52`。
+- 最终 `target/debug/dfy.exe` SHA-256：`1d200e48e96c5818ca6dd6cc3124aa7c7bb266616138debf00ffec5b585ea986`。
+- Viewer 诊断日志 SHA-256：`dae2fb67d2a4475fdc8bf87dace33a858957e6f208feb067079c914337c320fb`；Agent 日志 `.tmp/ui-rework-20261128/viewer-agent-smoke.log` SHA-256：`9dfee5b81c6fdec17b1658b0390372661310c7b44b00615d7a97785278ebdcc8`。
+- SBOM/许可审计结果为 18 个 workspace crate、598 个第三方依赖，详见 `notes/ci-sbom-ui-release-20261127.md`。
+
+### 仍未验收
+
+- 同机 loopback 不是两台物理设备、公网、弱网或长稳验收；不能据此宣称达到 UU 或其它商业客户端的产品完成度。
+- 尚未完成窄 Manager 窗口与多 DPI 的真实视觉验收、Relay GUI 全 CRUD/探针/导入导出、设备编辑/删除/收藏/搜索逐项点击、Manager 退出时活动子进程清理。
+- 尚未通过新工具栏做真实远端输入注入，也未完成全屏/多显示器几何、各 OS 窗口、焦点/IME 和长期运行验收。
+- 锁文件新增 244 个包版本；HEAD 基线已有依赖 MSRV 漂移，本次新增 ICU/IDNA 等包亦声明高于 1.75。本机没有 1.75 工具链，filter metadata 也不等于实际编译图，必须另做 1.75 解析/构建或明确调整工具链政策。
+- 本次没有提交、推送、更新 tag/Release 或发布安装包。
