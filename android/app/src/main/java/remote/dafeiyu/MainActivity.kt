@@ -42,7 +42,7 @@ class MainActivity : ComponentActivity() {
     private var pendingStart = false
     private var pendingPassword: CharArray? = null
     private var pendingConfiguration: IntArray? = null
-    private var displayState = "stopped" to getString(R.string.state_stopped)
+    private var displayState = "stopped" to ""
 
     private val stateListener: (String, String) -> Unit = { state, detail ->
         runOnUiThread {
@@ -128,6 +128,7 @@ class MainActivity : ComponentActivity() {
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitContentWidth() }
 
         content.addView(header())
+        content.addView(roleCard())
         content.addView(privacyCard())
         content.addView(sessionCard())
         content.addView(qualityCard())
@@ -153,6 +154,18 @@ class MainActivity : ComponentActivity() {
         addView(UiTheme.title(this@MainActivity, getString(R.string.host_title), large = true))
         addView(UiTheme.body(this@MainActivity, getString(R.string.host_subtitle), muted = true).apply {
             setPadding(0, 8.dp, 0, 0)
+        })
+    }
+
+    private fun roleCard(): View = UiTheme.card(this).apply {
+        addView(UiTheme.sectionTitle(this@MainActivity, getString(R.string.host_viewer_title)))
+        addView(UiTheme.body(this@MainActivity, getString(R.string.host_viewer_body), muted = true).apply {
+            setPadding(0, 8.dp, 0, 0)
+        })
+        addView(UiTheme.button(this@MainActivity, getString(R.string.host_viewer_action), filled = true).apply {
+            setOnClickListener { startActivity(Intent(this@MainActivity, ViewerActivity::class.java)) }
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = 14.dp
         })
     }
 

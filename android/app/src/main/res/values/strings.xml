@@ -31,6 +31,9 @@
     <!-- Controlled device -->
     <string name="host_title">把画面安全分享到此设备</string>
     <string name="host_subtitle">大肥鱼远程 · Android 被控端</string>
+    <string name="host_viewer_title">连接其他设备</string>
+    <string name="host_viewer_body">作为查看端连接其他设备上的大肥鱼远程，发送触摸与按键操作。</string>
+    <string name="host_viewer_action">进入查看端</string>
     <string name="host_privacy_title">由你决定何时分享</string>
     <string name="host_privacy_body">仅在明确授权录屏后采集画面。会话口令不会保存，停止后本次会话立即结束。</string>
     <string name="host_session_title">会话设置</string>

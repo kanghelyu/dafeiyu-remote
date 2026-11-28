@@ -67,3 +67,33 @@
 - Windows 上改用 `java -jar <build-tools>/lib/apksigner.jar`，避免 `apksigner.bat` 在含空格的 `JAVA_HOME` 路径下拆词。
 - 公开 Release 资产名由 tag 生成：`dafeiyu-v0.2.1+ci1-release.apk`、`dafeiyu-v0.2.1+ci1-release.aab`、`dafeiyu-v0.2.1+ci1-debug.apk`；已重新下载并核对签名、版本与 `SHA256SUMS.txt`。
 - 签名只证明包完整性与发布者身份，不证明真机安装升级、录屏/输入/跨机功能、弱网长稳或 Google Play 接受。
+
+## 双启动入口缺陷与单入口修复候选（2026-11-28）
+
+- 根因：公开 `v0.2.1+ci1` APK 的二进制清单同时包含 `remote.dafeiyu.MainActivity` 与 `remote.dafeiyu.ViewerLauncher` 两个 `MAIN`/`LAUNCHER` 入口，因此安装后出现“大肥鱼远程”和“大肥鱼远程查看端”两个图标。API36 x86_64 模拟器安装公开包后查询到 2 个 `remote.dafeiyu` 启动项，复现成功。
+- 修复：删除 `ViewerLauncher` 别名，只在 `MainActivity` 保留唯一启动入口；主界面新增“进入查看端”卡片与按钮，内部显式启动 `ViewerActivity`，查看端功能不再依赖第二个桌面图标。
+- 安装级验证同时抓到并修复了一个独立启动阻断：`MainActivity` 的字段初始化在 Context 绑定前调用 `getString()`，点击图标会抛出 `NullPointerException`。改为在 `onCreate` 读取状态后渲染，不提前访问资源。
+- 候选版本：`versionName=0.2.1`、`versionCode=4`，包名仍为 `remote.dafeiyu`。同包名、同签名覆盖安装公开 ci1 成功；升级后查询仅 1 个启动项。卸载后全新安装也仅 1 个启动项，主界面冷启动成功，点击“进入查看端”后 `ViewerActivity` 成为前台 Activity，crash buffer 为空。
+- 静态与自动检查：AAPT 二进制清单仅 1 个 `LAUNCHER`；36 个单测全部通过、lint 0 错误/19 警告；`packaging/tests/smoke.py` 与 `git diff --check` 通过；Release APK v2 签名有效，证书 SHA-256 仍为 `1ee8ac5891bca0e00d4f4029059c25a8060e796bc307d6ac07d307c73aaff3b8`；AAB `jarsigner -verify` 退出 0。
+
+本地候选产物位于 `.tmp/android-single-launcher-v0.2.1-ci2/`，不代表已经公开：
+
+| 文件 | 字节 | SHA-256 |
+| --- | ---: | --- |
+| `dafeiyu-0.2.1+ci2-release.apk` | 13774614 | `681f4572226a93716e62fbc2e9830195e0c35bb088be157c7991d02e5668bc00` |
+| `dafeiyu-0.2.1+ci2-release.aab` | 10028193 | `d81bd8c401d352ca0b15431fc7d3794d9673a7da793af490a235bb7eb6806eac` |
+| `dafeiyu-0.2.1+ci2-debug.apk` | 14711932 | `f029c67247a95479d352755e656768ff3be8fe94f0271a2e9443d28974525e1d` |
+
+本轮只生成本地候选，未提交、推送、移动旧 tag 或更新公开 Release。API36 模拟器结果不能替代物理真机、所有 OEM 启动器、Google Play、录屏/输入/跨机或升级数据保留验收；公开 ci1 在修复候选发布前仍保持原状。
+
+## Release 只保留安装包与介绍页重写（2026-11-28）
+
+- 公开 `v0.2.1+ci1` 的 Release 同时挂有安装包、ZIP、AAB、Debug APK、`SHA256SUMS.txt`、SBOM 与 notices。源码、构建脚本和文档已经随 tag 进入仓库，发布页不再重复挂这些开发/辅助产物。
+- `release.yml` 的发布任务改为从 CI artifacts 中只整理 10 个安装包：Windows Setup、macOS Intel/Apple Silicon 各 DMG+PKG、Linux amd64/arm64 各 DEB+RPM、Android 已签名 Release APK。AAB、Debug APK、ZIP、校验和、SBOM 和 notices 仍可作为 CI artifact 获取，但不上传到公开 Release。
+- Android 构建参数由 `--version "$RELEASE_TAG"` 改为 `--version "${RELEASE_TAG#v}"`，统一公开文件名为 `dafeiyu-0.2.1+ci2-release.apk`，不再产生 `dafeiyu-v0.2.1+ci2-release.apk` 这种带双版本前缀的名称。
+- 发布说明改为中文直链列表，每个平台/架构一个安装包链接；同时保留口令、签名/公证、Wayland 和非商用许可证边界。
+- 本地用代表性产物模拟发布整理：`release-assets/` 恰好 10 个文件，生成的 Markdown 恰好 10 个 `releases/download/...` 直链；`release.yml` YAML 解析通过，两个仓库 `git diff --check` 通过。模拟不等于真实 GitHub Actions 构建或公开下载验收。
+- 个人主页 `apps/dafeiyu/index.html` 重写为“从另一台设备，操作你的电脑”的直白介绍，说明能做什么、三步怎么用、实际界面、各端安装包和源码/许可证；`projects.html` 与 `assets/js/projects.js` 的中英文项目卡片同步为同一口径。
+- 介绍页只使用检查后的当前应用截图：Windows Manager 为重新构建 `target/release/dfy-manager.exe` 后实际起窗捕获的 1122×660 画面；Android 为 ci2 候选在 API36 x86_64 模拟器 `emulator-5556` 捕获的 1080×2400 画面，页面明确标注“模拟器画面”。未使用含学生姓名、成绩或会话口令的旧截图。
+- 使用本机 Microsoft Edge headless + CDP 检查桌面与 390px 移动端；390px 下 `innerWidth=390`、`clientWidth=390`、`scrollWidth=390`、`bodyScrollWidth=390`，下载区经滚动定位后截图复核。该检查是浏览器渲染证据，不替代 Android 真机验收。
+- 此节记录的是本地完成、待提交/发布状态；真实 CI run、公开 Release URL、10 个公开直链及公开产物哈希须在发布后另行实测补记。

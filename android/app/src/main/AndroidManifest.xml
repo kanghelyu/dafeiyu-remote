@@ -31,18 +31,6 @@
             android:configChanges="orientation|screenSize|smallestScreenSize"
             android:exported="true" />
 
-        <!-- A separate launcher alias exposes the viewer without changing the host launcher path. -->
-        <activity-alias
-            android:name=".ViewerLauncher"
-            android:targetActivity=".ViewerActivity"
-            android:exported="true"
-            android:label="大肥鱼远程查看端">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-
         <service
             android:name=".RemoteService"
             android:enabled="true"

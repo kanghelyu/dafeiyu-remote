@@ -375,7 +375,7 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           bash packaging/android/build.sh \
-            --version "$RELEASE_TAG" \
+            --version "${RELEASE_TAG#v}" \
             --signing required \
             --output-dir dist
       - uses: actions/upload-artifact@v4
@@ -396,11 +396,78 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: 生成 release 级校验和
+      - name: 只整理各端安装包
+        shell: bash
         run: |
-          cd artifacts
-          sha256sum * > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          mkdir -p release-assets
+          cp artifacts/dafeiyu-${version}-windows-x86_64-setup.exe release-assets/
+          cp artifacts/dafeiyu_${version}_*.deb release-assets/
+          cp artifacts/dafeiyu-${version}-*.rpm release-assets/
+          cp artifacts/dafeiyu-${version}-macos-*.pkg release-assets/
+          cp artifacts/dafeiyu-${version}-macos-*.dmg release-assets/
+          cp artifacts/dafeiyu-${version}-release.apk release-assets/
+          count="$(find release-assets -maxdepth 1 -type f | wc -l)"
+          [ "$count" -eq 10 ] || { echo "expected 10 installers, found $count" >&2; exit 1; }
+
+      - name: 生成直链发布说明
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          find_asset() {
+            local pattern="$1"
+            local -a matches
+            mapfile -t matches < <(find artifacts -maxdepth 1 -type f -name "$pattern" -printf '%f\n')
+            [ "${#matches[@]}" -eq 1 ] || { echo "expected one asset matching $pattern, found ${#matches[@]}" >&2; return 1; }
+            printf '%s\n' "${matches[0]}"
+          }
+          win="$(find_asset "dafeiyu-${version}-windows-x86_64-setup.exe")"
+          linux_amd64_deb="$(find_asset "dafeiyu_${version}_amd64.deb")"
+          linux_arm64_deb="$(find_asset "dafeiyu_${version}_arm64.deb")"
+          linux_amd64_rpm="$(find_asset "dafeiyu-${version}-*.x86_64.rpm")"
+          linux_arm64_rpm="$(find_asset "dafeiyu-${version}-*.aarch64.rpm")"
+          mac_x86_pkg="$(find_asset "dafeiyu-${version}-macos-x86_64-*.pkg")"
+          mac_x86_dmg="$(find_asset "dafeiyu-${version}-macos-x86_64-*.dmg")"
+          mac_arm_pkg="$(find_asset "dafeiyu-${version}-macos-arm64-*.pkg")"
+          mac_arm_dmg="$(find_asset "dafeiyu-${version}-macos-arm64-*.dmg")"
+          android="$(find_asset "dafeiyu-${version}-release.apk")"
+          for asset in "$win" "$linux_amd64_deb" "$linux_arm64_deb" "$linux_amd64_rpm" "$linux_arm64_rpm" \
+                       "$mac_x86_pkg" "$mac_x86_dmg" "$mac_arm_pkg" "$mac_arm_dmg" "$android"; do
+            [ -n "$asset" ] || { echo "missing expected installer" >&2; exit 1; }
+          done
+          cat > release-notes.md <<EOF
+          ## 下载安装包
+
+          这里只放安装包。源代码、构建脚本和文档都在[仓库](https://github.com/${GITHUB_REPOSITORY}/tree/${RELEASE_TAG})中。
+
+          ### Windows
+          - [Windows 10/11 64 位安装程序](${base}/${win})
+
+          ### macOS
+          - [Apple 芯片（M1/M2/M3/M4）DMG](${base}/${mac_arm_dmg})
+          - [Apple 芯片 PKG 安装包](${base}/${mac_arm_pkg})
+          - [Intel 芯片 DMG](${base}/${mac_x86_dmg})
+          - [Intel 芯片 PKG 安装包](${base}/${mac_x86_pkg})
+
+          ### Linux
+          - [x86_64 / amd64 DEB](${base}/${linux_amd64_deb})
+          - [x86_64 / amd64 RPM](${base}/${linux_amd64_rpm})
+          - [ARM64 / aarch64 DEB](${base}/${linux_arm64_deb})
+          - [ARM64 / aarch64 RPM](${base}/${linux_arm64_rpm})
+
+          ### Android
+          - [Android 安装包（APK，已签名）](${base}/${android})
+
+          ## 使用前
+          - 被控端安装管理端并开启允许控制；查看端使用同一版本连接。
+          - 口令只用于本次连接，不会保存。不要通过不可信渠道发送口令。
+          - Windows IDD 虚拟显示驱动、macOS 正式代码签名与 Apple 公证仍未完成；Android 包已完成 CI 签名，但不等同于 Google Play 发布或真机验收。
+          - Linux 当前支持 X11，尚不提供完整的 Wayland 桌面支持。
+          - 许可证：PolyForm Noncommercial License 1.0.0，仅限非商用。
+          EOF
 
       - name: 判断 SemVer 预发布标记
         id: release_channel
@@ -421,35 +488,5 @@ jobs:
           draft: false
           prerelease: ${{ steps.release_channel.outputs.prerelease }}
           generate_release_notes: true
-          files: artifacts/*
-          body: |
-            ## 大肥鱼远程 ${{ github.event.inputs.tag || github.ref_name }}
-
-            许可证：`PolyForm Noncommercial License 1.0.0`（非商用源码可见）。
-            包含 `dfy` / `dfy-relay` CLI、`dfy-manager`（Windows 安装包及 macOS `Dafeiyu Remote.app`）、Linux DEB/RPM、
-            Windows Inno Setup、macOS PKG/DMG、Android APK/AAB，以及 CycloneDX SBOM
-            (`dafeiyu-*-sbom.cdx.json`) 与 `THIRD-PARTY-NOTICES.txt`。
-            Windows 包不安装服务包装器。Android release APK/AAB 必须签名；签名凭据缺失时构建失败，不发布未签名包。
-
-            ### 已知边界（代码签名/验收说明）
-            - Windows IDD 虚拟显示驱动签名/HLK/WHQL、macOS 虚拟显示（不启用私有 CGVirtualDisplay API）、Windows/macOS 正式代码签名与 Apple 公证仍未完成。Android release APK/AAB 由 CI 签名，不等同于 Google Play 发布或真机验收；Android 真机及 Mac↔Windows/公网跨物理机交互压测仍未完成（详见 `docs/STATUS.md`）。
-
-            ### 下载
-            - `dafeiyu-*-unknown-linux-gnu.tar.gz`：Linux x86_64 / aarch64 CLI + relay
-            - `dfy-relay-linux-<arch>.tar.gz`：一键脚本使用的中继归档
-            - `dafeiyu_*_amd64.deb` / `dafeiyu_*_arm64.deb`：Linux DEB
-            - `dafeiyu-*.rpm`：Linux RPM
-            - `dafeiyu-*-windows-x86_64-setup.exe`：Windows 安装程序（含 `dfy`、`dfy-relay`、`dfy-manager`）
-            - `dafeiyu-*-macos-*.pkg` / `.dmg`：macOS 安装包（含 `Dafeiyu Remote.app` 与 `/usr/local/bin/{dfy,dfy-relay}`）
-            - `dafeiyu-*-debug.apk` / `dafeiyu-*-release*.apk` / `.aab`
-            - `dafeiyu-*-sbom.cdx.json` / `THIRD-PARTY-NOTICES.txt`：CycloneDX 1.5 SBOM 与第三方许可声明
-
-            SHA-256：`SHA256SUMS.txt`（也提供逐归档 `.sha256`）。
-
-            ### 中继部署
-            先审阅脚本，再执行：
-            ```bash
-            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.event.inputs.tag || github.ref_name }}/deploy/install-relay.sh -o install-relay.sh
-            sudo DFY_REQUIRE_CHECKSUM=1 bash install-relay.sh --version "${{ github.event.inputs.tag || github.ref_name }}"
-            ```
-            配置、覆盖参数、签名秘密和本地构建说明见 `deploy/README.md`。
+          files: release-assets/*
+          body_path: release-notes.md
