@@ -1,4 +1,4 @@
-# 大肥鱼远程 Android 签名发布（2026-11-28）
+# 大肥鱼远程 Android 签名与 CI 修复发布（2026-11-28）
 
 ## 范围
 
@@ -27,6 +27,7 @@
 - AAPT 独立读回：`remote.dafeiyu`、versionCode 3、versionName 0.2.1、min/target SDK 29/36、arm64-v8a/x86_64。
 - `./gradlew :app:testDebugUnitTest :app:lintDebug --offline -x cargoBuild`：35 测试、0 失败、0 错误、0 跳过；lint 0 错误、19 警告。
 - `cargo fmt --all -- --check` 与 `cargo check --locked --offline -p dfy-manager -p dfy-ui` 通过。
+- 首次 Release CI 的 Linux Manager 因 `rfd` 关闭默认异步运行时、导致 `zbus` 未启用 Tokio/async-io 而失败；已显式启用 `rfd/tokio`，依赖树确认 `zbus/tokio` 生效，Windows Manager/Viewer 检查与测试再次通过。本机 Linux 交叉检查仅因缺少 `x86_64-linux-gnu-gcc` 中止，不能替代 Ubuntu CI 实跑。
 - `MSYS=winsymlinks:nativestrict python packaging/tests/smoke.py`、需求台账 `--check` 与 `git diff --check` 全部通过。
 
 ## 本地候选产物

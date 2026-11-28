@@ -20,7 +20,7 @@ dfy-vdisplay = { path = "../dfy-vdisplay" }
 eframe = { version = "=0.27.2", default-features = true }
 png = "0.18"
 rand.workspace = true
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 serde = { version = "1", features = ["derive"] }
 tokio.workspace = true
 toml = "0.8"
