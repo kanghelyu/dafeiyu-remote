@@ -20,7 +20,8 @@ use dfy_vdisplay::{
     capability, create_backend, VirtualDisplayBackend, VirtualDisplayInfo, VirtualDisplaySpec,
 };
 use eframe::egui::{
-    self, CentralPanel, Color32, FontDefinitions, FontFamily, IconData, RichText, ScrollArea, Vec2,
+    self, CentralPanel, Color32, FontDefinitions, FontFamily, FontId, IconData, Margin, RichText,
+    Rounding, ScrollArea, Stroke, TextStyle, Vec2,
 };
 use rand::{distributions::Alphanumeric, Rng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,25 @@ const APP_TITLE: &str = "大肥鱼远程";
 const MIN_PASSWORD_BYTES: usize = 16;
 const MAX_PASSWORD_BYTES: usize = 1024;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+const COLOR_BG: Color32 = Color32::from_rgb(10, 16, 26);
+const COLOR_SIDEBAR: Color32 = Color32::from_rgb(13, 21, 34);
+const COLOR_HEADER: Color32 = Color32::from_rgb(12, 20, 32);
+const COLOR_SURFACE: Color32 = Color32::from_rgb(18, 29, 44);
+const COLOR_SURFACE_RAISED: Color32 = Color32::from_rgb(23, 37, 55);
+const COLOR_BORDER: Color32 = Color32::from_rgb(39, 55, 75);
+const COLOR_TEXT: Color32 = Color32::from_rgb(233, 239, 248);
+const COLOR_MUTED: Color32 = Color32::from_rgb(148, 164, 185);
+const COLOR_FAINT: Color32 = Color32::from_rgb(103, 121, 145);
+const COLOR_ACCENT: Color32 = Color32::from_rgb(94, 224, 183);
+const COLOR_ACCENT_SOFT: Color32 = Color32::from_rgb(24, 57, 52);
+const COLOR_ACCENT_INK: Color32 = Color32::from_rgb(7, 28, 23);
+const COLOR_BLUE: Color32 = Color32::from_rgb(122, 184, 255);
+const COLOR_SUCCESS: Color32 = Color32::from_rgb(99, 214, 157);
+const COLOR_WARNING: Color32 = Color32::from_rgb(242, 189, 104);
+const COLOR_DANGER: Color32 = Color32::from_rgb(255, 130, 124);
+const COLOR_DANGER_SOFT: Color32 = Color32::from_rgb(58, 31, 39);
+const CONTENT_MAX_WIDTH: f32 = 1080.0;
 
 #[derive(Debug, Parser)]
 #[command(name = "dfy-manager", version, about = "大肥鱼远程桌面管理端")]
@@ -53,6 +73,14 @@ enum Page {
     Relays,
     Displays,
     Diagnostics,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusTone {
+    Neutral,
+    Success,
+    Error,
+    Progress,
 }
 
 impl Page {
@@ -524,7 +552,8 @@ struct ManagerApp {
     display_error: Option<String>,
     diagnostics: Vec<Diagnostic>,
     status: String,
-    status_error: bool,
+    status_tone: StatusTone,
+    modal_error: Option<String>,
     children: Vec<ManagedChild>,
     next_child_id: u64,
     relay_testing: bool,
@@ -580,7 +609,8 @@ impl ManagerApp {
             display_error,
             diagnostics: Vec::new(),
             status: "就绪。连接一台设备，或允许这台电脑被远程控制。".into(),
-            status_error: false,
+            status_tone: StatusTone::Neutral,
+            modal_error: None,
             children: Vec::new(),
             next_child_id: 1,
             relay_testing: false,
@@ -597,7 +627,27 @@ impl ManagerApp {
 
     fn set_status(&mut self, message: impl Into<String>, error: bool) {
         self.status = message.into();
-        self.status_error = error;
+        self.status_tone = if error {
+            StatusTone::Error
+        } else {
+            StatusTone::Success
+        };
+        self.modal_error = if error {
+            Some(self.status.clone())
+        } else {
+            None
+        };
+    }
+
+    fn set_progress_status(&mut self, message: impl Into<String>) {
+        self.status = message.into();
+        self.status_tone = StatusTone::Progress;
+        self.modal_error = None;
+    }
+
+    fn set_modal(&mut self, modal: Modal) {
+        self.modal_error = None;
+        self.modal = modal;
     }
 
     fn drain_events(&mut self) {
@@ -624,14 +674,21 @@ impl ManagerApp {
                     }
                 }
                 ManagerEvent::Displays(result) => {
+                    let was_progress = self.status_tone == StatusTone::Progress;
                     match result {
                         Ok(displays) => {
                             self.displays = displays;
                             self.display_error = None;
+                            if was_progress {
+                                self.status_tone = StatusTone::Neutral;
+                            }
                         }
                         Err(err) => {
-                            self.display_error = Some(err);
+                            self.display_error = Some(err.clone());
                             self.displays.clear();
+                            if was_progress {
+                                self.set_status("虚拟显示后端当前不可用；物理桌面仍可使用", true);
+                            }
                         }
                     }
                     self.display_busy = false;
@@ -769,7 +826,7 @@ impl ManagerApp {
         self.relay_testing = true;
         self.relay_test_remaining = 1;
         self.relay_test_failed = false;
-        self.set_status(format!("正在测试 {}…", profile.name), false);
+        self.set_progress_status(format!("正在测试 {}…", profile.name));
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let health = tokio::runtime::Builder::new_current_thread()
@@ -801,7 +858,7 @@ impl ManagerApp {
         self.relay_testing = true;
         self.relay_test_remaining = profiles.len();
         self.relay_test_failed = false;
-        self.set_status(format!("正在测试 {} 台中继…", profiles.len()), false);
+        self.set_progress_status(format!("正在测试 {} 台中继…", profiles.len()));
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             for profile in profiles {
@@ -832,6 +889,7 @@ impl ManagerApp {
             return;
         };
         self.display_busy = true;
+        self.set_progress_status("正在读取虚拟显示…");
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = backend.list().map_err(|err| err.to_string());
@@ -884,7 +942,7 @@ impl ManagerApp {
             return;
         };
         self.display_busy = true;
-        self.set_status("正在操作虚拟显示…", false);
+        self.set_progress_status("正在操作虚拟显示…");
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = match (action, id) {
@@ -1058,7 +1116,7 @@ impl ManagerApp {
             },
             "远控窗口",
         )?;
-        self.set_status(format!("正在连接 {}…", request.label), false);
+        self.set_status(format!("已打开 {} 的远控窗口", request.label), false);
         Ok(())
     }
 
@@ -1199,11 +1257,11 @@ impl ManagerApp {
     }
 
     fn request_confirmation(&mut self, title: &str, message: &str, action: ConfirmAction) {
-        self.modal = Modal::Confirm(ConfirmState {
+        self.set_modal(Modal::Confirm(ConfirmState {
             title: title.into(),
             message: message.into(),
             action,
-        });
+        }));
     }
 
     fn confirm_action(&mut self, action: ConfirmAction) -> Result<()> {
@@ -1511,28 +1569,70 @@ impl eframe::App for ManagerApp {
 
         self.draw_header(ctx);
         self.draw_navigation(ctx);
-        CentralPanel::default().show(ctx, |ui| {
-            ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| match self.page {
-                    Page::Devices => self.ui_devices(ui),
-                    Page::Agent => self.ui_agent(ui),
-                    Page::Relays => self.ui_relays(ui),
-                    Page::Displays => self.ui_displays(ui),
-                    Page::Diagnostics => self.ui_diagnostics(ui),
+        let narrow = ctx.screen_rect().width() < 900.0;
+        let horizontal_margin = if narrow { 18.0 } else { 30.0 };
+        CentralPanel::default()
+            .frame(
+                egui::Frame::none()
+                    .fill(COLOR_BG)
+                    .inner_margin(Margin::symmetric(horizontal_margin, 24.0)),
+            )
+            .show(ctx, |ui| {
+                let content_width = ui.available_width().min(CONTENT_MAX_WIDTH);
+                let side_margin = ((ui.available_width() - content_width) / 2.0).max(0.0);
+                ui.horizontal_top(|ui| {
+                    ui.add_space(side_margin);
+                    ui.vertical(|ui| {
+                        ui.set_width(content_width);
+                        ScrollArea::vertical()
+                            .id_source("manager-page-scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| match self.page {
+                                Page::Devices => self.ui_devices(ui),
+                                Page::Agent => self.ui_agent(ui),
+                                Page::Relays => self.ui_relays(ui),
+                                Page::Displays => self.ui_displays(ui),
+                                Page::Diagnostics => self.ui_diagnostics(ui),
+                            });
+                    });
                 });
-        });
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                let color = if self.status_error {
-                    Color32::from_rgb(255, 138, 128)
-                } else {
-                    Color32::from_rgb(156, 211, 178)
-                };
-                ui.label(RichText::new("●").color(color));
-                ui.label(&self.status);
             });
-        });
+        egui::TopBottomPanel::bottom("status")
+            .frame(
+                egui::Frame::none()
+                    .fill(COLOR_HEADER)
+                    .inner_margin(Margin::symmetric(20.0, 9.0)),
+            )
+            .show(ctx, |ui| {
+                let rect = ui.max_rect();
+                ui.painter().line_segment(
+                    [rect.left_top(), rect.right_top()],
+                    Stroke::new(1.0_f32, COLOR_BORDER),
+                );
+                ui.horizontal(|ui| {
+                    let (color, icon) = match self.status_tone {
+                        StatusTone::Neutral => (COLOR_BLUE, "●"),
+                        StatusTone::Success => (COLOR_SUCCESS, "✓"),
+                        StatusTone::Error => (COLOR_DANGER, "!"),
+                        StatusTone::Progress => (COLOR_ACCENT, "●"),
+                    };
+                    if self.status_tone == StatusTone::Progress {
+                        ui.spinner();
+                    } else {
+                        ui.label(RichText::new(icon).strong().color(color));
+                    }
+                    ui.add(egui::Label::new(RichText::new(&self.status).color(color)).wrap(true));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ctx.screen_rect().width() >= 820.0 {
+                            ui.label(
+                                RichText::new("本地配置 · 口令不落盘")
+                                    .small()
+                                    .color(COLOR_FAINT),
+                            );
+                        }
+                    });
+                });
+            });
         self.draw_modal(ctx);
     }
 
@@ -1543,37 +1643,68 @@ impl eframe::App for ManagerApp {
 
 impl ManagerApp {
     fn draw_header(&self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                ui.label(RichText::new(APP_TITLE).size(22.0).strong());
-                ui.add_space(12.0);
-                ui.label(
-                    RichText::new("原生远程桌面")
-                        .size(13.0)
-                        .color(Color32::from_rgb(150, 164, 184)),
+        egui::TopBottomPanel::top("header")
+            .frame(
+                egui::Frame::none()
+                    .fill(COLOR_HEADER)
+                    .inner_margin(Margin::symmetric(20.0, 11.0)),
+            )
+            .show(ctx, |ui| {
+                let rect = ui.max_rect();
+                ui.painter().line_segment(
+                    [rect.left_bottom(), rect.right_bottom()],
+                    Stroke::new(1.0_f32, COLOR_BORDER),
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(format!("{} 个远控窗口", self.viewer_count()));
-                    if self.agent_running() {
-                        ui.label(
-                            RichText::new("● 本机可被控制").color(Color32::from_rgb(116, 211, 152)),
-                        );
-                    }
+                ui.horizontal(|ui| {
+                    brand_mark(ui);
+                    ui.add_space(12.0);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(APP_TITLE).size(20.0).strong());
+                        if ctx.screen_rect().width() >= 760.0 {
+                            ui.label(
+                                RichText::new("远程桌面 · 管理端")
+                                    .small()
+                                    .color(COLOR_MUTED),
+                            );
+                        }
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.agent_running() {
+                            status_pill(ui, "本机可被控制", StatusPill::Success);
+                            ui.add_space(8.0);
+                        }
+                        let viewers = self.viewer_count();
+                        let label = if ctx.screen_rect().width() < 760.0 {
+                            format!("{viewers} 个窗口")
+                        } else {
+                            format!("{viewers} 个远控窗口")
+                        };
+                        ui.label(RichText::new(label).small().color(COLOR_MUTED));
+                    });
                 });
             });
-            ui.add_space(10.0);
-        });
     }
 
     fn draw_navigation(&mut self, ctx: &egui::Context) {
-        let compact = ctx.screen_rect().width() < 900.0;
-        let width = if compact { 62.0 } else { 184.0 };
+        let (width, compact) = navigation_metrics(ctx.screen_rect().width());
         egui::SidePanel::left("navigation")
             .exact_width(width)
+            .frame(
+                egui::Frame::none()
+                    .fill(COLOR_SIDEBAR)
+                    .inner_margin(if compact {
+                        Margin::symmetric(8.0, 18.0)
+                    } else {
+                        Margin::symmetric(12.0, 20.0)
+                    }),
+            )
             .show(ctx, |ui| {
-                ui.add_space(12.0);
+                if !compact {
+                    ui.label(RichText::new("工作台").small().strong().color(COLOR_FAINT));
+                    ui.add_space(10.0);
+                } else {
+                    ui.add_space(4.0);
+                }
                 for page in [
                     Page::Devices,
                     Page::Agent,
@@ -1581,32 +1712,66 @@ impl ManagerApp {
                     Page::Displays,
                     Page::Diagnostics,
                 ] {
+                    let selected = self.page == page;
                     let text = if compact {
                         page.icon().to_string()
                     } else {
-                        format!("{}  {}", page.icon(), page.label())
+                        format!("{}   {}", page.icon(), page.label())
                     };
                     let response = ui.add_sized(
-                        [width - 16.0, 42.0],
-                        egui::SelectableLabel::new(self.page == page, text),
+                        [width - if compact { 16.0 } else { 24.0 }, 44.0],
+                        egui::Button::new(RichText::new(text).strong().color(if selected {
+                            COLOR_ACCENT
+                        } else {
+                            COLOR_MUTED
+                        }))
+                        .fill(if selected {
+                            COLOR_ACCENT_SOFT
+                        } else {
+                            Color32::TRANSPARENT
+                        })
+                        .stroke(Stroke::new(
+                            1.0_f32,
+                            if selected {
+                                COLOR_BORDER
+                            } else {
+                                Color32::TRANSPARENT
+                            },
+                        ))
+                        .rounding(Rounding::same(9.0)),
                     );
                     if response.clicked() {
                         self.page = page;
                     }
-                    if !compact {
+                    if selected {
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(
+                                response.rect.left_top(),
+                                Vec2::new(3.0, response.rect.height()),
+                            ),
+                            Rounding::ZERO,
+                            COLOR_ACCENT,
+                        );
+                    }
+                    if compact {
                         response.on_hover_text(page.label());
                     }
-                    ui.add_space(4.0);
+                    ui.add_space(5.0);
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                     ui.add_space(8.0);
                     if compact {
-                        ui.label("v0.1");
+                        ui.label(RichText::new("v0.1").small().color(COLOR_FAINT));
                     } else {
                         ui.label(
                             RichText::new("v0.1 · PolyForm NC")
                                 .small()
-                                .color(Color32::from_rgb(126, 139, 158)),
+                                .color(COLOR_FAINT),
+                        );
+                        ui.label(
+                            RichText::new("安全优先的远程连接")
+                                .small()
+                                .color(COLOR_FAINT),
                         );
                     }
                 });
@@ -1614,12 +1779,26 @@ impl ManagerApp {
     }
 
     fn ui_devices(&mut self, ui: &mut egui::Ui) {
-        ui.heading("连接设备");
-        ui.label("输入对方提供的地址和会话口令。密码只用于本次连接，不会保存。");
-        ui.add_space(10.0);
+        page_header(
+            ui,
+            "远程连接",
+            "连接设备",
+            "输入对方提供的地址和会话口令。密码只用于本次连接，不会保存。",
+        );
         card(ui, |ui| {
-            ui.label(RichText::new("快速连接").strong());
-            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("快速连接").size(17.0).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    status_pill(ui, "口令仅用于本次会话", StatusPill::Accent);
+                });
+            });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("直连适合同一网络；跨网络连接可使用已配置的中继。")
+                    .small()
+                    .color(COLOR_MUTED),
+            );
+            ui.add_space(16.0);
             form_grid(ui, "quick-connect", |ui| {
                 grid_label(ui, "名称（可选）", "connect-name", |ui, width| {
                     ui.add_sized(
@@ -1672,53 +1851,61 @@ impl ManagerApp {
                 ui.checkbox(&mut self.connect.clipboard, "需对端授权");
                 ui.end_row();
             });
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            ui.horizontal_wrapped(|ui| {
                 if ui
-                    .add_sized([132.0, 36.0], egui::Button::new("连接").fill(accent()))
+                    .add_sized([128.0, 38.0], primary_button("连接"))
                     .clicked()
                 {
                     self.connect_form();
                 }
                 if ui.button("保存为新设备").clicked() {
-                    self.modal = Modal::Device(DeviceForm {
+                    self.set_modal(Modal::Device(DeviceForm {
                         name: self.connect.name.clone(),
                         addr: self.connect.addr.clone(),
                         use_relay: self.connect.use_relay,
                         relay_tag: self.connect.relay_tag.clone(),
                         fingerprint: self.connect.fingerprint.clone(),
                         ..DeviceForm::default()
-                    });
+                    }));
                 }
                 if ui.button("清空口令").clicked() {
                     self.connect.password.clear();
+                    self.set_status("会话口令已清空", false);
                 }
             });
             if self.connect.use_relay {
-                ui.add_space(6.0);
-                let current = self
-                    .store
-                    .current_display()
-                    .unwrap_or_else(|| "尚未配置中继".into());
-                ui.label(RichText::new(format!("当前中继：{current}")).small());
+                ui.add_space(10.0);
+                info_callout(
+                    ui,
+                    "当前中继",
+                    &self
+                        .store
+                        .current_display()
+                        .unwrap_or_else(|| "尚未配置中继".into()),
+                    false,
+                );
             }
         });
 
-        ui.add_space(18.0);
-        ui.horizontal(|ui| {
-            ui.heading("我的设备");
+        ui.add_space(26.0);
+        section_header(ui, "我的设备", "保存常用地址，连接时只需输入口令");
+        ui.add_space(12.0);
+        ui.horizontal_wrapped(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("＋ 添加设备").clicked() {
-                    self.modal = Modal::Device(DeviceForm::default());
+                    self.set_modal(Modal::Device(DeviceForm::default()));
                 }
                 ui.add_sized(
-                    [220.0, 28.0],
+                    [240.0, 32.0],
                     egui::TextEdit::singleline(&mut self.search).hint_text("搜索名称或地址"),
                 );
             });
         });
+        ui.add_space(10.0);
         if let Some(err) = &self.book_error {
-            ui.colored_label(Color32::from_rgb(255, 160, 120), err);
+            error_banner(ui, "设备列表读取失败", err);
+            ui.add_space(10.0);
         }
         let search = self.search.to_lowercase();
         let entries: Vec<DeviceEntry> = self
@@ -1733,11 +1920,19 @@ impl ManagerApp {
             .cloned()
             .collect();
         if entries.is_empty() {
-            empty_state(
-                ui,
-                "还没有匹配的设备",
-                "添加设备后会固定显示在这里，连接时只需输入口令。",
-            );
+            if search.is_empty() {
+                empty_state(
+                    ui,
+                    "还没有保存的设备",
+                    "添加常用设备后会固定显示在这里，连接时只需输入口令。",
+                );
+            } else {
+                empty_state(
+                    ui,
+                    "没有找到匹配的设备",
+                    "试试其他名称或地址，也可以直接使用上方快速连接。",
+                );
+            }
         }
         for entry in entries {
             self.device_row(ui, &entry);
@@ -1746,27 +1941,12 @@ impl ManagerApp {
 
     fn device_row(&mut self, ui: &mut egui::Ui, entry: &DeviceEntry) {
         card(ui, |ui| {
-            let compact = ui.available_width() < 620.0;
-            if compact {
+            let compact = ui.available_width() < 660.0;
+            ui.horizontal_top(|ui| {
+                avatar(ui, entry.name.chars().next().unwrap_or('设'));
+                ui.add_space(12.0);
                 device_summary(ui, entry);
-                ui.horizontal(|ui| {
-                    if ui.button("连接").clicked() {
-                        self.connect_device(entry.id.clone());
-                    }
-                    if ui.button("编辑").clicked() {
-                        self.modal = Modal::Device(DeviceForm::from_entry(entry));
-                    }
-                    if ui.button("删除").clicked() {
-                        self.request_confirmation(
-                            "删除设备",
-                            &format!("确定删除“{}”吗？", entry.name),
-                            ConfirmAction::DeleteDevice(entry.id.clone()),
-                        );
-                    }
-                });
-            } else {
-                ui.horizontal_top(|ui| {
-                    device_summary(ui, entry);
+                if !compact {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("删除").clicked() {
                             self.request_confirmation(
@@ -1776,51 +1956,95 @@ impl ManagerApp {
                             );
                         }
                         if ui.button("编辑").clicked() {
-                            self.modal = Modal::Device(DeviceForm::from_entry(entry));
+                            self.set_modal(Modal::Device(DeviceForm::from_entry(entry)));
                         }
                         let favorite = if entry.favorite {
-                            "★ 收藏"
+                            "★ 已收藏"
                         } else {
                             "☆ 收藏"
                         };
                         if ui.button(favorite).clicked() {
-                            if let Some(current) = self.book.get_mut(&entry.id) {
-                                current.favorite = !current.favorite;
-                                if let Err(err) = self.book.save() {
-                                    self.set_status(format!("保存设备失败：{err}"), true);
-                                }
-                            }
-                            self.book.sort();
+                            self.toggle_favorite(&entry.id);
                         }
-                        if ui.add(egui::Button::new("连接").fill(accent())).clicked() {
+                        if ui.add(primary_button("连接")).clicked() {
                             self.connect_device(entry.id.clone());
                         }
                     });
+                }
+            });
+            if compact {
+                ui.add_space(12.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add(primary_button("连接")).clicked() {
+                        self.connect_device(entry.id.clone());
+                    }
+                    let favorite = if entry.favorite {
+                        "★ 已收藏"
+                    } else {
+                        "☆ 收藏"
+                    };
+                    if ui.button(favorite).clicked() {
+                        self.toggle_favorite(&entry.id);
+                    }
+                    if ui.button("编辑").clicked() {
+                        self.set_modal(Modal::Device(DeviceForm::from_entry(entry)));
+                    }
+                    if ui.button("删除").clicked() {
+                        self.request_confirmation(
+                            "删除设备",
+                            &format!("确定删除“{}”吗？", entry.name),
+                            ConfirmAction::DeleteDevice(entry.id.clone()),
+                        );
+                    }
                 });
             }
         });
-        ui.add_space(8.0);
+        ui.add_space(10.0);
+    }
+
+    fn toggle_favorite(&mut self, id: &str) {
+        if let Some(current) = self.book.get_mut(id) {
+            current.favorite = !current.favorite;
+            let favorite = current.favorite;
+            if let Err(err) = self.book.save() {
+                self.set_status(format!("保存设备失败：{err}"), true);
+                return;
+            }
+            self.book.sort();
+            self.set_status(
+                if favorite {
+                    "设备已收藏"
+                } else {
+                    "设备已取消收藏"
+                },
+                false,
+            );
+        }
     }
 
     fn ui_agent(&mut self, ui: &mut egui::Ui) {
-        ui.heading("允许控制这台电脑");
-        ui.label("启动被控端后，把地址和口令提供给已获得授权的控制端。默认只允许键鼠输入。");
-        ui.add_space(10.0);
+        page_header(
+            ui,
+            "被控端",
+            "允许控制这台电脑",
+            "把连接地址和会话口令提供给已获得授权的控制端。权限仅在本次被控端会话中生效。",
+        );
         card(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if self.agent_running() {
-                    ui.label(
-                        RichText::new("● 被控端正在运行")
-                            .strong()
-                            .color(Color32::from_rgb(116, 211, 152)),
-                    );
+                    status_pill(ui, "被控端正在运行", StatusPill::Success);
                 } else {
-                    ui.label(
-                        RichText::new("○ 被控端未启动").color(Color32::from_rgb(160, 170, 186)),
-                    );
+                    status_pill(ui, "被控端未启动", StatusPill::Neutral);
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new("口令通过标准输入传递，不进入命令行")
+                            .small()
+                            .color(COLOR_FAINT),
+                    );
+                });
             });
-            ui.add_space(10.0);
+            ui.add_space(16.0);
             form_grid(ui, "agent-form", |ui| {
                 grid_label(ui, "监听地址", "agent-host", |ui, width| {
                     ui.add_enabled(
@@ -1870,25 +2094,22 @@ impl ManagerApp {
                 );
                 ui.end_row();
             });
-            ui.add_space(10.0);
-            ui.label(RichText::new("本次会话权限").strong());
+            ui.add_space(18.0);
+            ui.separator();
+            ui.add_space(14.0);
+            ui.label(RichText::new("本次会话权限").size(15.0).strong());
+            ui.add_space(6.0);
             ui.checkbox(&mut self.agent.allow_input, "允许远程键鼠输入");
             ui.checkbox(&mut self.agent.allow_clipboard, "允许双向剪贴板同步");
             ui.checkbox(&mut self.agent.audio_out, "发送本机音频");
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            ui.horizontal_wrapped(|ui| {
                 if self.agent_running() {
-                    if ui
-                        .add(egui::Button::new("停止被控端").fill(Color32::from_rgb(164, 67, 67)))
-                        .clicked()
-                    {
+                    if ui.add(danger_button("停止被控端")).clicked() {
                         self.stop_agent();
                     }
                 } else if ui
-                    .add_sized(
-                        [150.0, 36.0],
-                        egui::Button::new("开始允许控制").fill(accent()),
-                    )
+                    .add_sized([164.0, 38.0], primary_button("开始允许控制"))
                     .clicked()
                 {
                     if let Err(err) = self.start_agent() {
@@ -1896,37 +2117,58 @@ impl ManagerApp {
                     }
                 }
             });
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new("提示：0.0.0.0 会监听所有网卡；请在防火墙中仅允许可信网络。")
-                    .small()
-                    .color(Color32::from_rgb(190, 163, 112)),
+            ui.add_space(12.0);
+            info_callout(
+                ui,
+                "网络安全",
+                "0.0.0.0 会监听所有网卡；请在防火墙中仅允许可信网络。",
+                true,
             );
             if self.agent_running() {
-                ui.add_space(8.0);
-                ui.label(format!("连接地址：{}:{}", self.agent.host, self.agent.port));
+                ui.add_space(12.0);
+                info_callout(
+                    ui,
+                    "连接地址",
+                    &format!("{}:{}", self.agent.host, self.agent.port),
+                    false,
+                );
             }
         });
     }
 
     fn ui_relays(&mut self, ui: &mut egui::Ui) {
-        ui.heading("中继服务器");
-        ui.label("使用自己的服务器。地址和密钥保存在本机配置文件中，不会上传到集中服务。");
-        ui.add_space(10.0);
+        page_header(
+            ui,
+            "网络",
+            "中继服务器",
+            "使用自己的服务器跨网络连接。地址和密钥只保存在本机配置文件中。",
+        );
         if let Some(err) = &self.store_error {
-            ui.colored_label(Color32::from_rgb(255, 160, 120), err);
+            error_banner(ui, "中继配置读取失败", err);
+            ui.add_space(12.0);
         }
         card(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("当前服务器").strong());
-                ui.label(
-                    self.store
-                        .current_display()
-                        .unwrap_or_else(|| "未配置".into()),
-                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    status_pill(
+                        ui,
+                        self.store
+                            .current_display()
+                            .as_deref()
+                            .unwrap_or("尚未配置中继"),
+                        if self.store.selected().is_some() {
+                            StatusPill::Accent
+                        } else {
+                            StatusPill::Neutral
+                        },
+                    );
+                });
             });
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.separator();
+            ui.add_space(14.0);
+            ui.horizontal_wrapped(|ui| {
                 ui.label("选择策略");
                 egui::ComboBox::from_id_source("relay-strategy")
                     .selected_text(strategy_label(self.store.selection().strategy))
@@ -1952,7 +2194,10 @@ impl ManagerApp {
                             }
                         }
                     });
-                if ui.button("测试全部").clicked() {
+                if ui
+                    .add_enabled(!self.relay_testing, egui::Button::new("测试全部"))
+                    .clicked()
+                {
                     self.test_all_relays();
                 }
                 if ui.button("导入并合并").clicked() {
@@ -1998,24 +2243,31 @@ impl ManagerApp {
             });
         });
 
-        ui.add_space(16.0);
-        ui.horizontal(|ui| {
-            ui.heading("服务器档案");
+        ui.add_space(26.0);
+        section_header(ui, "服务器档案", "测试延迟、指定首选并安全导出");
+        ui.add_space(12.0);
+        ui.horizontal_wrapped(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("＋ 添加中继").clicked() {
-                    self.modal = Modal::Relay(RelayForm::default());
+                    self.set_modal(Modal::Relay(RelayForm::default()));
+                }
+                if self.relay_testing {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new("正在测试，请稍候…")
+                            .small()
+                            .color(COLOR_ACCENT),
+                    );
                 }
             });
         });
-        if self.relay_testing {
-            ui.label(RichText::new("正在测试，请稍候…").color(Color32::from_rgb(130, 180, 235)));
-        }
+        ui.add_space(10.0);
         let profiles = self.store.profiles().to_vec();
         if profiles.is_empty() {
             empty_state(
                 ui,
                 "还没有中继服务器",
-                "添加一台自己的中继后即可在这里测试、切换和导出。",
+                "添加一台自己的中继后，即可在这里测试、切换和导出。",
             );
         }
         for profile in profiles {
@@ -2030,69 +2282,113 @@ impl ManagerApp {
                 .selected()
                 .map(|selected| selected.id == profile.id)
                 .unwrap_or(false);
+            let compact = ui.available_width() < 720.0;
             ui.horizontal_top(|ui| {
+                avatar(ui, '⇄');
+                ui.add_space(12.0);
                 ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(&profile.name).strong());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(&profile.name).size(16.0).strong());
                         if active {
-                            ui.label(
-                                RichText::new("当前")
-                                    .small()
-                                    .color(Color32::from_rgb(116, 211, 152)),
-                            );
+                            status_pill(ui, "当前", StatusPill::Success);
                         }
                         if profile.preferred {
-                            ui.label(RichText::new("首选").small());
+                            status_pill(ui, "首选", StatusPill::Warning);
                         }
                     });
                     ui.label(
                         RichText::new(profile.endpoint())
-                            .small()
-                            .color(Color32::from_rgb(151, 166, 187)),
+                            .text_style(TextStyle::Monospace)
+                            .color(COLOR_MUTED),
                     );
-                    let health = if profile.health.ok {
-                        profile.health.rtt_ms.map_or_else(
-                            || "可达 · 延迟未知".into(),
-                            |rtt| format!("可达 · {rtt:.1} ms"),
+                    let (health, tone) = if profile.health.ok {
+                        (
+                            profile.health.rtt_ms.map_or_else(
+                                || "可达 · 延迟未知".into(),
+                                |rtt| format!("可达 · {rtt:.1} ms"),
+                            ),
+                            StatusPill::Success,
                         )
                     } else if profile.health.checked_at_ms == 0 {
-                        "尚未测试".into()
+                        ("尚未测试".into(), StatusPill::Neutral)
                     } else {
-                        profile
-                            .health
-                            .error
-                            .clone()
-                            .unwrap_or_else(|| "不可达".into())
+                        ("不可达".into(), StatusPill::Danger)
                     };
-                    ui.label(RichText::new(health).small().color(if profile.health.ok {
-                        Color32::from_rgb(116, 211, 152)
-                    } else {
-                        Color32::from_rgb(222, 154, 112)
-                    }));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("删除").clicked() {
-                        self.request_confirmation(
-                            "删除中继",
-                            &format!("确定删除“{}”吗？", profile.name),
-                            ConfirmAction::DeleteRelay(profile.id.clone()),
-                        );
-                    }
-                    if ui.button("编辑").clicked() {
-                        self.modal = Modal::Relay(RelayForm::from_profile(profile));
-                    }
-                    if ui.button("测试").clicked() {
-                        self.test_relay(profile.id.clone());
-                    }
-                    if ui.button("设为首选").clicked() {
-                        if let Some(current) = self.store.get_mut(&profile.id) {
-                            current.preferred = !current.preferred;
-                            if let Err(err) = self.store.save() {
-                                self.set_status(format!("保存失败：{err}"), true);
-                            }
+                    ui.add_space(5.0);
+                    status_pill(ui, health, tone);
+                    if !profile.health.ok && profile.health.checked_at_ms != 0 {
+                        if let Some(error) = &profile.health.error {
+                            ui.add_space(4.0);
+                            ui.add(
+                                egui::Label::new(RichText::new(error).small().color(COLOR_DANGER))
+                                    .wrap(true),
+                            );
                         }
                     }
-                    if ui.button("使用").clicked() {
+                });
+                if !compact {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("删除").clicked() {
+                            self.request_confirmation(
+                                "删除中继",
+                                &format!("确定删除“{}”吗？", profile.name),
+                                ConfirmAction::DeleteRelay(profile.id.clone()),
+                            );
+                        }
+                        if ui.button("编辑").clicked() {
+                            self.set_modal(Modal::Relay(RelayForm::from_profile(profile)));
+                        }
+                        if ui
+                            .add_enabled(!self.relay_testing, egui::Button::new("测试"))
+                            .clicked()
+                        {
+                            self.test_relay(profile.id.clone());
+                        }
+                        if ui
+                            .button(if profile.preferred {
+                                "取消首选"
+                            } else {
+                                "设为首选"
+                            })
+                            .clicked()
+                        {
+                            if let Some(current) = self.store.get_mut(&profile.id) {
+                                current.preferred = !current.preferred;
+                                if let Err(err) = self.store.save() {
+                                    self.set_status(format!("保存失败：{err}"), true);
+                                }
+                            }
+                        }
+                        if ui
+                            .add_enabled(
+                                !active,
+                                primary_button(if active { "正在使用" } else { "使用" }),
+                            )
+                            .clicked()
+                        {
+                            if let Err(err) = self
+                                .store
+                                .set_active(&profile.id)
+                                .and_then(|_| self.store.save())
+                            {
+                                self.set_status(format!("切换失败：{err}"), true);
+                            } else {
+                                self.set_status(format!("已切换到 {}", profile.name), false);
+                            }
+                        }
+                    });
+                }
+            });
+            if compact {
+                ui.add_space(14.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .add_enabled(
+                            !active,
+                            primary_button(if active { "正在使用" } else { "使用" }),
+                        )
+                        .clicked()
+                    {
                         if let Err(err) = self
                             .store
                             .set_active(&profile.id)
@@ -2103,46 +2399,100 @@ impl ManagerApp {
                             self.set_status(format!("已切换到 {}", profile.name), false);
                         }
                     }
+                    if ui
+                        .add_enabled(!self.relay_testing, egui::Button::new("测试"))
+                        .clicked()
+                    {
+                        self.test_relay(profile.id.clone());
+                    }
+                    if ui
+                        .button(if profile.preferred {
+                            "取消首选"
+                        } else {
+                            "设为首选"
+                        })
+                        .clicked()
+                    {
+                        if let Some(current) = self.store.get_mut(&profile.id) {
+                            current.preferred = !current.preferred;
+                            if let Err(err) = self.store.save() {
+                                self.set_status(format!("保存失败：{err}"), true);
+                            }
+                        }
+                    }
+                    if ui.button("编辑").clicked() {
+                        self.set_modal(Modal::Relay(RelayForm::from_profile(profile)));
+                    }
+                    if ui.button("删除").clicked() {
+                        self.request_confirmation(
+                            "删除中继",
+                            &format!("确定删除“{}”吗？", profile.name),
+                            ConfirmAction::DeleteRelay(profile.id.clone()),
+                        );
+                    }
                 });
-            });
+            }
         });
-        ui.add_space(8.0);
+        ui.add_space(10.0);
     }
 
     fn ui_displays(&mut self, ui: &mut egui::Ui) {
-        ui.heading("虚拟显示");
-        ui.label("创建独立的远程桌面。Windows 需要已安装并验证 IddCx 驱动；Linux 使用隔离 Xvfb。");
-        ui.add_space(10.0);
+        page_header(
+            ui,
+            "桌面",
+            "虚拟显示",
+            "创建独立的远程桌面。Windows 需要 IddCx 驱动，Linux 使用隔离 Xvfb。",
+        );
+        let available = self
+            .display_backend
+            .as_ref()
+            .is_some_and(|backend| backend.is_available());
         card(ui, |ui| {
-            let available = self
-                .display_backend
-                .as_ref()
-                .is_some_and(|backend| backend.is_available());
-            ui.label(if available {
-                RichText::new("● 虚拟显示后端可用").color(Color32::from_rgb(116, 211, 152))
-            } else {
-                RichText::new("○ 虚拟显示后端当前不可用").color(Color32::from_rgb(222, 154, 112))
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("新建虚拟显示").size(17.0).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    status_pill(
+                        ui,
+                        if available {
+                            "后端可用"
+                        } else {
+                            "后端不可用"
+                        },
+                        if available {
+                            StatusPill::Success
+                        } else {
+                            StatusPill::Warning
+                        },
+                    );
+                });
             });
-            ui.add_space(8.0);
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("先设置分辨率与缩放，再创建一块新的虚拟桌面。")
+                    .small()
+                    .color(COLOR_MUTED),
+            );
+            ui.add_space(16.0);
             form_grid(ui, "display-form", |ui| {
                 grid_label(ui, "名称", "display-name", |ui, width| {
                     ui.add_sized(
                         [width, 0.0],
-                        egui::TextEdit::singleline(&mut self.display_draft.name),
+                        egui::TextEdit::singleline(&mut self.display_draft.name)
+                            .hint_text("dfy-virtual"),
                     );
                 });
                 grid_label(ui, "分辨率", "display-size", |ui, width| {
                     ui.horizontal(|ui| {
+                        let field_width = ((width - 24.0) / 2.0).clamp(64.0, 140.0);
                         ui.add_sized(
-                            [80.0, 0.0],
+                            [field_width, 0.0],
                             egui::TextEdit::singleline(&mut self.display_draft.width),
                         );
                         ui.label("×");
                         ui.add_sized(
-                            [80.0, 0.0],
+                            [field_width, 0.0],
                             egui::TextEdit::singleline(&mut self.display_draft.height),
                         );
-                        let _ = width;
                     });
                 });
                 grid_label(ui, "刷新率", "display-refresh", |ui, width| {
@@ -2162,38 +2512,47 @@ impl ManagerApp {
                 ui.label("96 = 100% 缩放");
                 ui.end_row();
             });
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            ui.horizontal_wrapped(|ui| {
                 if ui
                     .add_enabled(
                         available && !self.display_busy,
-                        egui::Button::new("创建虚拟显示").fill(accent()),
+                        primary_button("创建虚拟显示"),
                     )
                     .clicked()
                 {
                     self.create_display();
                 }
-                if ui.button("刷新列表").clicked() {
+                if ui
+                    .add_enabled(!self.display_busy, egui::Button::new("刷新列表"))
+                    .clicked()
+                {
                     self.refresh_displays();
                 }
                 if self.display_busy {
                     ui.spinner();
+                    ui.label(RichText::new("正在处理…").small().color(COLOR_ACCENT));
                 }
             });
-            if let Some(err) = &self.display_error {
-                ui.add_space(6.0);
-                ui.colored_label(Color32::from_rgb(255, 160, 120), err);
-            }
         });
+        if let Some(err) = &self.display_error {
+            ui.add_space(12.0);
+            error_banner(ui, "虚拟显示暂不可用", err);
+        }
 
-        ui.add_space(16.0);
-        ui.heading("现有显示");
-        if self.displays.is_empty() && !self.display_busy {
-            empty_state(
-                ui,
-                "没有虚拟显示",
-                "可以创建一块，也可以让被控端在启动时自动创建。",
-            );
+        ui.add_space(26.0);
+        section_header(ui, "现有显示", "查看状态、应用参数或删除虚拟桌面");
+        ui.add_space(12.0);
+        if self.displays.is_empty() {
+            if self.display_busy {
+                loading_state(ui, "正在读取虚拟显示", "正在与本机显示后端通信，请稍候。");
+            } else if self.display_error.is_none() {
+                empty_state(
+                    ui,
+                    "没有虚拟显示",
+                    "可以在上方创建一块，也可以让被控端在启动时自动创建。",
+                );
+            }
         }
         let displays = self.displays.clone();
         let dynamic = self
@@ -2202,23 +2561,84 @@ impl ManagerApp {
             .is_some_and(|backend| backend.capabilities() & capability::DYNAMIC_MODES != 0);
         for display in displays {
             card(ui, |ui| {
+                let compact = ui.available_width() < 660.0;
                 ui.horizontal_top(|ui| {
+                    avatar(ui, '▤');
+                    ui.add_space(12.0);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(format!("显示 #{}", display.id)).strong());
-                        ui.label(format!(
-                            "{}×{} · {} Hz · {} DPI",
-                            display.spec.width,
-                            display.spec.height,
-                            display.spec.refresh_hz,
-                            display.spec.dpi
-                        ));
-                        ui.label(if display.attached {
-                            "已连接桌面"
-                        } else {
-                            "未连接桌面"
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(format!("显示 #{}", display.id))
+                                    .size(16.0)
+                                    .strong(),
+                            );
+                            status_pill(
+                                ui,
+                                if display.attached {
+                                    "已连接桌面"
+                                } else {
+                                    "未连接桌面"
+                                },
+                                if display.attached {
+                                    StatusPill::Success
+                                } else {
+                                    StatusPill::Neutral
+                                },
+                            );
                         });
+                        if !display.spec.name_hint.trim().is_empty() {
+                            ui.label(RichText::new(&display.spec.name_hint).color(COLOR_MUTED));
+                        }
+                        ui.label(
+                            RichText::new(format!(
+                                "{}×{} · {} Hz · {} DPI",
+                                display.spec.width,
+                                display.spec.height,
+                                display.spec.refresh_hz,
+                                display.spec.dpi
+                            ))
+                            .text_style(TextStyle::Monospace)
+                            .color(COLOR_MUTED),
+                        );
                     });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !compact {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("删除").clicked() {
+                                self.request_confirmation(
+                                    "删除虚拟显示",
+                                    &format!("确定删除显示 #{} 吗？", display.id),
+                                    ConfirmAction::DestroyDisplay(display.id),
+                                );
+                            }
+                            if ui
+                                .add_enabled(
+                                    dynamic && !self.display_busy,
+                                    egui::Button::new("应用上方参数"),
+                                )
+                                .clicked()
+                            {
+                                self.update_display(display.id);
+                            }
+                            if !dynamic {
+                                ui.label(
+                                    RichText::new("不支持动态修改").small().color(COLOR_FAINT),
+                                );
+                            }
+                        });
+                    }
+                });
+                if compact {
+                    ui.add_space(12.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_enabled(
+                                dynamic && !self.display_busy,
+                                egui::Button::new("应用上方参数"),
+                            )
+                            .clicked()
+                        {
+                            self.update_display(display.id);
+                        }
                         if ui.button("删除").clicked() {
                             self.request_confirmation(
                                 "删除虚拟显示",
@@ -2226,85 +2646,184 @@ impl ManagerApp {
                                 ConfirmAction::DestroyDisplay(display.id),
                             );
                         }
-                        if ui
-                            .add_enabled(dynamic, egui::Button::new("应用上方参数"))
-                            .clicked()
-                        {
-                            self.update_display(display.id);
-                        }
                         if !dynamic {
-                            ui.label(RichText::new("不支持动态修改").small());
+                            ui.label(RichText::new("不支持动态修改").small().color(COLOR_FAINT));
                         }
                     });
-                });
+                }
             });
-            ui.add_space(8.0);
+            ui.add_space(10.0);
         }
     }
 
     fn ui_diagnostics(&mut self, ui: &mut egui::Ui) {
-        ui.heading("诊断");
-        ui.label("这些检查只读取本机状态，不会启动远控会话或修改系统设置。");
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            if ui.button("重新检查").clicked() {
-                self.refresh_diagnostics();
+        page_header(
+            ui,
+            "系统",
+            "诊断",
+            "快速确认可执行文件、配置目录、中继和虚拟显示后端的状态。",
+        );
+        self.refresh_activity_count();
+        let healthy = self.diagnostics.iter().filter(|item| item.ok).count();
+        let total = self.diagnostics.len();
+        card(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(format!("{healthy} / {total}"))
+                            .size(26.0)
+                            .strong()
+                            .color(if healthy == total {
+                                COLOR_SUCCESS
+                            } else {
+                                COLOR_WARNING
+                            }),
+                    );
+                    ui.label(RichText::new("项检查通过").small().color(COLOR_MUTED));
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("重新检查").clicked() {
+                        self.refresh_diagnostics();
+                    }
+                    status_pill(
+                        ui,
+                        if healthy == total {
+                            "一切就绪"
+                        } else {
+                            "部分项目需关注"
+                        },
+                        if healthy == total {
+                            StatusPill::Success
+                        } else {
+                            StatusPill::Warning
+                        },
+                    );
+                });
+            });
+            ui.add_space(12.0);
+            let ratio = if total == 0 {
+                0.0
+            } else {
+                healthy as f32 / total as f32
+            };
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 3.0, COLOR_SURFACE_RAISED);
+            if ratio > 0.0 {
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(
+                        rect.min,
+                        Vec2::new(rect.width() * ratio, rect.height()),
+                    ),
+                    3.0,
+                    if healthy == total {
+                        COLOR_SUCCESS
+                    } else {
+                        COLOR_WARNING
+                    },
+                );
             }
         });
-        ui.add_space(8.0);
-        self.refresh_activity_count();
+
+        ui.add_space(24.0);
+        section_header(ui, "检查结果", "只读取本机状态，不会启动远控会话");
+        ui.add_space(12.0);
         for diagnostic in &self.diagnostics {
             card(ui, |ui| {
                 ui.horizontal_top(|ui| {
-                    ui.label(
-                        RichText::new(if diagnostic.ok { "✓" } else { "!" })
-                            .strong()
-                            .color(if diagnostic.ok {
-                                Color32::from_rgb(116, 211, 152)
-                            } else {
-                                Color32::from_rgb(240, 166, 105)
-                            }),
+                    let color = if diagnostic.ok {
+                        COLOR_SUCCESS
+                    } else {
+                        COLOR_WARNING
+                    };
+                    icon_badge(
+                        ui,
+                        if diagnostic.ok { "✓" } else { "!" },
+                        color,
+                        if diagnostic.ok {
+                            COLOR_ACCENT_SOFT
+                        } else {
+                            Color32::from_rgb(55, 43, 31)
+                        },
                     );
+                    ui.add_space(12.0);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(&diagnostic.name).strong());
-                        ui.label(&diagnostic.detail);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(&diagnostic.name).strong());
+                            status_pill(
+                                ui,
+                                if diagnostic.ok { "正常" } else { "需关注" },
+                                if diagnostic.ok {
+                                    StatusPill::Success
+                                } else {
+                                    StatusPill::Warning
+                                },
+                            );
+                        });
+                        ui.add_space(2.0);
+                        ui.add(
+                            egui::Label::new(RichText::new(&diagnostic.detail).color(COLOR_MUTED))
+                                .wrap(true),
+                        );
                     });
                 });
             });
-            ui.add_space(8.0);
+            ui.add_space(10.0);
         }
-        if !self.children.is_empty() {
-            ui.add_space(8.0);
-            ui.heading("活动进程");
-            let children: Vec<(u64, String, String)> = self
-                .children
-                .iter()
-                .map(|child| {
-                    (
-                        child.id,
-                        child.label.clone(),
-                        if child.last_output.is_empty() {
-                            format!("PID {}", child.child.id())
-                        } else {
-                            child.last_output.clone()
-                        },
-                    )
-                })
-                .collect();
-            for (id, label, detail) in children {
-                card(ui, |ui| {
-                    ui.horizontal(|ui| {
+
+        ui.add_space(16.0);
+        section_header(ui, "活动进程", "查看由管理器启动的 Viewer 与被控端");
+        ui.add_space(12.0);
+        if self.children.is_empty() {
+            empty_state(
+                ui,
+                "当前没有活动进程",
+                "启动远控窗口或被控端后，可在这里查看输出并停止进程。",
+            );
+        }
+        let children: Vec<(u64, String, String)> = self
+            .children
+            .iter()
+            .map(|child| {
+                (
+                    child.id,
+                    child.label.clone(),
+                    if child.last_output.is_empty() {
+                        format!("PID {}", child.child.id())
+                    } else {
+                        child.last_output.clone()
+                    },
+                )
+            })
+            .collect();
+        for (id, label, detail) in children {
+            card(ui, |ui| {
+                let compact = ui.available_width() < 600.0;
+                ui.horizontal_top(|ui| {
+                    status_pill(ui, "运行中", StatusPill::Success);
+                    ui.add_space(10.0);
+                    ui.vertical(|ui| {
                         ui.label(RichText::new(label).strong());
-                        ui.label(detail);
+                        ui.add(
+                            egui::Label::new(RichText::new(detail).color(COLOR_MUTED)).wrap(true),
+                        );
+                    });
+                    if !compact {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("停止").clicked() {
                                 self.stop_child(id);
                             }
                         });
-                    });
+                    }
                 });
-                ui.add_space(8.0);
-            }
+                if compact {
+                    ui.add_space(10.0);
+                    if ui.button("停止").clicked() {
+                        self.stop_child(id);
+                    }
+                }
+            });
+            ui.add_space(10.0);
         }
     }
 
@@ -2333,8 +2852,14 @@ impl ManagerApp {
                     .id(egui::Id::new("device-modal"))
                     .collapsible(false)
                     .resizable(false)
-                    .default_width(480.0)
+                    .default_width(500.0)
+                    .frame(modal_frame())
                     .show(ctx, |ui| {
+                        ui.label(
+                            RichText::new("保存常用地址与安全选项；会话口令不会写入设备档案。")
+                                .color(COLOR_MUTED),
+                        );
+                        ui.add_space(16.0);
                         form_grid(ui, "device-form", |ui| {
                             grid_label(ui, "名称", "device-name", |ui, width| {
                                 ui.add_sized(
@@ -2353,7 +2878,8 @@ impl ManagerApp {
                                 ui.add_enabled(
                                     form.use_relay,
                                     egui::TextEdit::singleline(&mut form.relay_tag)
-                                        .desired_width(width),
+                                        .desired_width(width)
+                                        .hint_text("32 位十六进制字符"),
                                 );
                             });
                             ui.label("使用中继");
@@ -2366,7 +2892,8 @@ impl ManagerApp {
                                 |ui, width| {
                                     ui.add_sized(
                                         [width, 0.0],
-                                        egui::TextEdit::singleline(&mut form.fingerprint),
+                                        egui::TextEdit::singleline(&mut form.fingerprint)
+                                            .hint_text("64 位十六进制字符"),
                                     );
                                 },
                             );
@@ -2374,16 +2901,22 @@ impl ManagerApp {
                             ui.checkbox(&mut form.favorite, "");
                             ui.end_row();
                         });
-                        ui.add_space(10.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("保存").clicked() {
+                        if let Some(error) = &self.modal_error {
+                            ui.add_space(12.0);
+                            error_banner(ui, "无法保存", error);
+                        }
+                        ui.add_space(18.0);
+                        ui.separator();
+                        ui.add_space(12.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("取消").clicked() {
+                                keep_open = false;
+                            }
+                            if ui.add(primary_button("保存设备")).clicked() {
                                 match self.save_device_form(&form) {
                                     Ok(()) => keep_open = false,
                                     Err(err) => self.set_status(err.to_string(), true),
                                 }
-                            }
-                            if ui.button("取消").clicked() {
-                                keep_open = false;
                             }
                         });
                     });
@@ -2401,8 +2934,14 @@ impl ManagerApp {
                     .id(egui::Id::new("relay-modal"))
                     .collapsible(false)
                     .resizable(false)
-                    .default_width(500.0)
+                    .default_width(520.0)
+                    .frame(modal_frame())
                     .show(ctx, |ui| {
+                        ui.label(
+                            RichText::new("配置你自己的中继服务器。密钥只保存在本机，不会上传。")
+                                .color(COLOR_MUTED),
+                        );
+                        ui.add_space(16.0);
                         form_grid(ui, "relay-form", |ui| {
                             grid_label(ui, "名称", "relay-name", |ui, width| {
                                 ui.add_sized(
@@ -2480,16 +3019,22 @@ impl ManagerApp {
                             ui.checkbox(&mut form.preferred, "");
                             ui.end_row();
                         });
-                        ui.add_space(10.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("保存").clicked() {
+                        if let Some(error) = &self.modal_error {
+                            ui.add_space(12.0);
+                            error_banner(ui, "无法保存", error);
+                        }
+                        ui.add_space(18.0);
+                        ui.separator();
+                        ui.add_space(12.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("取消").clicked() {
+                                keep_open = false;
+                            }
+                            if ui.add(primary_button("保存中继")).clicked() {
                                 match self.save_relay_form(&form) {
                                     Ok(()) => keep_open = false,
                                     Err(err) => self.set_status(err.to_string(), true),
                                 }
-                            }
-                            if ui.button("取消").clicked() {
-                                keep_open = false;
                             }
                         });
                     });
@@ -2502,22 +3047,30 @@ impl ManagerApp {
                     .id(egui::Id::new("confirm-modal"))
                     .collapsible(false)
                     .resizable(false)
-                    .default_width(380.0)
+                    .default_width(400.0)
+                    .frame(modal_frame())
                     .show(ctx, |ui| {
-                        ui.label(&confirm.message);
+                        ui.horizontal_top(|ui| {
+                            icon_badge(ui, "!", COLOR_DANGER, COLOR_DANGER_SOFT);
+                            ui.add_space(12.0);
+                            ui.add(egui::Label::new(RichText::new(&confirm.message)).wrap(true));
+                        });
+                        if let Some(error) = &self.modal_error {
+                            ui.add_space(12.0);
+                            error_banner(ui, "操作失败", error);
+                        }
+                        ui.add_space(18.0);
+                        ui.separator();
                         ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add(egui::Button::new("确认").fill(Color32::from_rgb(164, 67, 67)))
-                                .clicked()
-                            {
-                                if let Err(err) = self.confirm_action(confirm.action.clone()) {
-                                    self.set_status(err.to_string(), true);
-                                }
-                                keep_open = false;
-                            }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("取消").clicked() {
                                 keep_open = false;
+                            }
+                            if ui.add(danger_button("确认删除")).clicked() {
+                                match self.confirm_action(confirm.action.clone()) {
+                                    Ok(()) => keep_open = false,
+                                    Err(err) => self.set_status(err.to_string(), true),
+                                }
                             }
                         });
                     });
@@ -2538,117 +3091,400 @@ fn strategy_label(strategy: SelectionStrategy) -> &'static str {
     }
 }
 
-fn accent() -> Color32 {
-    Color32::from_rgb(48, 112, 190)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusPill {
+    Neutral,
+    Accent,
+    Success,
+    Warning,
+    Danger,
 }
 
-fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    let width = ui.available_width();
+fn status_pill(ui: &mut egui::Ui, text: impl ToString, tone: StatusPill) {
+    let (fill, foreground) = match tone {
+        StatusPill::Neutral => (COLOR_SURFACE_RAISED, COLOR_MUTED),
+        StatusPill::Accent => (COLOR_ACCENT_SOFT, COLOR_ACCENT),
+        StatusPill::Success => (COLOR_ACCENT_SOFT, COLOR_SUCCESS),
+        StatusPill::Warning => (Color32::from_rgb(55, 43, 31), COLOR_WARNING),
+        StatusPill::Danger => (COLOR_DANGER_SOFT, COLOR_DANGER),
+    };
     egui::Frame::none()
-        .fill(Color32::from_rgb(30, 38, 51))
-        .rounding(egui::Rounding::same(10.0))
-        .inner_margin(egui::Margin::same(14.0))
+        .fill(fill)
+        .rounding(Rounding::same(10.0))
+        .inner_margin(Margin::symmetric(8.0, 3.0))
         .show(ui, |ui| {
-            ui.set_width(width - 28.0);
-            add(ui);
+            ui.label(
+                RichText::new(text.to_string())
+                    .small()
+                    .strong()
+                    .color(foreground),
+            );
         });
 }
 
+fn primary_button(text: &str) -> egui::Button<'static> {
+    egui::Button::new(RichText::new(text).strong().color(COLOR_ACCENT_INK))
+        .fill(COLOR_ACCENT)
+        .stroke(Stroke::new(1.0_f32, COLOR_ACCENT))
+        .rounding(Rounding::same(8.0))
+}
+
+fn danger_button(text: &str) -> egui::Button<'static> {
+    egui::Button::new(RichText::new(text).strong().color(COLOR_DANGER))
+        .fill(COLOR_DANGER_SOFT)
+        .stroke(Stroke::new(1.0_f32, COLOR_DANGER))
+        .rounding(Rounding::same(8.0))
+}
+
+fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::none()
+        .fill(COLOR_SURFACE)
+        .stroke(Stroke::new(1.0_f32, COLOR_BORDER))
+        .rounding(Rounding::same(14.0))
+        .shadow(egui::epaint::Shadow {
+            offset: Vec2::new(0.0, 5.0),
+            blur: 16.0,
+            spread: 0.0,
+            color: Color32::from_black_alpha(28),
+        })
+        .inner_margin(Margin::same(18.0))
+        .show(ui, add);
+}
+
+fn modal_frame() -> egui::Frame {
+    egui::Frame::none()
+        .fill(COLOR_SURFACE)
+        .stroke(Stroke::new(1.0_f32, COLOR_BORDER))
+        .rounding(Rounding::same(16.0))
+        .shadow(egui::epaint::Shadow {
+            offset: Vec2::new(0.0, 18.0),
+            blur: 48.0,
+            spread: 0.0,
+            color: Color32::from_black_alpha(110),
+        })
+        .inner_margin(Margin::same(22.0))
+}
+
+fn page_header(ui: &mut egui::Ui, eyebrow: &str, title: &str, description: &str) {
+    ui.label(RichText::new(eyebrow).small().strong().color(COLOR_ACCENT));
+    ui.add_space(3.0);
+    ui.label(RichText::new(title).size(28.0).strong());
+    ui.add_space(4.0);
+    ui.add(egui::Label::new(RichText::new(description).color(COLOR_MUTED)).wrap(true));
+    ui.add_space(22.0);
+}
+
+fn section_header(ui: &mut egui::Ui, title: &str, description: &str) {
+    ui.label(RichText::new(title).size(18.0).strong());
+    ui.add_space(2.0);
+    ui.label(RichText::new(description).small().color(COLOR_MUTED));
+}
+
 fn empty_state(ui: &mut egui::Ui, title: &str, detail: &str) {
-    ui.add_space(12.0);
-    ui.label(RichText::new(title).strong());
-    ui.label(RichText::new(detail).color(Color32::from_rgb(150, 164, 184)));
-    ui.add_space(12.0);
+    egui::Frame::none()
+        .fill(COLOR_SURFACE)
+        .stroke(Stroke::new(1.0_f32, COLOR_BORDER))
+        .rounding(Rounding::same(14.0))
+        .inner_margin(Margin::same(26.0))
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                icon_badge(ui, "＋", COLOR_BLUE, COLOR_SURFACE_RAISED);
+                ui.add_space(12.0);
+                ui.label(RichText::new(title).size(16.0).strong());
+                ui.add_space(5.0);
+                ui.add(egui::Label::new(RichText::new(detail).color(COLOR_MUTED)).wrap(true));
+            });
+        });
+}
+
+fn loading_state(ui: &mut egui::Ui, title: &str, detail: &str) {
+    card(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.add_space(10.0);
+            ui.vertical(|ui| {
+                ui.label(RichText::new(title).strong());
+                ui.label(RichText::new(detail).small().color(COLOR_MUTED));
+            });
+        });
+    });
+}
+
+fn error_banner(ui: &mut egui::Ui, title: &str, detail: &str) {
+    egui::Frame::none()
+        .fill(COLOR_DANGER_SOFT)
+        .stroke(Stroke::new(1.0_f32, COLOR_DANGER))
+        .rounding(Rounding::same(10.0))
+        .inner_margin(Margin::same(12.0))
+        .show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                icon_badge(ui, "!", COLOR_DANGER, Color32::from_rgb(72, 35, 43));
+                ui.add_space(10.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(title).strong().color(COLOR_DANGER));
+                    ui.add(egui::Label::new(RichText::new(detail).color(COLOR_TEXT)).wrap(true));
+                });
+            });
+        });
+}
+
+fn info_callout(ui: &mut egui::Ui, title: &str, detail: &str, warning: bool) {
+    let color = if warning { COLOR_WARNING } else { COLOR_BLUE };
+    let fill = if warning {
+        Color32::from_rgb(43, 36, 29)
+    } else {
+        Color32::from_rgb(23, 37, 55)
+    };
+    egui::Frame::none()
+        .fill(fill)
+        .stroke(Stroke::new(1.0_f32, COLOR_BORDER))
+        .rounding(Rounding::same(10.0))
+        .inner_margin(Margin::same(12.0))
+        .show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                icon_badge(ui, "i", color, COLOR_SURFACE_RAISED);
+                ui.add_space(10.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(title).strong().color(color));
+                    ui.add(egui::Label::new(RichText::new(detail).color(COLOR_MUTED)).wrap(true));
+                });
+            });
+        });
 }
 
 fn form_grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
     egui::Grid::new(id)
         .num_columns(2)
-        .spacing([14.0, 8.0])
+        .spacing([18.0, 10.0])
         .show(ui, add);
 }
 
 fn grid_label(ui: &mut egui::Ui, label: &str, id: &str, add: impl FnOnce(&mut egui::Ui, f32)) {
-    ui.label(RichText::new(label).strong());
-    let width = (ui.available_width() - 8.0).clamp(140.0, 420.0);
+    ui.label(RichText::new(label).strong().color(COLOR_MUTED));
+    let width = (ui.available_width() - 8.0).clamp(120.0, 460.0);
     ui.push_id(id, |ui| add(ui, width));
     ui.end_row();
 }
 
 fn device_summary(ui: &mut egui::Ui, entry: &DeviceEntry) {
     ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(&entry.name).strong());
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(&entry.name).size(16.0).strong());
             if entry.favorite {
-                ui.label(RichText::new("★").color(Color32::from_rgb(235, 195, 92)));
+                ui.label(RichText::new("★").color(COLOR_WARNING));
             }
             if entry.use_relay {
-                ui.label(RichText::new("中继").small());
+                status_pill(ui, "中继", StatusPill::Accent);
+            }
+            if !entry.fingerprint.is_empty() {
+                status_pill(ui, "已固定指纹", StatusPill::Success);
             }
         });
         ui.label(
             RichText::new(&entry.addr)
-                .small()
-                .color(Color32::from_rgb(151, 166, 187)),
+                .text_style(TextStyle::Monospace)
+                .color(COLOR_MUTED),
         );
         if entry.last_used_ms > 0 {
-            ui.label(
-                RichText::new("最近连接过")
-                    .small()
-                    .color(Color32::from_rgb(126, 139, 158)),
-            );
+            ui.label(RichText::new("最近连接过").small().color(COLOR_FAINT));
         }
     });
 }
 
+fn avatar(ui: &mut egui::Ui, text: char) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(38.0), egui::Sense::hover());
+    ui.painter()
+        .circle_filled(rect.center(), rect.width() / 2.0, COLOR_SURFACE_RAISED);
+    ui.painter().circle_stroke(
+        rect.center(),
+        rect.width() / 2.0 - 0.5,
+        Stroke::new(1.0_f32, COLOR_BORDER),
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        FontId::new(16.0, FontFamily::Proportional),
+        COLOR_ACCENT,
+    );
+}
+
+fn icon_badge(ui: &mut egui::Ui, text: &str, foreground: Color32, fill: Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, Rounding::same(15.0), fill);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        FontId::new(15.0, FontFamily::Proportional),
+        foreground,
+    );
+}
+
+fn brand_mark(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(38.0), egui::Sense::hover());
+    let painter = ui.painter();
+    let center = rect.center();
+    let body = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + 2.0, rect.top() + 6.0),
+        Vec2::new(27.0, 26.0),
+    );
+    painter.rect_filled(body, Rounding::same(13.0), COLOR_ACCENT);
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(rect.right() - 9.0, center.y - 8.0),
+            egui::pos2(rect.right(), center.y),
+            egui::pos2(rect.right() - 9.0, center.y + 8.0),
+        ],
+        COLOR_ACCENT,
+        Stroke::NONE,
+    ));
+    painter.circle_filled(
+        egui::pos2(rect.left() + 12.0, center.y - 2.0),
+        2.2,
+        COLOR_ACCENT_INK,
+    );
+}
+
+fn navigation_metrics(window_width: f32) -> (f32, bool) {
+    if window_width < 940.0 {
+        (64.0, true)
+    } else {
+        (208.0, false)
+    }
+}
+
 fn configure_style(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = Color32::from_rgb(20, 26, 36);
-    visuals.window_fill = Color32::from_rgb(27, 34, 46);
-    visuals.extreme_bg_color = Color32::from_rgb(15, 20, 28);
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(38, 48, 64);
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(50, 65, 86);
-    visuals.widgets.active.bg_fill = Color32::from_rgb(48, 112, 190);
-    visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(30, 38, 51);
-    visuals.widgets.noninteractive.fg_stroke.color = Color32::from_rgb(210, 218, 230);
-    visuals.selection.bg_fill = Color32::from_rgb(48, 112, 190);
-    visuals.window_rounding = egui::Rounding::same(10.0);
+    visuals.override_text_color = Some(COLOR_TEXT);
+    visuals.panel_fill = COLOR_BG;
+    visuals.window_fill = COLOR_SURFACE;
+    visuals.extreme_bg_color = Color32::from_rgb(11, 19, 30);
+    visuals.faint_bg_color = COLOR_SURFACE_RAISED;
+    visuals.code_bg_color = Color32::from_rgb(11, 19, 30);
+    visuals.hyperlink_color = COLOR_BLUE;
+    visuals.warn_fg_color = COLOR_WARNING;
+    visuals.error_fg_color = COLOR_DANGER;
+    visuals.window_rounding = Rounding::same(16.0);
+    visuals.window_stroke = Stroke::new(1.0_f32, COLOR_BORDER);
+    visuals.window_shadow = egui::epaint::Shadow {
+        offset: Vec2::new(0.0, 18.0),
+        blur: 48.0,
+        spread: 0.0,
+        color: Color32::from_black_alpha(110),
+    };
+    visuals.popup_shadow = visuals.window_shadow;
+    visuals.menu_rounding = Rounding::same(10.0);
+    visuals.widgets.noninteractive.bg_fill = COLOR_BG;
+    visuals.widgets.noninteractive.weak_bg_fill = Color32::TRANSPARENT;
+    visuals.widgets.noninteractive.bg_stroke = Stroke::NONE;
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
+    visuals.widgets.noninteractive.rounding = Rounding::same(8.0);
+    visuals.widgets.inactive.bg_fill = COLOR_SURFACE_RAISED;
+    visuals.widgets.inactive.weak_bg_fill = COLOR_SURFACE_RAISED;
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, COLOR_BORDER);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
+    visuals.widgets.inactive.rounding = Rounding::same(8.0);
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(30, 47, 68);
+    visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(30, 47, 68);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
+    visuals.widgets.hovered.rounding = Rounding::same(8.0);
+    visuals.widgets.active.bg_fill = COLOR_ACCENT_SOFT;
+    visuals.widgets.active.weak_bg_fill = COLOR_ACCENT_SOFT;
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
+    visuals.widgets.active.rounding = Rounding::same(8.0);
+    visuals.widgets.open.bg_fill = COLOR_ACCENT_SOFT;
+    visuals.widgets.open.weak_bg_fill = COLOR_ACCENT_SOFT;
+    visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
+    visuals.widgets.open.rounding = Rounding::same(8.0);
+    visuals.selection.bg_fill = COLOR_ACCENT_SOFT;
+    visuals.selection.stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
     ctx.set_visuals(visuals);
+
     let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = Vec2::new(8.0, 7.0);
-    style.spacing.button_padding = Vec2::new(10.0, 6.0);
+    style.text_styles.insert(
+        TextStyle::Small,
+        FontId::new(12.0, FontFamily::Proportional),
+    );
+    style
+        .text_styles
+        .insert(TextStyle::Body, FontId::new(14.5, FontFamily::Proportional));
+    style.text_styles.insert(
+        TextStyle::Button,
+        FontId::new(14.0, FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        TextStyle::Heading,
+        FontId::new(27.0, FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        TextStyle::Monospace,
+        FontId::new(12.5, FontFamily::Monospace),
+    );
+    style.spacing.item_spacing = Vec2::new(9.0, 9.0);
+    style.spacing.button_padding = Vec2::new(12.0, 7.0);
+    style.spacing.window_margin = Margin::same(22.0);
+    style.spacing.menu_margin = Margin::same(8.0);
+    style.spacing.interact_size = Vec2::new(40.0, 30.0);
     ctx.set_style(style);
+}
+
+fn install_font_file(
+    fonts: &mut FontDefinitions,
+    path: &Path,
+    family: FontFamily,
+    index: usize,
+) -> bool {
+    let Ok(data) = fs::read(path) else {
+        return false;
+    };
+    let name = format!("manager-font-{}", fonts.font_data.len());
+    fonts
+        .font_data
+        .insert(name.clone(), egui::FontData::from_owned(data));
+    let fonts_for_family = fonts.families.entry(family).or_default();
+    fonts_for_family.insert(index.min(fonts_for_family.len()), name);
+    true
 }
 
 fn install_fonts(ctx: &egui::Context, custom: Option<PathBuf>) {
     let mut fonts = FontDefinitions::default();
-    let candidates: Vec<PathBuf> = custom.into_iter().collect();
-    let candidates = if candidates.is_empty() {
-        vec![
-            PathBuf::from(r"C:\Windows\Fonts\simhei.ttf"),
-            PathBuf::from(r"C:\Windows\Fonts\segoeui.ttf"),
-            PathBuf::from("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
-            PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-        ]
-    } else {
-        candidates
-    };
-    for path in candidates {
-        if let Ok(data) = fs::read(&path) {
-            let name = format!("manager-font-{}", fonts.font_data.len());
-            fonts
-                .font_data
-                .insert(name.clone(), egui::FontData::from_owned(data));
-            fonts
-                .families
-                .entry(FontFamily::Proportional)
-                .or_default()
-                .insert(0, name.clone());
-            fonts
-                .families
-                .entry(FontFamily::Monospace)
-                .or_default()
-                .insert(0, name);
+    if let Some(path) = custom {
+        install_font_file(&mut fonts, &path, FontFamily::Proportional, 0);
+        install_font_file(&mut fonts, &path, FontFamily::Monospace, 0);
+        ctx.set_fonts(fonts);
+        return;
+    }
+
+    for path in [
+        PathBuf::from(r"C:\Windows\Fonts\msyh.ttc"),
+        PathBuf::from(r"C:\Windows\Fonts\simhei.ttf"),
+        PathBuf::from("/System/Library/Fonts/PingFang.ttc"),
+        PathBuf::from("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    ] {
+        if install_font_file(&mut fonts, &path, FontFamily::Proportional, 0) {
+            break;
+        }
+    }
+    for path in [
+        PathBuf::from(r"C:\Windows\Fonts\segoeui.ttf"),
+        PathBuf::from("/System/Library/Fonts/Supplemental/Arial.ttf"),
+        PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    ] {
+        if install_font_file(&mut fonts, &path, FontFamily::Proportional, 0) {
+            break;
+        }
+    }
+    for path in [
+        PathBuf::from(r"C:\Windows\Fonts\consola.ttf"),
+        PathBuf::from(r"C:\Windows\Fonts\CascadiaMono.ttf"),
+        PathBuf::from("/System/Library/Fonts/Menlo.ttc"),
+        PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
+    ] {
+        if install_font_file(&mut fonts, &path, FontFamily::Monospace, 0) {
             break;
         }
     }
@@ -2703,7 +3539,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_TITLE)
             .with_inner_size([1120.0, 720.0])
-            .with_min_inner_size([760.0, 520.0])
+            .with_min_inner_size([680.0, 520.0])
             .with_icon(load_icon()),
         ..Default::default()
     };
@@ -2824,6 +3660,14 @@ mod tests {
         assert!(validate_relay_tag("abc").is_err());
         assert!(validate_fingerprint(&"cd".repeat(32)).is_ok());
         assert!(validate_fingerprint(&"cd".repeat(31)).is_err());
+    }
+
+    #[test]
+    fn navigation_switches_to_compact_mode_before_forms_get_crowded() {
+        assert_eq!(navigation_metrics(680.0), (64.0, true));
+        assert_eq!(navigation_metrics(939.0), (64.0, true));
+        assert_eq!(navigation_metrics(940.0), (208.0, false));
+        assert_eq!(navigation_metrics(1120.0), (208.0, false));
     }
 
     #[test]

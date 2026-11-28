@@ -2,6 +2,15 @@ package remote.dafeiyu
 
 /** Pure helpers shared by the viewer UI and local JVM tests. */
 object ViewerHelpers {
+    enum class ViewerLayout { PORTRAIT, WIDE }
+
+    /** Compact windows stack; landscape phones and tablets give the video more room. */
+    fun viewerLayoutMode(widthDp: Float, heightDp: Float): ViewerLayout = when {
+        widthDp >= 720f -> ViewerLayout.WIDE
+        widthDp >= 600f && widthDp > heightDp -> ViewerLayout.WIDE
+        else -> ViewerLayout.PORTRAIT
+    }
+
     fun normalizeFingerprint(value: String): String? {
         if (value.any { it !in "0123456789abcdefABCDEF:- \t\r\n" }) return null
         val hex = value.filter { it.isHex() }.lowercase()

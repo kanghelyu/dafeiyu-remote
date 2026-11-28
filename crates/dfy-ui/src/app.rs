@@ -514,8 +514,7 @@ impl<'a> ViewerApp<'a> {
         overlay: &OverlaySnapshot<'_>,
     ) {
         if overlay.toolbar.visible() && layout.bar().width > 0 && layout.bar().height > 0 {
-            fill_rect(buffer, width, height, layout.bar(), PANEL);
-            stroke_rect(buffer, width, height, layout.bar(), BORDER);
+            crate::overlay_text::panel(buffer, width, height, layout.bar(), PANEL, BORDER, 10);
             for (index, action) in ToolbarAction::ALL.into_iter().enumerate() {
                 let Some(rect) = layout.control(action) else {
                     continue;
@@ -526,13 +525,17 @@ impl<'a> ViewerApp<'a> {
                     .is_some_and(|(pressed_action, _)| pressed_action == action);
                 let focused = overlay.toolbar.focused() && overlay.toolbar_focus_index == index;
                 if pressed || hovered || focused {
-                    fill_rect(
-                        buffer,
-                        width,
-                        height,
-                        rect,
-                        if pressed { PRESSED } else { HOVER },
-                    );
+                    if pressed {
+                        fill_rect(buffer, width, height, rect, PRESSED);
+                    } else if hovered {
+                        fill_rect(buffer, width, height, rect, HOVER);
+                    }
+                    if focused {
+                        stroke_rect(buffer, width, height, rect, ACCENT);
+                    }
+                    if action == ToolbarAction::Disconnect && !hovered && !pressed {
+                        fill_rect(buffer, width, height, rect, DANGER_PANEL);
+                    }
                 }
                 if focused {
                     stroke_rect(buffer, width, height, rect, ACCENT);
@@ -554,18 +557,18 @@ impl<'a> ViewerApp<'a> {
                     height,
                     rect,
                     if overlay.paused {
-                        "INPUT PAUSED"
+                        "控制已暂停"
                     } else {
-                        "INPUT LIVE"
+                        "正在控制"
                     },
                     layout.font_scale(),
                     if overlay.paused { WARNING } else { SUCCESS },
                 );
             }
             if let (Some(rect), Some((frame_w, frame_h))) = (layout.summary(), overlay.frame_size) {
-                let path = connection.map_or("Direct", |stats| {
+                let path = connection.map_or("直连", |stats| {
                     if stats.path.is_empty() {
-                        "Direct"
+                        "直连"
                     } else {
                         stats.path.as_str()
                     }
@@ -574,7 +577,12 @@ impl<'a> ViewerApp<'a> {
                     .stats
                     .fps()
                     .map_or_else(|| "--".to_string(), |fps| format!("{fps:.0}"));
-                let summary = format!("{frame_w}x{frame_h}  {fps} FPS  {path}");
+                let summary = format!("{frame_w}×{frame_h}  {fps} 帧/秒  {path}");
+                let summary = crate::overlay_text::truncate(
+                    &summary,
+                    layout.font_scale(),
+                    f64::from(rect.width),
+                );
                 draw_text(
                     buffer,
                     width,
@@ -598,20 +606,14 @@ impl<'a> ViewerApp<'a> {
             }
         }
         if let Some(rect) = layout.paused_banner() {
-            fill_rect(buffer, width, height, rect, PAUSED_PANEL);
-            stroke_rect(buffer, width, height, rect, WARNING);
+            crate::overlay_text::panel(buffer, width, height, rect, PAUSED_PANEL, WARNING, 8);
             let scale = if overlay.scale_factor.is_finite() && overlay.scale_factor > 0.0 {
                 overlay.scale_factor
             } else {
                 1.0
             };
-            let full_label_width = (200.0 * scale).round().max(1.0) as u32;
-            let label = if rect.width >= full_label_width {
-                "INPUT PAUSED | CTRL+ALT+SHIFT+Q"
-            } else {
-                "INPUT PAUSED"
-            };
-            let banner_font_scale = (scale.round().max(1.0)) as u32;
+            let label = "控制已暂停 · Ctrl+Alt+Shift+Q";
+            let banner_font_scale = (12.0 * scale).round().max(1.0) as u32;
             draw_text_centered(
                 buffer,
                 width,
@@ -633,11 +635,10 @@ impl<'a> ViewerApp<'a> {
         connection: Option<&ConnectionStats>,
         overlay: &OverlaySnapshot<'_>,
     ) {
-        fill_rect(buffer, width, height, rect, PANEL);
-        stroke_rect(buffer, width, height, rect, BORDER);
-        let path = connection.map_or("Direct", |stats| {
+        crate::overlay_text::panel(buffer, width, height, rect, PANEL, BORDER, 10);
+        let path = connection.map_or("直连", |stats| {
             if stats.path.is_empty() {
-                "Direct"
+                "直连"
             } else {
                 stats.path.as_str()
             }
@@ -671,20 +672,26 @@ impl<'a> ViewerApp<'a> {
             .filter(|value| !value.is_empty())
             .unwrap_or("--");
         let lines = [
-            "CONNECTION".to_string(),
-            format!("PATH {path}"),
-            format!("RTT {rtt}  LOSS {loss}"),
-            format!("RATE {bitrate}"),
-            format!("DECODE {decode}  RENDER {render}"),
-            format!("FRAME {frame}  {fps} FPS"),
-            format!("RELAY {relay}"),
+            "连接状态".to_string(),
+            format!("路径  {path}"),
+            format!("延迟  {rtt}   丢包  {loss}"),
+            format!("码率  {bitrate}"),
+            format!("解码  {decode}   渲染  {render}"),
+            format!("画面  {frame}   {fps} 帧/秒"),
+            format!("中继  {relay}"),
         ];
-        let line_height = font_scale.saturating_mul(9);
-        let horizontal_padding = font_scale.saturating_mul(2);
-        let horizontal_margin = font_scale.saturating_mul(4);
+        let line_height = (font_scale as f64 * 1.5).ceil() as u32;
+        let horizontal_padding = font_scale;
+        let horizontal_margin = font_scale.saturating_mul(2);
+        let y_offset = font_scale.saturating_sub(
+            rect.height
+                .saturating_sub(lines.len() as u32 * line_height)
+                .min(font_scale),
+        );
         for (index, line) in lines.iter().enumerate() {
             let y = rect
                 .y
+                .saturating_add(y_offset)
                 .saturating_add((index as u32).saturating_mul(line_height));
             let line_rect = crate::frame::Rect {
                 x: rect.x.saturating_add(horizontal_padding),
@@ -692,14 +699,21 @@ impl<'a> ViewerApp<'a> {
                 width: rect.width.saturating_sub(horizontal_margin),
                 height: line_height.min(rect.height.saturating_sub(y.saturating_sub(rect.y))),
             };
+            let line = crate::overlay_text::truncate(line, font_scale, f64::from(line_rect.width));
             draw_text(
                 buffer,
                 width,
                 height,
                 line_rect,
-                line,
+                &line,
                 font_scale,
-                if index == 0 { ACCENT } else { TEXT },
+                if index == 0 {
+                    ACCENT
+                } else if index == 1 {
+                    MUTED
+                } else {
+                    TEXT
+                },
             );
         }
     }
@@ -1214,10 +1228,11 @@ const PRESSED: u32 = 0x003C_4854;
 const BORDER: u32 = 0x0044_5160;
 const TEXT: u32 = 0x00E8_EDF2;
 const MUTED: u32 = 0x00A9_B4C0;
-const ACCENT: u32 = 0x004C_C9FF;
-const SUCCESS: u32 = 0x006B_D9A0;
-const WARNING: u32 = 0x00FF_B86B;
-const PAUSED_PANEL: u32 = 0x0035_1416;
+const ACCENT: u32 = 0x00FF_9D5C;
+const SUCCESS: u32 = 0x005F_E6A0;
+const WARNING: u32 = 0x00FF_C46B;
+const PAUSED_PANEL: u32 = 0x0035_2119;
+const DANGER_PANEL: u32 = 0x0037_2027;
 
 fn fill_rect(buffer: &mut [u32], width: u32, height: u32, rect: crate::frame::Rect, color: u32) {
     let x0 = rect.x.min(width);
@@ -1239,40 +1254,6 @@ fn fill_rect(buffer: &mut [u32], width: u32, height: u32, rect: crate::frame::Re
             pixels.fill(color);
         }
     }
-}
-
-fn fill_rect_clipped(
-    buffer: &mut [u32],
-    width: u32,
-    height: u32,
-    rect: crate::frame::Rect,
-    clip: crate::frame::Rect,
-    color: u32,
-) {
-    let x0 = rect.x.max(clip.x).min(width);
-    let y0 = rect.y.max(clip.y).min(height);
-    let x1 = rect
-        .x
-        .saturating_add(rect.width)
-        .min(clip.x.saturating_add(clip.width))
-        .min(width);
-    let y1 = rect
-        .y
-        .saturating_add(rect.height)
-        .min(clip.y.saturating_add(clip.height))
-        .min(height);
-    fill_rect(
-        buffer,
-        width,
-        height,
-        crate::frame::Rect {
-            x: x0,
-            y: y0,
-            width: x1.saturating_sub(x0),
-            height: y1.saturating_sub(y0),
-        },
-        color,
-    );
 }
 
 fn stroke_rect(buffer: &mut [u32], width: u32, height: u32, rect: crate::frame::Rect, color: u32) {
@@ -1328,22 +1309,15 @@ fn draw_text_centered(
     color: u32,
 ) {
     let font_scale = font_scale.max(1);
-    let text_width = text
-        .chars()
-        .count()
-        .saturating_mul(6)
-        .saturating_sub(1)
-        .saturating_mul(font_scale as usize);
-    let glyph_height = 7u32.saturating_mul(font_scale);
-    let x = rect.x.saturating_add(
-        rect.width
-            .saturating_sub(text_width.min(u32::MAX as usize) as u32)
-            / 2,
-    );
+    let text_width = crate::overlay_text::text_width(text, font_scale).ceil() as u32;
+    let glyph_height = font_scale;
+    let x = rect
+        .x
+        .saturating_add(rect.width.saturating_sub(text_width.min(rect.width)) / 2);
     let y = rect
         .y
         .saturating_add(rect.height.saturating_sub(glyph_height) / 2);
-    draw_text(
+    crate::overlay_text::draw(
         buffer,
         width,
         height,
@@ -1363,90 +1337,7 @@ fn draw_text(
     font_scale: u32,
     color: u32,
 ) {
-    let font_scale = font_scale.max(1);
-    let mut cursor_x = rect.x;
-    for character in text.chars() {
-        let glyph = glyph(character.to_ascii_uppercase());
-        for (row, bits) in glyph.iter().copied().enumerate() {
-            for column in 0..5u32 {
-                if bits & (1 << (4 - column)) == 0 {
-                    continue;
-                }
-                fill_rect_clipped(
-                    buffer,
-                    width,
-                    height,
-                    crate::frame::Rect {
-                        x: cursor_x.saturating_add(column.saturating_mul(font_scale)),
-                        y: rect
-                            .y
-                            .saturating_add((row as u32).saturating_mul(font_scale)),
-                        width: font_scale,
-                        height: font_scale,
-                    },
-                    rect,
-                    color,
-                );
-            }
-        }
-        cursor_x = cursor_x.saturating_add(6u32.saturating_mul(font_scale));
-    }
-}
-
-fn glyph(character: char) -> [u8; 7] {
-    match character {
-        ' ' => [0; 7],
-        'A' => [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
-        'B' => [0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E],
-        'C' => [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E],
-        'D' => [0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E],
-        'E' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
-        'F' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],
-        'G' => [0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E],
-        'H' => [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
-        'I' => [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
-        'J' => [0x07, 0x02, 0x02, 0x02, 0x12, 0x12, 0x0C],
-        'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
-        'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],
-        'M' => [0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11],
-        'N' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
-        'O' => [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
-        'P' => [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],
-        'Q' => [0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D],
-        'R' => [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],
-        'S' => [0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E],
-        'T' => [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
-        'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
-        'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
-        'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A],
-        'X' => [0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11],
-        'Y' => [0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04],
-        'Z' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],
-        '0' => [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],
-        '1' => [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E],
-        '2' => [0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F],
-        '3' => [0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E],
-        '4' => [0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02],
-        '5' => [0x1F, 0x10, 0x10, 0x1E, 0x01, 0x01, 0x1E],
-        '6' => [0x0E, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x0E],
-        '7' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
-        '8' => [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E],
-        '9' => [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E],
-        '-' => [0, 0, 0, 0x1F, 0, 0, 0],
-        '+' => [0, 0x04, 0x04, 0x1F, 0x04, 0x04, 0],
-        '.' => [0, 0, 0, 0, 0, 0x0C, 0x0C],
-        ':' => [0, 0x0C, 0x0C, 0, 0x0C, 0x0C, 0],
-        '/' => [0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10],
-        '%' => [0x11, 0x12, 0x04, 0x08, 0x11, 0x06, 0x10],
-        '(' => [0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02],
-        ')' => [0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08],
-        '|' => [0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
-        '_' => [0, 0, 0, 0, 0, 0, 0x1F],
-        '>' => [0x10, 0x08, 0x04, 0x02, 0x04, 0x08, 0x10],
-        '<' => [0x01, 0x02, 0x04, 0x08, 0x04, 0x02, 0x01],
-        '=' => [0, 0x1F, 0, 0, 0x1F, 0, 0],
-        _ => [0x0E, 0x11, 0x01, 0x02, 0x04, 0, 0x04],
-    }
+    crate::overlay_text::draw(buffer, width, height, rect, text, font_scale.max(1), color);
 }
 
 const ICON_PNG: &[u8] = include_bytes!("../../../assets/icon-512.png");

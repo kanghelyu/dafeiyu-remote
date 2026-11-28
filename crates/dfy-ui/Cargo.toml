@@ -15,7 +15,7 @@ publish = false
 # 帧校验/缩放、键位映射、滚轮换算、渲染统计、帧来源抽象都能在无显示环境编译并单测。
 default = ["window"]
 # 窗口 + 软件上屏（winit 事件循环 + softbuffer + 窗口图标）。
-window = ["dep:softbuffer", "dep:png"]
+window = ["dep:softbuffer", "dep:png", "dep:ab_glyph"]
 
 [dependencies]
 anyhow.workspace = true
@@ -31,6 +31,7 @@ tokio = { version = "1", default-features = false, features = ["sync"] }
 winit = "0.30"
 softbuffer = { version = "0.4", optional = true }
 png = { version = "0.18", optional = true }
+ab_glyph = { version = "=0.2.23", optional = true }
 
 [dev-dependencies]
 # 仅 examples/viewer_demo.rs 用来打日志（不引入 GUI 测试框架）。

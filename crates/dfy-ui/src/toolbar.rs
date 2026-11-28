@@ -30,22 +30,22 @@ impl ToolbarAction {
 
     fn label(self, fullscreen: bool, paused: bool, compact: bool) -> &'static str {
         match self {
-            Self::Fullscreen if compact => "FS",
-            Self::Fullscreen if fullscreen => "Window",
-            Self::Fullscreen => "Full",
+            Self::Fullscreen if compact => "全屏",
+            Self::Fullscreen if fullscreen => "窗口",
+            Self::Fullscreen => "全屏",
             Self::ToggleInput if compact => {
                 if paused {
-                    "R"
+                    "继续"
                 } else {
-                    "P"
+                    "暂停"
                 }
             }
-            Self::ToggleInput if paused => "Resume",
-            Self::ToggleInput => "Pause",
-            Self::Stats if compact => "S",
-            Self::Stats => "Stats",
-            Self::Disconnect if compact => "X",
-            Self::Disconnect => "Exit",
+            Self::ToggleInput if paused => "继续控制",
+            Self::ToggleInput => "暂停控制",
+            Self::Stats if compact => "统计",
+            Self::Stats => "连接统计",
+            Self::Disconnect if compact => "断开",
+            Self::Disconnect => "断开连接",
         }
     }
 }
@@ -219,17 +219,17 @@ impl ToolbarLayout {
         let logical_w = f64::from(width) / scale;
         let logical_h = f64::from(height) / scale;
         let toolbar_height = f64::from(toolbar_height(logical_w));
-        let font_scale = if toolbar_height >= 40.0 { 2 } else { 1 };
-        let compact = logical_w < 960.0;
+        let compact = logical_w < 1080.0;
+        let font_scale = scale_pixels(if compact { 12.0 } else { 13.0 }, scale).max(1);
         let bar_w = (logical_w - 2.0 * BAR_MARGIN).max(0.0);
         let bar_h = toolbar_height.min((logical_h - 2.0 * BAR_MARGIN).max(0.0));
         let bar = physical_rect(BAR_MARGIN, BAR_MARGIN, bar_w, bar_h, scale, width, height);
         let content = content_rect(width, height);
 
         let desired = if compact {
-            [32.0; 4]
+            [68.0, 68.0, 60.0, 60.0]
         } else {
-            [96.0, 96.0, 80.0, 64.0]
+            [88.0, 104.0, 96.0, 96.0]
         };
         let available = (bar_w - 2.0 * BAR_PADDING).max(0.0);
         let desired_total: f64 = desired.iter().sum();
@@ -261,7 +261,7 @@ impl ToolbarLayout {
         }
 
         let controls_end = control_x - gap;
-        let status_width = text_width("INPUT PAUSED", font_scale) + 2.0 * BAR_PADDING;
+        let status_width = text_width("正在控制", font_scale) + 2.0 * BAR_PADDING;
         let status_x = controls_end + CONTROL_GAP;
         let mut summary_x = status_x;
         let status = if toolbar_visible && status_x + status_width <= BAR_MARGIN + bar_w {
@@ -294,8 +294,8 @@ impl ToolbarLayout {
         };
 
         let stats_y = BAR_MARGIN + bar_h + BAR_MARGIN;
-        let stats_w = (logical_w - 2.0 * BAR_MARGIN).clamp(0.0, 320.0);
-        let stats_h = (logical_h - stats_y - BAR_MARGIN).clamp(0.0, 132.0);
+        let stats_w = (logical_w - 2.0 * BAR_MARGIN).clamp(0.0, 360.0);
+        let stats_h = (logical_h - stats_y - BAR_MARGIN).clamp(0.0, 176.0);
         let stats = if toolbar_visible && stats_visible {
             nonzero_rect(physical_rect(
                 logical_w - BAR_MARGIN - stats_w,
@@ -310,11 +310,7 @@ impl ToolbarLayout {
             None
         };
 
-        let paused_text = if logical_w >= 240.0 {
-            "INPUT PAUSED | CTRL+ALT+SHIFT+Q"
-        } else {
-            "INPUT PAUSED"
-        };
+        let paused_text = "控制已暂停 · Ctrl+Alt+Shift+Q";
         let paused_w = (text_width(paused_text, 1) + 2.0 * BAR_PADDING).min(logical_w);
         let paused_h = 24.0_f64.min(logical_h);
         let paused_banner = if paused && paused_w > 0.0 && paused_h > 0.0 {
@@ -340,8 +336,7 @@ impl ToolbarLayout {
             stats,
             paused_banner,
             font_scale: scale_pixels(f64::from(font_scale), scale).max(1),
-            stats_font_scale: scale_pixels(if logical_w >= 560.0 { 2.0 } else { 1.0 }, scale)
-                .max(1),
+            stats_font_scale: scale_pixels(12.0, scale).max(1),
             compact,
             toolbar_visible,
         }
@@ -511,8 +506,23 @@ fn point_in_rect(x: f64, y: f64, rect: Rect) -> bool {
         && y < f64::from(rect.y) + f64::from(rect.height)
 }
 
+#[cfg(feature = "window")]
 fn text_width(text: &str, font_scale: u32) -> f64 {
-    (text.chars().count().saturating_mul(6).saturating_sub(1)) as f64 * f64::from(font_scale)
+    crate::overlay_text::text_width(text, font_scale)
+}
+
+#[cfg(not(feature = "window"))]
+fn text_width(text: &str, font_scale: u32) -> f64 {
+    text.chars()
+        .map(|character| {
+            let units = if ('\u{2e80}'..='\u{9fff}').contains(&character) {
+                1.0
+            } else {
+                0.56
+            };
+            units * f64::from(font_scale)
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -688,17 +698,17 @@ mod tests {
                 ),
                 None
             );
-            assert_eq!(
-                map_cursor_to_remote(
-                    f64::from(width / 2),
-                    f64::from(height / 2),
-                    content,
-                    (1280, 720),
-                    &gate,
-                    &layout
-                ),
-                Some((640, 360))
-            );
+            let mapped = map_cursor_to_remote(
+                f64::from(width / 4),
+                f64::from(height * 3 / 4),
+                content,
+                (1280, 720),
+                &gate,
+                &layout,
+            )
+            .expect("video point remains interactive");
+            assert!((i64::from(mapped.0) - 320).abs() <= 1);
+            assert!((539..=540).contains(&mapped.1));
             assert_eq!(
                 map_cursor_to_remote(
                     f64::from(width / 2),

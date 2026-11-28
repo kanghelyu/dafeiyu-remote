@@ -97,19 +97,19 @@ jobs:
           path: dist-manager/dfy-manager.exe
           if-no-files-found: error
 
-      - name: 构建 macOS dfy-manager
-        if: runner.os == 'macOS'
+      - name: 构建 macOS/Linux dfy-manager
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           cargo build --release --locked --target "${{ matrix.target }}" -p dfy-manager
           mkdir -p dist-manager
           cp "$CARGO_TARGET_DIR/${{ matrix.target }}/release/dfy-manager" "dist-manager/dfy-manager-${{ matrix.target }}"
 
-      - name: 上传 macOS dfy-manager
-        if: runner.os == 'macOS'
+      - name: 上传 macOS/Linux dfy-manager
+        if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: dafeiyu-macos-manager-${{ matrix.target }}
+          name: dafeiyu-manager-${{ matrix.target }}
           path: dist-manager/dfy-manager-${{ matrix.target }}
           if-no-files-found: error
 
@@ -256,11 +256,17 @@ jobs:
           else
             sudo apt-get install -y --no-install-recommends dpkg-dev
           fi
-      - name: 解压 Linux 二进制
+      - name: 解压 Linux 二进制与 Manager
         shell: bash
         run: |
           mkdir -p binaries
           tar -xzf archive/dafeiyu-*.tar.gz -C binaries
+      - uses: actions/download-artifact@v4
+        with:
+          name: dafeiyu-manager-${{ matrix.target }}
+          path: binaries
+      - name: 准备 Linux Manager
+        run: mv "binaries/dfy-manager-${{ matrix.target }}" binaries/dfy-manager && chmod 0755 binaries/dfy-manager
       - name: 构建 DEB/RPM（不启用、不启动服务）
         shell: bash
         run: |
@@ -302,7 +308,7 @@ jobs:
           tar -xzf archive/dafeiyu-*.tar.gz -C binaries
       - uses: actions/download-artifact@v4
         with:
-          name: dafeiyu-macos-manager-${{ matrix.target }}
+          name: dafeiyu-manager-${{ matrix.target }}
           path: binaries
       - name: 准备 macOS GUI 二进制
         run: |

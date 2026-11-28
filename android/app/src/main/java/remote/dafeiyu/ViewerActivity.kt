@@ -1,18 +1,21 @@
 package remote.dafeiyu
 
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Gravity
-import android.view.PixelCopy
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.PixelCopy
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.CheckBox
@@ -50,8 +53,20 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
     private lateinit var pinView: TextView
     private lateinit var permissionsView: TextView
     private lateinit var statsView: TextView
+    private lateinit var statsDetailView: TextView
+    private lateinit var statsToggle: Button
     private lateinit var surfaceView: SurfaceView
     private lateinit var videoFrame: FrameLayout
+    private lateinit var videoOverlay: LinearLayout
+    private lateinit var overlayTitle: TextView
+    private lateinit var overlayBody: TextView
+    private lateinit var stateBadge: TextView
+    private lateinit var root: FrameLayout
+    private lateinit var portraitRoot: LinearLayout
+    private lateinit var wideRoot: LinearLayout
+    private lateinit var videoShell: LinearLayout
+    private lateinit var settingsScroll: ScrollView
+    private lateinit var form: LinearLayout
     private lateinit var decoder: DfyH264Decoder
 
     private val ui = Handler(Looper.getMainLooper())
@@ -62,6 +77,7 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
     private var permissions = 0
     private var capabilities: Set<String> = emptySet()
     private var connected = false
+    private var hasFrame = false
     private var state = "disconnected"
     private var detail = ""
     private var controlAllowed = false
@@ -91,7 +107,7 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        UiTheme.configureWindow(this)
         buildUi()
         onBackPressedDispatcher.addCallback(this, remoteBack)
         decoder = DfyH264Decoder(
@@ -99,11 +115,20 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
             onDimensions = { width, height -> ui.post { videoWidth = width; videoHeight = height } },
             onFramePresented = {
                 inspectDecodedPixels()
+                if (!hasFrame) {
+                    hasFrame = true
+                    ui.post { renderVideoState() }
+                }
             },
         )
         DfyControllerNative.setListener(this)
         updateControls()
         updateStats()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        updateResponsiveLayout()
     }
 
     private fun inspectDecodedPixels() {
@@ -153,61 +178,57 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
     }
 
     private fun buildUi() {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(12, 12, 12, 12)
+        root = FrameLayout(this).apply { setBackgroundColor(UiTheme.background) }
+        UiTheme.applyInsets(root)
+        portraitRoot = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        wideRoot = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        videoShell = buildVideoShell()
+        settingsScroll = ScrollView(this).apply {
+            isFillViewport = true
+            clipToPadding = false
+            setBackgroundColor(UiTheme.background)
         }
-        val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        host = field("Agent host")
-        port = field("Port").apply { setText("24443"); inputType = EditorInfo.TYPE_CLASS_NUMBER }
-        password = field("Password").apply {
-            inputType = EditorInfo.TYPE_CLASS_TEXT or EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
-            isSaveEnabled = false
+        form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pad = 16.dp
+            setPadding(pad, 4.dp, pad, 28.dp)
         }
-        fingerprint = field("TLS SPKI SHA-256 (64 hex)")
-        form.addView(host)
-        form.addView(port)
-        form.addView(password)
-        form.addView(fingerprint)
-        val buttons = LinearLayout(this)
-        connect = Button(this).apply { text = "Connect"; setOnClickListener { startConnection() } }
-        disconnect = Button(this).apply { text = "Disconnect"; setOnClickListener { stopConnection() } }
-        buttons.addView(connect, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        buttons.addView(disconnect, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        form.addView(buttons)
-        localControl = CheckBox(this).apply {
-            text = "Authorize local pointer/keyboard input"
-            setOnCheckedChangeListener { _, checked -> DfyControllerNative.setControlAllowed(checked); updateControls() }
-        }
-        form.addView(localControl)
-        qualityWidth = field("Max width (even)").apply { inputType = EditorInfo.TYPE_CLASS_NUMBER }
-        qualityHeight = field("Max height (even)").apply { inputType = EditorInfo.TYPE_CLASS_NUMBER }
-        qualityFps = field("FPS (1–120)").apply { inputType = EditorInfo.TYPE_CLASS_NUMBER }
-        qualityBitrate = field("Bitrate kbps (100–100000)").apply { inputType = EditorInfo.TYPE_CLASS_NUMBER }
-        form.addView(qualityWidth)
-        form.addView(qualityHeight)
-        form.addView(qualityFps)
-        form.addView(qualityBitrate)
-        val qualityButtons = LinearLayout(this)
-        applyQuality = Button(this).apply { text = "Apply quality"; setOnClickListener { applyQualityLimit() } }
-        resetQuality = Button(this).apply { text = "Reset to host"; setOnClickListener { resetQualityLimit() } }
-        qualityButtons.addView(applyQuality, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        qualityButtons.addView(resetQuality, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        form.addView(qualityButtons)
-        qualityView = textView().apply { text = "Video quality: waiting for Agent" }
-        form.addView(qualityView)
-        pinView = textView()
-        permissionsView = textView()
-        form.addView(pinView)
-        form.addView(permissionsView)
-        root.addView(ScrollView(this).apply { addView(form) }, LinearLayout.LayoutParams(310.dp, LinearLayout.LayoutParams.MATCH_PARENT))
-
-        val viewer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        videoFrame = FrameLayout(this)
+        settingsScroll.addView(form, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         addVideoSurface()
+        buildConnectionCard()
+        buildControlCard()
+        buildQualityCard()
+        buildStatsCard()
+        updateResponsiveLayout()
+        setContentView(root)
+    }
+
+    private fun buildVideoShell(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setBackgroundColor(UiTheme.background)
+        val header = LinearLayout(this@ViewerActivity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(16.dp, 8.dp, 16.dp, 10.dp)
+        }
+        val titles = LinearLayout(this@ViewerActivity).apply { orientation = LinearLayout.VERTICAL }
+        titles.addView(UiTheme.title(this@ViewerActivity, getString(R.string.viewer_title)))
+        titles.addView(UiTheme.body(this@ViewerActivity, getString(R.string.viewer_subtitle), muted = true).apply {
+            textSize = 12f
+            setPadding(0, 2.dp, 0, 0)
+        })
+        header.addView(titles, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        stateBadge = UiTheme.badge(this@ViewerActivity, getString(R.string.state_disconnected))
+        header.addView(stateBadge)
+        addView(header)
+        videoFrame = FrameLayout(this@ViewerActivity).apply {
+            setBackgroundColor(UiTheme.video)
+            contentDescription = getString(R.string.viewer_title)
+        }
+        addView(videoFrame, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         if (BuildConfig.DEBUG && intent.getBooleanExtra("dfy_capture_probe", false)) {
             videoFrame.addView(
-                View(this).apply {
+                View(this@ViewerActivity).apply {
                     setBackgroundColor(0xFF00FF00.toInt())
                     elevation = 8f
                 },
@@ -218,44 +239,55 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
                 },
             )
         }
-        viewer.addView(videoFrame, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        stateView = textView().apply {
-            textSize = 16f
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
+        videoOverlay = LinearLayout(this@ViewerActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            val pad = 28.dp
+            setPadding(pad, pad, pad, pad)
+            setBackgroundColor(0xE6101923.toInt())
+            isClickable = true
+            isFocusable = false
         }
-        detailView = textView().apply {
-            maxLines = 2
-            ellipsize = android.text.TextUtils.TruncateAt.END
+        overlayTitle = TextView(this@ViewerActivity).apply {
+            textSize = 19f
+            setTextColor(UiTheme.videoText)
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            gravity = Gravity.CENTER
         }
-        statsView = textView().apply {
+        overlayBody = TextView(this@ViewerActivity).apply {
+            textSize = 14f
+            setTextColor(UiTheme.videoMuted)
+            gravity = Gravity.CENTER
+            setPadding(0, 10.dp, 0, 0)
+        }
+        videoOverlay.addView(overlayTitle)
+        videoOverlay.addView(overlayBody)
+        videoFrame.addView(videoOverlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        stateView = UiTheme.body(this@ViewerActivity).apply {
+            textSize = 15f
+            setPadding(16.dp, 12.dp, 16.dp, 0)
+        }
+        addView(stateView)
+        detailView = UiTheme.body(this@ViewerActivity, muted = true).apply {
             textSize = 12f
-            maxLines = 2
-            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(16.dp, 4.dp, 16.dp, 4.dp)
         }
-        viewer.addView(stateView)
-        viewer.addView(detailView)
-        val systemButtons = LinearLayout(this)
-        back = Button(this).apply {
-            text = "Back"
-            maxLines = 1
-            textSize = 12f
+        addView(detailView)
+        val actions = LinearLayout(this@ViewerActivity).apply { orientation = LinearLayout.HORIZONTAL }
+        back = UiTheme.button(this@ViewerActivity, getString(R.string.viewer_back)).apply {
             setOnClickListener { DfyControllerNative.systemAction(DfyControllerNative.ACTION_BACK) }
         }
-        home = Button(this).apply {
-            text = "Home"
-            maxLines = 1
-            textSize = 12f
+        home = UiTheme.button(this@ViewerActivity, getString(R.string.viewer_home)).apply {
             setOnClickListener { DfyControllerNative.systemAction(DfyControllerNative.ACTION_HOME) }
         }
-        systemButtons.addView(back, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        systemButtons.addView(home, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        viewer.addView(systemButtons)
-        viewer.addView(statsView)
-        root.addView(viewer, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
-        setContentView(root)
+        actions.addView(back, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 10.dp })
+        actions.addView(home, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        addView(actions, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = 16.dp; rightMargin = 16.dp; topMargin = 4.dp; bottomMargin = 12.dp
+        })
     }
 
+    @Suppress("ClickableViewAccessibility") // The remote canvas sends pointer input, not UI clicks.
     private fun addVideoSurface() {
         surfaceView = SurfaceView(this).apply {
             setOnTouchListener { _, event -> onTouch(event) }
@@ -272,51 +304,196 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
         surfaceView.holder.addCallback(this)
     }
 
-    private fun field(label: String) = EditText(this).apply {
-        hint = label
-        isSingleLine = true
-        importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+    private fun buildConnectionCard() {
+        val card = UiTheme.card(this)
+        card.addView(UiTheme.sectionTitle(this, getString(R.string.viewer_connection_title)))
+        val addressRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val hostColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        hostColumn.addView(UiTheme.label(this, getString(R.string.viewer_host_label)))
+        host = UiTheme.field(this, getString(R.string.viewer_host_hint)).apply {
+            contentDescription = getString(R.string.viewer_host_label)
+            inputType = EditorInfo.TYPE_CLASS_TEXT or EditorInfo.TYPE_TEXT_VARIATION_URI
+        }
+        hostColumn.addView(host, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 6.dp })
+        addressRow.addView(hostColumn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { topMargin = 12.dp; marginEnd = 12.dp })
+        val portColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        portColumn.addView(UiTheme.label(this, getString(R.string.viewer_port_label)))
+        port = UiTheme.field(this, "1–65535").apply {
+            setText(getString(R.string.default_port))
+            inputType = EditorInfo.TYPE_CLASS_NUMBER
+            contentDescription = getString(R.string.viewer_port_label)
+        }
+        portColumn.addView(port, LinearLayout.LayoutParams(112.dp, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 6.dp })
+        addressRow.addView(portColumn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 12.dp })
+        card.addView(addressRow)
+        addLabeledField(card, getString(R.string.viewer_password_label), getString(R.string.viewer_password_hint)).also { field ->
+            password = field
+            field.inputType = EditorInfo.TYPE_CLASS_TEXT or EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
+            field.isSaveEnabled = false
+        }
+        addLabeledField(card, getString(R.string.viewer_fingerprint_label), getString(R.string.viewer_fingerprint_hint)).also { field ->
+            fingerprint = field
+            field.typeface = Typeface.MONOSPACE
+            field.textSize = 14f
+        }
+        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        connect = UiTheme.button(this, getString(R.string.connect), filled = true).apply { setOnClickListener { startConnection() } }
+        disconnect = UiTheme.button(this, getString(R.string.disconnect)).apply { setOnClickListener { stopConnection() } }
+        buttons.addView(connect, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 10.dp })
+        buttons.addView(disconnect, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        card.addView(buttons, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 14.dp })
+        form.addView(card, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 12.dp })
     }
 
-    private fun textView() = TextView(this).apply { setPadding(0, 6, 0, 6) }
+    private fun buildControlCard() {
+        val card = UiTheme.card(this)
+        card.addView(UiTheme.sectionTitle(this, getString(R.string.viewer_control_title)))
+        localControl = CheckBox(this).apply {
+            text = getString(R.string.viewer_local_control)
+            textSize = 15f
+            setTextColor(UiTheme.text)
+            minHeight = 52.dp
+            buttonTintList = android.content.res.ColorStateList.valueOf(UiTheme.primary)
+            setOnCheckedChangeListener { _, checked -> DfyControllerNative.setControlAllowed(checked); updateControls() }
+        }
+        card.addView(localControl, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 6.dp })
+        card.addView(UiTheme.body(this, getString(R.string.viewer_control_hint), muted = true))
+        pinView = UiTheme.body(this, muted = true).apply { typeface = Typeface.MONOSPACE; textSize = 12f }
+        card.addView(pinView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 12.dp })
+        permissionsView = UiTheme.body(this, muted = true).apply { textSize = 12f }
+        card.addView(permissionsView)
+        form.addView(card, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 12.dp })
+    }
 
-    private val Int.dp: Int get() = (this * resources.displayMetrics.density).toInt()
+    private fun buildQualityCard() {
+        val card = UiTheme.card(this)
+        card.addView(UiTheme.sectionTitle(this, getString(R.string.viewer_quality_title)))
+        card.addView(UiTheme.body(this, getString(R.string.viewer_quality_subtitle), muted = true).apply { setPadding(0, 6.dp, 0, 0) })
+        qualityWidth = qualityField(getString(R.string.viewer_max_width))
+        qualityHeight = qualityField(getString(R.string.viewer_max_height))
+        qualityFps = qualityField(getString(R.string.viewer_fps))
+        qualityBitrate = qualityField(getString(R.string.viewer_bitrate))
+        addSettingRow(card, qualityWidth, qualityHeight)
+        addSettingRow(card, qualityFps, qualityBitrate)
+        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        applyQuality = UiTheme.button(this, getString(R.string.apply), filled = true).apply { setOnClickListener { applyQualityLimit() } }
+        resetQuality = UiTheme.button(this, getString(R.string.reset)).apply { setOnClickListener { resetQualityLimit() } }
+        buttons.addView(applyQuality, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 10.dp })
+        buttons.addView(resetQuality, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        card.addView(buttons, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 14.dp })
+        qualityView = UiTheme.body(this, getString(R.string.viewer_quality_waiting), muted = true).apply {
+            textSize = 12f
+            setPadding(0, 12.dp, 0, 0)
+        }
+        card.addView(qualityView)
+        form.addView(card, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 12.dp })
+    }
+
+    private fun buildStatsCard() {
+        val card = UiTheme.card(this)
+        card.addView(UiTheme.sectionTitle(this, getString(R.string.statistics)))
+        statsView = UiTheme.body(this, muted = true).apply { textSize = 13f; setPadding(0, 8.dp, 0, 0) }
+        card.addView(statsView)
+        statsDetailView = UiTheme.body(this, muted = true).apply {
+            typeface = Typeface.MONOSPACE
+            textSize = 11f
+            setTextIsSelectable(true)
+            visibility = View.GONE
+        }
+        card.addView(statsDetailView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 10.dp })
+        statsToggle = UiTheme.button(this, getString(R.string.statistics_detail)).apply {
+            setOnClickListener {
+                val expanded = statsDetailView.visibility == View.VISIBLE
+                statsDetailView.visibility = if (expanded) View.GONE else View.VISIBLE
+                text = getString(if (expanded) R.string.statistics_detail else R.string.statistics_collapse)
+            }
+        }
+        card.addView(statsToggle, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 8.dp })
+        form.addView(card)
+    }
+
+    private fun addLabeledField(parent: LinearLayout, label: String, hint: String): EditText {
+        parent.addView(UiTheme.label(this, label), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 12.dp })
+        return UiTheme.field(this, hint).apply {
+            contentDescription = label
+            parent.addView(this, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 6.dp })
+        }
+    }
+
+    private fun qualityField(label: String) = UiTheme.field(this, label).apply {
+        contentDescription = label
+        inputType = EditorInfo.TYPE_CLASS_NUMBER
+    }
+
+    private fun addSettingRow(parent: LinearLayout, first: EditText, second: EditText) {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(first, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(second, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = 12.dp })
+        parent.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 12.dp })
+    }
+
+    private fun updateResponsiveLayout() {
+        if (!::root.isInitialized) return
+        val metrics = resources.displayMetrics
+        val widthDp = metrics.widthPixels / metrics.density
+        val heightDp = metrics.heightPixels / metrics.density
+        val wide = ViewerHelpers.viewerLayoutMode(widthDp, heightDp) == ViewerHelpers.ViewerLayout.WIDE
+        portraitRoot.removeAllViews()
+        wideRoot.removeAllViews()
+        root.removeAllViews()
+        if (wide) {
+            val settingsWidth = (widthDp * 0.40f).toInt().coerceIn(300, 440).dp
+            wideRoot.addView(videoShell, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            wideRoot.addView(settingsScroll, LinearLayout.LayoutParams(settingsWidth, LinearLayout.LayoutParams.MATCH_PARENT))
+            root.addView(wideRoot, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        } else {
+            val videoHeight = (heightDp * 0.47f).toInt().coerceIn(340, 480).dp
+            portraitRoot.addView(videoShell, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, videoHeight))
+            portraitRoot.addView(settingsScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            root.addView(portraitRoot, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        }
+    }
 
     private fun startConnection() {
+        listOf(host, port, fingerprint, password).forEach { it.error = null }
         val address = host.text.toString().trim()
         val parsedPort = port.text.toString().toIntOrNull()
         if (address.isEmpty() || parsedPort == null || parsedPort !in 1..65535) {
-            Toast.makeText(this, "Enter a host and a valid port", Toast.LENGTH_SHORT).show()
+            host.error = getString(R.string.viewer_connection_error)
+            host.requestFocus()
             return
         }
         val pin = ViewerHelpers.normalizeFingerprint(fingerprint.text.toString())
         if (pin == null) {
-            Toast.makeText(this, "Enter the agent's 64-character SPKI fingerprint", Toast.LENGTH_SHORT).show()
+            fingerprint.error = getString(R.string.viewer_fingerprint_error)
+            fingerprint.requestFocus()
             return
         }
         val secret = password.text.toString()
-        password.text.clear()
         if (secret.toByteArray(Charsets.UTF_8).size !in 16..1024) {
-            Toast.makeText(this, "Password must be 16–1024 UTF-8 bytes", Toast.LENGTH_SHORT).show()
+            password.error = getString(R.string.viewer_password_error)
+            password.requestFocus()
             return
         }
+        password.text.clear()
         stopConnection()
         state = "connecting"
-        detail = address
-        pinView.text = "Pin: ${ViewerHelpers.formatFingerprint(pin)}"
+        detail = ""
+        pinView.text = getString(R.string.viewer_pin, ViewerHelpers.formatFingerprint(pin))
         try {
             DfyControllerNative.connect(address, parsedPort, secret, pin)
             DfyControllerNative.setControlAllowed(localControl.isChecked)
             updateControls()
         } catch (error: Exception) {
             state = "error"
-            detail = error.message ?: "Connection failed"
+            detail = error.message ?: getString(R.string.viewer_connect_failed)
             updateControls()
         }
     }
 
     private fun stopConnection() {
         decodedFrames.set(0)
+        hasFrame = false
         surfaceRecoveryCount = 0
         ui.removeCallbacks(longPress)
         ui.removeCallbacks(rebuildSurface)
@@ -333,6 +510,7 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
         if (::stateView.isInitialized) {
             state = "disconnected"
             detail = ""
+            qualityView.text = getString(R.string.viewer_quality_waiting)
             updateControls()
         }
     }
@@ -408,7 +586,7 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
         detail = message
         if (connected && surfaceRecoveryCount < MAX_SURFACE_RECOVERIES) {
             surfaceRecoveryCount++
-            detail = "$message; rebuilding video surface ($surfaceRecoveryCount/$MAX_SURFACE_RECOVERIES)"
+            detail = getString(R.string.viewer_recovering, message, surfaceRecoveryCount, MAX_SURFACE_RECOVERIES)
             ui.postDelayed(rebuildSurface, SURFACE_RECOVERY_DELAY_MS)
         }
         detailView.text = detail
@@ -428,6 +606,7 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
         this.state = state
         this.detail = detail
         connected = state == "connected"
+        if (!connected) hasFrame = false
         updateControls()
     }
 
@@ -447,7 +626,7 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
         videoWidth = width
         videoHeight = height
         decoder.setVideoConfig(width, height)
-        qualityView.text = "Video quality: ${width}x${height}, $fps fps, $bitrateKbps kbps"
+        qualityView.text = getString(R.string.viewer_quality_value, width, height, fps, bitrateKbps)
     }
 
     override fun onSession(permissions: Int, capabilities: Set<String>) {
@@ -470,29 +649,33 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
             width < 2 || height < 2 || width % 2 != 0 || height % 2 != 0 ||
             fps !in 1..120 || bitrate !in 100..100_000
         ) {
-            Toast.makeText(this, "Use positive even dimensions, FPS 1–120 and bitrate 100–100000 kbps", Toast.LENGTH_LONG).show()
+            qualityWidth.error = getString(R.string.viewer_quality_error)
+            qualityWidth.requestFocus()
             return
         }
+        listOf(qualityWidth, qualityHeight, qualityFps, qualityBitrate).forEach { it.error = null }
         try {
             if (DfyControllerNative.setQualityControl(width, height, fps, bitrate)) {
-                qualityView.text = "Video quality: requesting ${width}x${height}, $fps fps, $bitrate kbps"
+                qualityView.text = getString(R.string.viewer_quality_requesting, width, height, fps, bitrate)
             } else {
-                Toast.makeText(this, "Agent did not authorize this quality request", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, R.string.viewer_quality_denied, Toast.LENGTH_LONG).show()
             }
         } catch (error: IllegalArgumentException) {
-            Toast.makeText(this, error.message, Toast.LENGTH_LONG).show()
+            qualityWidth.error = error.message
+            qualityWidth.requestFocus()
         }
     }
 
     private fun resetQualityLimit() {
         try {
             if (DfyControllerNative.setQualityControl(0, 0, 0, 0)) {
-                qualityView.text = "Video quality: restoring Agent startup ceiling"
+                qualityView.text = getString(R.string.viewer_quality_resetting)
             } else {
-                Toast.makeText(this, "Agent did not authorize quality reset", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, R.string.viewer_quality_denied, Toast.LENGTH_LONG).show()
             }
         } catch (error: IllegalArgumentException) {
-            Toast.makeText(this, error.message, Toast.LENGTH_LONG).show()
+            qualityWidth.error = error.message
+            qualityWidth.requestFocus()
         }
     }
 
@@ -504,9 +687,24 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
     private fun updateControls() {
         if (!::stateView.isInitialized) return
         controlAllowed = connected && localControl.isChecked && hostControl()
-        stateView.text = "State: $state"
+        val (label, color) = when (state) {
+            "connected" -> R.string.state_connected to UiTheme.success
+            "connecting" -> R.string.state_connecting to UiTheme.warning
+            "error" -> R.string.state_error to UiTheme.error
+            else -> R.string.state_disconnected to UiTheme.muted
+        }
+        stateBadge.text = getString(label)
+        UiTheme.setBadge(stateBadge, color)
+        stateView.text = getString(label)
+        stateView.setTextColor(color)
         detailView.text = detail
-        permissionsView.text = "Permissions: ${permissionNames()}\nCapabilities: ${if (capabilities.isEmpty()) "none" else capabilities.joinToString()}"
+        detailView.setTextColor(if (state == "error") UiTheme.error else UiTheme.muted)
+        permissionsView.text = getString(
+            R.string.viewer_permissions,
+            getString(if (permissions and DfyControllerNative.PERM_VIEW != 0) R.string.enabled else R.string.disabled),
+            getString(if (permissions and DfyControllerNative.PERM_CONTROL != 0) R.string.enabled else R.string.disabled),
+            getString(if (permissions and DfyControllerNative.PERM_SYSTEM_ACTION != 0) R.string.enabled else R.string.disabled),
+        )
         connect.isEnabled = state != "connecting" && state != "connected"
         disconnect.isEnabled = state != "disconnected"
         remoteBack.isEnabled = canUseSystemActions()
@@ -515,27 +713,51 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
         applyQuality.isEnabled = canAdjustQuality()
         resetQuality.isEnabled = canAdjustQuality()
         surfaceView.keepScreenOn = connected
+        renderVideoState()
     }
 
-    private fun permissionNames(): String {
-        val names = mutableListOf<String>()
-        if (permissions and DfyControllerNative.PERM_VIEW != 0) names += "view"
-        if (permissions and DfyControllerNative.PERM_CONTROL != 0) names += "control"
-        if (permissions and DfyControllerNative.PERM_SYSTEM_ACTION != 0) names += "system-action"
-        return if (names.isEmpty()) "none" else names.joinToString()
+    private fun renderVideoState() {
+        if (!::videoOverlay.isInitialized) return
+        val copy = when {
+            state == "connecting" -> R.string.viewer_connecting_title to R.string.viewer_connecting_body
+            state == "error" -> R.string.viewer_error_title to R.string.viewer_error_body
+            connected && !hasFrame -> R.string.viewer_waiting_title to R.string.viewer_waiting_body
+            connected -> null
+            state == "disconnected" && detail.isNotBlank() -> R.string.viewer_disconnected_title to R.string.viewer_disconnected_body
+            else -> R.string.viewer_empty_title to R.string.viewer_empty_body
+        }
+        videoOverlay.visibility = if (copy == null) View.GONE else View.VISIBLE
+        if (copy != null) {
+            overlayTitle.setText(copy.first)
+            overlayBody.setText(copy.second)
+        }
     }
 
     private fun updateStats() {
         if (!::statsView.isInitialized) return
         try {
             val stats = JSONObject(DfyControllerNative.stats())
-            statsView.text = "RX ${stats.optLong("packets_recv")} packets / ${stats.optLong("bytes_recv")} bytes | " +
-                "frames ${stats.optLong("frames_assembled")} assembled, ${stats.optLong("frames_submitted")} submitted | " +
-                "key ${stats.optLong("key_packets")} | malformed ${stats.optLong("malformed")} | " +
-                "dropped ${stats.optLong("dropped_frames")} | input ${stats.optLong("input_moves") + stats.optLong("input_events")} | " +
-                "rejected ${stats.optLong("rejected_input")} | quality ${stats.optLong("quality_controls")} sent, ${stats.optLong("quality_control_errors")} errors | RTT ${stats.optLong("rtt_ms")} ms"
+            val packets = stats.optLong("packets_recv")
+            val bytes = stats.optLong("bytes_recv")
+            val assembled = stats.optLong("frames_assembled")
+            val submitted = stats.optLong("frames_submitted")
+            val key = stats.optLong("key_packets")
+            val malformed = stats.optLong("malformed")
+            val dropped = stats.optLong("dropped_frames")
+            val moves = stats.optLong("input_moves")
+            val inputEvents = stats.optLong("input_events")
+            val rejected = stats.optLong("rejected_input")
+            val qualitySent = stats.optLong("quality_controls")
+            val qualityErrors = stats.optLong("quality_control_errors")
+            val rtt = stats.optLong("rtt_ms")
+            statsView.text = getString(R.string.viewer_statistics, packets, submitted, rtt, dropped)
+            statsDetailView.text = getString(
+                R.string.viewer_statistics_detail, packets, bytes, assembled, submitted, key,
+                malformed, dropped, rejected, moves + inputEvents, qualitySent, qualityErrors, rtt,
+            )
         } catch (_: Exception) {
-            statsView.text = "Statistics unavailable"
+            statsView.text = getString(R.string.statistics_unavailable)
+            statsDetailView.text = ""
         }
     }
 
@@ -566,11 +788,6 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
         super.onPause()
     }
 
-    override fun onStop() {
-        stopConnection()
-        super.onStop()
-    }
-
     override fun onDestroy() {
         ui.removeCallbacks(statsPoll)
         ui.removeCallbacks(longPress)
@@ -580,6 +797,8 @@ class ViewerActivity : ComponentActivity(), DfyControllerNative.Listener, Surfac
         DfyControllerNative.disconnect()
         super.onDestroy()
     }
+
+    private val Int.dp: Int get() = (this * resources.displayMetrics.density).toInt()
 
     private companion object {
         const val MAX_SURFACE_RECOVERIES = 3

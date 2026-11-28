@@ -122,7 +122,7 @@ if [ "$HAS_APP" = 1 ]; then
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Dafeiyu Remote</string>
+  <string>大肥鱼远程</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -131,6 +131,10 @@ if [ "$HAS_APP" = 1 ]; then
   <string>${VERSION}</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.3</string>
+  <key>LSUIElement</key>
+  <false/>
+  <key>NSHumanReadableCopyright</key>
+  <string>Copyright 2026 Dafeiyu Remote contributors</string>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSScreenCaptureUsageDescription</key>
@@ -195,7 +199,7 @@ if [ "$FORMAT" = dmg ] || [ "$FORMAT" = all ]; then
   fi
   DMG="$OUTPUT_DIR/dafeiyu-${VERSION}-macos-${ARCH}-${LABEL}.dmg"
   rm -f -- "$DMG"
-  hdiutil create -volname "Dafeiyu Remote $VERSION" -srcfolder "$DMG_SOURCE" -format UDZO -ov "$DMG" >/dev/null
+  hdiutil create -volname "大肥鱼远程 $VERSION" -srcfolder "$DMG_SOURCE" -format UDZO -ov "$DMG" >/dev/null
   if [ -n "${MAC_DMG_SIGNING_IDENTITY:-}" ]; then
     need codesign
     codesign --force --sign "$MAC_DMG_SIGNING_IDENTITY" "$DMG"

@@ -7,8 +7,8 @@ source "$SCRIPT_DIR/../common.sh"
 
 usage() {
   cat <<'EOF'
-Build native Linux DEB/RPM packages from dfy and dfy-relay binaries.
-  --binary-dir DIR   Directory containing both ELF binaries (required)
+Build native Linux DEB/RPM packages from dfy, dfy-relay, and dfy-manager binaries.
+  --binary-dir DIR   Directory containing all three ELF binaries (required)
   --version VERSION  Semantic version, optional v prefix (required)
   --arch ARCH        x86_64 or aarch64 (required)
   --format FORMAT    deb, rpm, or all (default all)
@@ -37,7 +37,7 @@ if [ "$FORMAT" = deb ] || [ "$FORMAT" = all ]; then need dpkg-deb; fi
 if [ "$FORMAT" = rpm ] || [ "$FORMAT" = all ]; then need rpmbuild; fi
 need python3
 python3 "$SCRIPT_DIR/../native_binary.py" "$ARCH-unknown-linux-gnu" \
-  "$BINARY_DIR/dfy" "$BINARY_DIR/dfy-relay"
+  "$BINARY_DIR/dfy" "$BINARY_DIR/dfy-relay" "$BINARY_DIR/dfy-manager"
 ROOT="$(repo_root)"
 mkdir -p "$OUTPUT_DIR"
 WORK="$(mktemp -d)"
@@ -46,7 +46,7 @@ STAGE="$WORK/root"
 PACKAGE_PATHS=()
 install -d -m 0755 "$STAGE/usr/bin" "$STAGE/usr/lib/systemd/system" "$STAGE/etc/dfy-relay" "$STAGE/usr/share/doc/dafeiyu" \
   "$STAGE/usr/share/applications" "$STAGE/usr/share/icons/hicolor/256x256/apps"
-install -m 0755 "$BINARY_DIR/dfy" "$BINARY_DIR/dfy-relay" "$STAGE/usr/bin/"
+install -m 0755 "$BINARY_DIR/dfy" "$BINARY_DIR/dfy-relay" "$BINARY_DIR/dfy-manager" "$STAGE/usr/bin/"
 install -m 0644 "$ROOT/deploy/dfy-relay.service" "$STAGE/usr/lib/systemd/system/dfy-relay.service"
 install -m 0644 "$ROOT/deploy/relay.toml.example" "$STAGE/etc/dfy-relay/relay.toml.example"
 install -m 0644 "$ROOT/packaging/linux/dfy-256.png" "$STAGE/usr/share/icons/hicolor/256x256/apps/dfy.png"
@@ -68,10 +68,10 @@ Section: net
 Priority: optional
 Architecture: $deb_arch
 Maintainer: Dafeiyu Remote Project <noreply@users.noreply.github.com>
-Depends: libc6 (>= 2.39), xvfb, x11-utils, x11-xserver-utils
+Depends: libc6 (>= 2.39), libx11-6, libxkbcommon0, libwayland-client0, xvfb, x11-utils, x11-xserver-utils
 Installed-Size: $size
-Description: Dafeiyu Remote command-line tools and DFYP/1 relay
- Cross-platform remote-control CLI binaries and an authenticated UDP relay.
+Description: Dafeiyu Remote desktop and command-line tools
+ Cross-platform remote-control Manager, CLI binaries and an authenticated UDP relay.
  The relay service is installed disabled; generate a relay_key before enabling it.
 EOF
   install -m 0755 "$SCRIPT_DIR/debian/postinst" "$control/postinst"
@@ -93,7 +93,7 @@ build_rpm() {
   top="$WORK/rpmbuild"
   install -d -m 0755 "$top/BUILD" "$top/BUILDROOT" "$top/RPMS" "$top/SOURCES" "$top/SPECS" "$top/SRPMS"
   cat > "$top/SPECS/dafeiyu.spec" <<EOF
-%global __requires_exclude_from ^%{_bindir}/dfy(-relay)?$
+%global __requires_exclude_from ^%{_bindir}/dfy(-relay|-manager)?$
 Name: dafeiyu
 Version: $VERSION
 Release: 1
@@ -102,6 +102,9 @@ License: LicenseRef-PolyForm-Noncommercial-1.0.0
 URL: https://github.com/kanghelyu/dafeiyu
 BuildArch: $rpm_arch
 Requires: glibc >= 2.39
+Requires: libX11
+Requires: libxkbcommon
+Requires: wayland-libs-client
 Requires: coreutils
 Requires: shadow-utils
 Requires: glibc-common
@@ -128,6 +131,7 @@ if [ -d /run/systemd/system ]; then systemctl daemon-reload >/dev/null 2>&1 || t
 %defattr(0644,root,root)
 %attr(0755,root,root) /usr/bin/dfy
 %attr(0755,root,root) /usr/bin/dfy-relay
+%attr(0755,root,root) /usr/bin/dfy-manager
 /usr/lib/systemd/system/dfy-relay.service
 %attr(0644,root,root) /usr/share/applications/dafeiyu.desktop
 %attr(0644,root,root) /usr/share/icons/hicolor/256x256/apps/dfy.png

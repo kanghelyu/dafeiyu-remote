@@ -1,6 +1,6 @@
 # 功能实现与验证证据矩阵
 
-快照日期：2026-11-28。起始HEAD：`7f1d67c1bd37e5323a4b3bcbac020097896c3708`（`feat/macos-native` 分支含 macOS 原生实现与打包更新）。需求以[完整原文](requirements/000-original-user-prompt.md)及[28个原文模块](requirements/COVERAGE.md)为准；本表不改变范围。
+快照日期：2026-11-28。远端 macOS 基线为 `f55cbfb364cfa3f8082f133448c8984e6c66bba0`（`v0.2.0`），其上有本地原生 UI 重构 `ed8b8e0` 与全平台打磨；早期证据仍保留原起始 HEAD `7f1d67c1bd37e5323a4b3bcbac020097896c3708` 的上下文。需求以[完整原文](requirements/000-original-user-prompt.md)及[28个原文模块](requirements/COVERAGE.md)为准；本表不改变范围。
 
 ## 状态读法
 
@@ -19,7 +19,7 @@
 | Linux主控与被控 | 004/020 | X11采集、JPEG及窗口共享层；Linux输入/剪贴板后端；Linux主控XInput2优先、X11根窗口核心事件降级，XKB物理名↔HID映射，10ms移动合并，停止热键释放 | 源码E03/E04/E05；Linux check、dfy-input 31单测、CLI 2单测＋1隔离Xvfb真实采集通过；Windows→Linux同机QEMU跨OS视频/指针/双向剪贴板/文件部分通过，见STATUS | 两台独立设备、Linux↔Linux全链路、真实桌面XInput2/焦点/IME/多屏、Linux原生Wayland；不能只交叉编译 |
 | Linux原生Wayland | 004/006/007/008 | 输入/剪贴板明确拒绝；XWayland不等于全桌面授权采集 | 实现边界E03/E04/E05 | Portal/PipeWire等经授权原生路径、撤权/重启测试 |
 | macOS主控与被控 | 004/020 | 已实现ScreenCaptureKit采集、VideoToolbox H.264编解码、HID↔CGKeyCode/`CGEvent`注入、`CGEventTap`主控采集、`NSPasteboard`剪贴板、CoreAudio重采样、主线程`winit` Viewer与Retina `dfy-manager`、`Dafeiyu Remote.app`及PKG/DMG | Apple Silicon macOS 27.2.1实测VideoToolbox 5/5、Clipboard 29+1+1、Audio 12/12、Capture枚举2940×1912、Input 25+7+1、Manager 11/11、CLI 46/46、实包PKG/DMG构建挂载与`selftest`通过（E20）；无TCC回环优雅报错不崩溃 | 授Screen Recording / Accessibility TCC后的真实屏幕像素抓取、真实键鼠注入/热键、GUI交互目视、Apple ID签名公证、Mac↔Windows物理机互控 |
-| Android主控与被控 | 004/015/020 | Kotlin前台服务、MediaProjection、VirtualDisplay、MediaCodec与Rust JNI/Quinn宿主；主控和被控原生角色已建立；控制器质量反馈、宿主运行时编码器重建、超时/旧线程/旧投影回调/跨主机代际隔离已接线；无活动Viewer时外部帧入口拒绝入队，但尚未停止MediaCodec编码 | 最终Debug APK（SHA-256 `f5aad85a24fff0a12a7ca2b24e14441b5e435da66c3eb0c912d5bba02fa815de`）已在API36模拟器安装；Rust 17、Kotlin/Android 34测试通过，ARM64/x86_64 Release native构建通过；当前Android主控真实接收、组装、提交并显示Windows WGC画面；Android被控经测试桥发送H.264，Windows解码真实授权弹窗、动画设置页及静止设置页；最终包横屏自由窗口DfyViewerPixels非黑（`max=254`、176/1776采样非黑），Apply `1280×720/120fps/12000kbps`确认`404×718/120fps/12000kbps`，Reset确认`1080×1920/120fps/12000kbps`，硬件Back后Viewer仍connected；MFT低延迟修复后静止设置页8秒24重组/8解码/0解析失败，见STATUS | 测试桥不是产品网络路径；Android发送侧首帧/编码启动延迟仍待优化；主控真机/输入、被控真机/跨机、设备端反复热调整、独立多虚拟屏/无头、文件/剪贴板/输入互操作、厂商限制、签名安装包；空闲编码器暂停/恢复与能耗未验收；持续120fps/12Mbps、弱网、进程死亡授权恢复、预测性Back手势仍未验收 |
+| Android主控与被控 | 004/015/020 | Kotlin前台服务、MediaProjection、VirtualDisplay、MediaCodec与Rust JNI/Quinn宿主；主控和被控原生角色已建立；Host/Viewer统一原生主题、卡片、分区、状态、表单与会话操作；控制器质量反馈、宿主运行时编码器重建、超时/旧线程/旧投影回调/跨主机代际隔离已接线；无活动Viewer时外部帧入口拒绝入队，但尚未停止MediaCodec编码 | 历史最终Debug APK（SHA-256 `f5aad85a24fff0a12a7ca2b24e14441b5e435da66c3eb0c912d5bba02fa815de`）已在API36模拟器完成Rust 17、Kotlin/Android 34回归、真实Windows画面显示、非黑像素、Apply/Reset与硬件Back验收；新UI Debug APK（SHA-256 `95c2d382d2dad92ae69b0559583e453fbee66f4de1c6d760c49b3efe5e657c36`）完成35测试、lint 0错误/25警告及构建，见STATUS/E21 | 新UI未取得设备目视验收；历史测试桥不是产品网络路径；Android发送侧首帧/编码启动延迟仍待优化；主控真机/输入、被控真机/跨机、设备端反复热调整、独立多虚拟屏/无头、文件/剪贴板/输入互操作、厂商限制、签名安装包；空闲编码器暂停/恢复与能耗未验收；持续120fps/12Mbps、弱网、进程死亡授权恢复、预测性Back手势仍未验收 |
 | 虚拟显示统一核心接口 | 006/027 | 独立dfy-vdisplay、spec、能力位、后端capture endpoint与错误模型；CLI管理及Agent生命周期接线 | 接口/规格测试；Linux真实Xvfb后端测试E06 | Windows/macOS/Android统一验收、会话级所有权、权限与后台恢复 |
 | Windows虚拟显示 | 006/027 | 用户态驱动枚举/IOCTL；另有驱动工程 | 实现代码/协议测试，不是驱动装机验收E06 | 驱动回调/像素获取/EDID、WDK签名、HLK/WHQL、DXGI端点、无头、多屏、热改模式、故障恢复 |
 | Linux虚拟显示 | 006/027 | 独立Xvfb后端、PID/start-time/cmdline+flock所有权、几何验证、调整/恢复；Agent/采集/输入按选定端点接线；活动采集故障自动重建并请求关键帧，输入按共享最新端点重连；Agent新增5s后台健康检查任务；DPI 以 `-dpi` 传入 Xvfb | Debian QEMU真实后端测试、Release及真实DEB安装后Agent→View 640×480链路均通过；当前Release活动终止Xvfb后188/188解码/0失败，换端点真实X11输入重连读回(123,234)；无Viewer连接时后台任务在8s内重建被杀Xvfb；`xdpyinfo`读回120DPI；xmessage真实窗口令两帧相差40,181像素，见STATUS | 网络输入、跨机、动态刷新率、Wayland/DRM扩展显示、复杂GUI应用 |
@@ -38,7 +38,7 @@
 | JPEG跨平台基础串流 | 009 | 软件JPEG/MJPEG后端 | 实现代码/测试定义E07 | Linux真实性能、帧率/CPU、跨机可用性 |
 | 自适应码率/分辨率/帧率 | 009 | 接收端500ms质量反馈、Quinn RTT/丢包、确定性ABR、共享 adaptation state、事务重建编码器；用户fps/码率/分辨率是上限，宽高为保持宿主比例的最大包围盒，fps支持1–120；全零请求恢复启动上限；首帧前发送已确认的初始`VideoConfig`；VBR实测吞吐只限制推荐码率，不再单独触发降级/恢复；Android外部编码器运行时控制及跨主机代际隔离已接线 | Windows真实WGC/H.264/QUIC 55秒受控排队验收：473重组/473解码/0解析失败、84反馈窗口，2944×1856/120fps逐级降至956×602/40fps，再恢复至1488×938/63fps；7次设置/7次重建/0错误；loopback恢复用户上限及关键帧回归通过；CLI已接编码器重建工厂。Android UI经认证控制请求320×200/30fps/2000kbps，宿主确认316×198/30fps/500kbps，Reset确认2940×1852/120fps/500kbps；两端各2次成功/0错误，见STATUS；Android Rust/Kotlin构建与竞态回归通过 | 恢复到120fps上限的长时复测、真实弱网推荐质量、Android设备端反复重建实测、H.264/MJPEG各路径与长稳 |
 | 区域更新与高效采集 | 009 | DXGI相关逻辑；Linux X11当前全帧GetImage | 局部实现E03 | Linux增量/共享内存等效率路径、端到端区域更新、性能量化 |
-| 质量档位与8项连接统计 | 009/017 | 窗口渲染统计/标题；`dfy-ui`新增`ConnectionStats`与`title_with_connection`展示分辨率/FPS/码率/RTT/丢包/解码与渲染耗时/路径/Relay并由`dfy-cli`每500ms推送；View路径采样驱动切换；候选路径按`RequestProbe`发轻量QUIC探测 | `dfy-ui` 62+3单测通过；弱网自动切换与64B/1200B MTU丢包探测对照实测见STATUS及`notes/nonblocking-migration-probe-20261127.md` | 四档策略与真实Windows交互桌面标题栏目视复核 |
+| 质量档位与8项连接统计 | 009/017 | 窗口渲染统计/标题；`dfy-ui`的`ConnectionStats`与`title_with_connection`展示分辨率/FPS/码率/RTT/丢包/解码与渲染耗时/路径/Relay并由`dfy-cli`每500ms推送；View路径采样驱动切换；候选路径按`RequestProbe`发轻量QUIC探测；中文统计卡支持长文本省略 | `dfy-ui` 78+3测试通过；Windows统计卡真实显示并通过；弱网自动切换与64B/1200B MTU丢包探测对照实测见STATUS及`notes/nonblocking-migration-probe-20261127.md` | 四档策略、真实Windows交互桌面标题栏目视与真实链路统计复核 |
 
 ## 网络、中继与安全
 
@@ -65,16 +65,16 @@
 
 | 能力 | 需求模块 | 阅读到的实现状态 | 当前证据范围 | 尚缺的验收 |
 | --- | --- | --- | --- | --- |
-| 桌面Viewer、全屏、缩放、输入 | 017 | winit/softbuffer窗口、帧邮箱、快捷键/滚轮 | 实现代码/纯逻辑测试E08 | 各OS真实窗口、DPI/焦点、多屏与性能 |
-| 商业级主界面和会话工具 | 017 | Viewer不是完整设备管理主界面；`dfy-manager`已接入`assets/icon-512.png`窗口图标、`ControlFlow::Wait`、空配置首次启动、Relay策略轮换(`S`)与脱敏导出(`E`)、Virtual Displays、Diagnostics及Devices书签页签(`F`收藏/`Enter`拉起Viewer) | `dfy-manager` 9单测在Linux guest全通过（含图标解码、策略轮换、脱敏导出、Devices排序）；Windows历史起窗截图见`notes/manager-ui-20261127.md` | 完整设备发现/在线状态/设置/键映射/剪贴板/文件/音频/权限UI、真实击键与Windows交互桌面复核 |
-| 1分钟Relay配置体验 | 013/017 | CLI参数，非普通用户完整流程 | 未测 | 新用户计时、错误诊断、导入导出、当前Relay明确显示 |
+| 桌面Viewer、全屏、缩放、输入 | 017 | 原生`winit`/`softbuffer`；DPI缩放、letterbox、帧邮箱、输入隔离；中文圆角悬浮工具条含全屏、暂停/继续、连接统计、断开，支持自动隐藏与键盘导航；内嵌OFL中文字体原生抗锯齿栅格 | Windows宽窗口与706×428窄窗口真实起窗，统计卡、暂停/继续、快捷键及按钮点击通过；`dfy-ui` 78测试+3 doctest、strict Clippy通过，见STATUS/E21 | 高DPI屏幕、macOS/Linux新UI目视、多屏/真实跨机控制与性能；统计默认显示演示数据，不等于真实链路延迟 |
+| 商业级主界面和会话工具 | 017 | `dfy-manager`改为`eframe`/`egui`原生窗口；深蓝/薄荷视觉，设备、Agent、中继、显示器、诊断五页；统一卡片/状态/空态/加载/错误/进度与校验；680px以上响应式导航；口令仅stdin且不写入设备书签 | Windows 1122×752与682×752五页及添加设备校验弹窗目视通过；8测试与strict Clippy通过；Linux包与Release流程补齐Manager；macOS bundle显示品牌“大肥鱼远程”，见STATUS/E21 | 设备发现/在线状态、设置、键映射、剪贴板/文件/音频/权限UI；macOS/Linux新UI目视；虚拟显示创建/已填充状态因本机无后端未测 |
+| 1分钟Relay配置体验 | 013/017 | Manager中继页使用档案与策略，不要求展示或复制原始密钥；仍保留CLI参数 | Windows Manager页面目视通过，见E21 | 新用户计时、真实中继连接与失败诊断、导入导出交互 |
 | 文件传输与目录/断点/限流 | 018/020 | sender/receiver/path/目录计划、ACK/偏移/大小防护 | 集成测试定义E14；历史本机3MiB哈希报告E01；Windows→Linux同机QEMU真实51B文件offer/块/确认/完成及SHA-256一致；Linux→Windows同机QEMU真实50B文件offer/块/确认/完成及SHA-256一致，见STATUS | 两台独立设备、双向大文件/目录/断点/限流、迁移中恢复、UI授权与覆盖确认 |
 | 音频 | 009/018/020 | 未见完整audio模块链路 | 未实现/未测 | 原生采集/播放/设备/权限、单/双向、AV同步 |
 | 其余20项扩展评估 | 018 | 原文完整保留，未按需求全部实现 | 未完整实现 | 对每项记录必要性、成本、隐私许可与阶段；不阻塞核心 |
 | 稳定17模块架构 | 019 | 14个Rust crate承载若干模块；部分边界未落地 | 源码组织，不是全部17能力完成 | Discovery/Auth/Audio/Android/Server Mgmt等边界与稳定API |
 | 规定平台×路径×场景测试 | 021 | 单元/loopback/少量历史同机；覆盖率未完整给出 | 测试定义/历史证据 | 9组指定方向×P2P/Relay×16场景，记录真实环境与覆盖率，不把无环境记通过 |
-| 开源工程与CI/CD | 022/023 | 许可证、协议/设计、CI/release workflow与CycloneDX SBOM/许可审计(`packaging/generate_sbom.py`)已接线 | 本地`fmt`/`clippy`全绿、`generate_sbom.py --check`通过（18 workspace + 354依赖）、`smoke.py`通过、Linux 9包单测通过 | 远端GitHub CI/Release实跑绿灯（待push触发）、可复现构建、安全策略/双语文档全量复核 |
-| 各平台可安装Release | 022/024 | 全端打包脚本存在；Windows Inno已支持`dfy-manager.exe`与用户级ISCC；Linux RPM补齐`%install`段；macOS支持`Dafeiyu Remote.app`（`dfy-manager`/`dfy`/`dfy-relay`/权限plist）与CLI多包PKG/拖拽DMG | Linux x86_64 DEB/RPM真实构建、校验及`systemd` `dfy-relay.service`启停/健康检查全通过；Windows 0.1.0/0.1.1安装包真实构建；macOS arm64真实构建并验包PKG/DMG（`pkgutil`/`hdiutil`/`plutil`、`selftest` 0.117ms），见E20 | 代码签名/Apple公证、Windows 0.1.0→0.1.1交互桌面覆盖安装回归、macOS系统`/Applications` GUI双击实装与`x86_64`实包、Linux aarch64、Android签名发布包与真机 |
+| 开源工程与CI/CD | 022/023 | 许可证、协议/设计、CI/release workflow与CycloneDX SBOM/许可审计(`packaging/generate_sbom.py`)已接线 | 当前锁文件`generate_sbom.py --check`通过（18 workspace + 598依赖，含epaint字体OFL/UFL许可）；fmt/UI包check/test/strict Clippy、`smoke.py`、需求台账通过，见STATUS/E21 | 远端GitHub CI/Release实跑绿灯（待push触发）、可复现构建、安全策略/双语文档全量复核；本机未实际构建MSRV 1.75 |
+| 各平台可安装Release | 022/024 | 全端打包脚本存在；Windows Inno支持`dfy-manager.exe`；Linux DEB/RPM安装Manager且desktop entry无终端启动；macOS支持`Dafeiyu Remote.app`与PKG/DMG，可见显示名和DMG卷名为“大肥鱼远程”；Release workflow补齐macOS/Linux Manager | Linux历史x86_64 DEB/RPM真实构建及systemd生命周期通过；Windows历史0.1.0/0.1.1安装包真实构建；macOS历史arm64实包验包通过（E20）；本轮host-runnable打包mock/静态检查通过，见STATUS/E21 | 代码签名/Apple公证、Windows交互覆盖安装、macOS系统Applications新UI实装与x86_64实包、Linux新Manager包/aarch64真实安装、Android签名发布包与真机 |
 
 ## 证据入口
 
@@ -102,5 +102,6 @@
 | E18 | [用户中继池](../crates/dfy-relay-profiles/src/lib.rs)、[中继池命令](../crates/dfy-cli/src/relay_profiles_cmd.rs)、[验收记录](../notes/relay-profiles-acceptance-20261126.md) | CLI档案CRUD、四种选择策略、健康探针、脱敏导入导出与本机真实relay测试；GUI仍未完成 |
 | E19 | [可恢复路径迁移验收](../notes/auto-path-acceptance-20261126.md)、[CLI接线](../crates/dfy-cli/src/real.rs) | 本机真实直连→中继强制迁移：epoch递增、COMMIT确认、旧会话migrated、帧#25连续；诊断强制触发，不等价于真实弱网自动触发或回切 |
 | E20 | [macOS原生与PKG/DMG验收](../notes/macos-native-20261128.md)、[VideoToolbox](../crates/dfy-codec/src/vt.rs)、[ScreenCaptureKit](../crates/dfy-capture/src/macos.rs)、[CGEvent输入](../crates/dfy-input/src/macos.rs)、[NSPasteboard](../crates/dfy-clipboard/src/macos.rs)、[macOS打包脚本](../packaging/macos/build-installer.sh) | Apple Silicon macOS 27.2.1实机模块测试、CoreAudio重采样、VideoToolbox H.264实编实解与`Dafeiyu Remote.app` PKG/DMG真机构建挂载校验；TCC交互桌面与Mac↔Windows跨机仍待实测 |
+| E21 | [全平台UI打磨记录](../notes/ui-all-platforms-20261128.md)、[Manager](../crates/dfy-manager/src/main.rs)、[Viewer工具条](../crates/dfy-ui/src/toolbar.rs)、[中文字形渲染](../crates/dfy-ui/src/overlay_text.rs)、[Android主题](../android/app/src/main/java/remote/dafeiyu/UiTheme.kt) | Windows Manager/Viewer宽窄窗口目视与交互、UI包8+78+3测试和strict Clippy、Android35测试/lint/Debug构建、598依赖SBOM与host-runnable打包检查；不含macOS/Linux新UI目视、Android新UI设备目视、高DPI或真实跨机验收 |
 
 本表按代码实际能力保守拆分。任何更新都应同时写入命令/环境/结果，并保留未测维度；不要把“本次修好了一个负测”升级为整类安全或平台功能完成。

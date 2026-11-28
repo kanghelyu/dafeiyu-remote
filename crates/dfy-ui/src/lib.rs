@@ -87,6 +87,8 @@ mod app;
 #[cfg(feature = "window")]
 mod mailbox;
 #[cfg(feature = "window")]
+mod overlay_text;
+#[cfg(feature = "window")]
 mod run;
 
 pub use frame::{

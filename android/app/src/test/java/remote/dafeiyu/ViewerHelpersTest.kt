@@ -8,6 +8,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ViewerHelpersTest {
+    @Test fun responsiveLayoutStacksPhonesAndSplitsWideWindows() {
+        assertEquals(ViewerHelpers.ViewerLayout.PORTRAIT, ViewerHelpers.viewerLayoutMode(360f, 800f))
+        assertEquals(ViewerHelpers.ViewerLayout.PORTRAIT, ViewerHelpers.viewerLayoutMode(599f, 599f))
+        assertEquals(ViewerHelpers.ViewerLayout.WIDE, ViewerHelpers.viewerLayoutMode(640f, 360f))
+        assertEquals(ViewerHelpers.ViewerLayout.WIDE, ViewerHelpers.viewerLayoutMode(800f, 1280f))
+        assertEquals(ViewerHelpers.ViewerLayout.PORTRAIT, ViewerHelpers.viewerLayoutMode(600f, 600f))
+    }
+
     @Test fun fingerprintRequiresExactlySixtyFourHexDigits() {
         val pin = "AB".repeat(32)
         assertEquals(pin.lowercase(), ViewerHelpers.normalizeFingerprint("AB:".repeat(31) + "AB"))

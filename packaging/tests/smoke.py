@@ -524,13 +524,14 @@ mkdir -p "$top/RPMS/x86_64"
 printf 'mock rpm\n' > "$top/RPMS/x86_64/dafeiyu-1.2.3-1.x86_64.rpm"
 ''')
     binaries = native_fixture(directory, "x86_64-unknown-linux-gnu")
+    write_elf(binaries / "dfy-manager", 62)
     output = directory / "linux-mock-output"
     env = os.environ.copy()
     env.update({"PATH": str(tools) + os.pathsep + env["PATH"], "MOCK_SPEC_COPY": str(directory / "dafeiyu.spec")})
     run("bash", PACKAGING / "linux/build-packages.sh", "--binary-dir", binaries, "--version", "1.2.3", "--arch", "x86_64", "--format", "all", "--output-dir", output, env=env)
     with tarfile.open(output / "dafeiyu_1.2.3_amd64.deb") as bundle:
         names = set(bundle.getnames())
-        assert {"./usr/bin/dfy", "./usr/bin/dfy-relay", "./etc/dfy-relay/relay.toml.example", "./usr/share/doc/dafeiyu/LICENSE"} <= names
+        assert {"./usr/bin/dfy", "./usr/bin/dfy-relay", "./usr/bin/dfy-manager", "./etc/dfy-relay/relay.toml.example", "./usr/share/doc/dafeiyu/LICENSE"} <= names
         if os.name != "nt":
             assert bundle.getmember("./usr/bin/dfy").mode == 0o755
             assert bundle.getmember("./usr/bin/dfy-relay").mode == 0o755
