@@ -207,7 +207,7 @@ def check_static_metadata() -> None:
 def check_linux_builder(directory: Path) -> None:
     binaries = directory / "linux-binaries"
     binaries.mkdir()
-    for name in ("dfy", "dfy-relay"):
+    for name in ("dfy", "dfy-relay", "dfy-manager"):
         write_elf(binaries / name)
     output = directory / "linux-output"
     args = ("bash", PACKAGING / "linux/build-packages.sh", "--binary-dir", binaries, "--version", "1.2.3", "--arch", "x86_64", "--output-dir", output)
@@ -222,7 +222,7 @@ def check_linux_builder(directory: Path) -> None:
             subprocess.run(["dpkg-deb", "--fsys-tarfile", str(package)], stdout=stream, check=True)
         with tarfile.open(payload_path) as bundle:
             names = set(bundle.getnames())
-            assert {"./usr/bin/dfy", "./usr/bin/dfy-relay", "./usr/lib/systemd/system/dfy-relay.service", "./etc/dfy-relay/relay.toml.example"} <= names
+            assert {"./usr/bin/dfy", "./usr/bin/dfy-relay", "./usr/bin/dfy-manager", "./usr/lib/systemd/system/dfy-relay.service", "./etc/dfy-relay/relay.toml.example"} <= names
         control_path = directory / "debian-control.tar"
         with control_path.open("wb") as stream:
             subprocess.run(["dpkg-deb", "--ctrl-tarfile", str(package)], stdout=stream, check=True)
@@ -237,7 +237,7 @@ def check_linux_builder(directory: Path) -> None:
         run(*args, "--format", "rpm")
         package = next(output.glob("*.rpm"))
         listing = run("rpm", "-qp", "--dump", package).stdout
-        assert "/usr/bin/dfy" in listing and "/usr/bin/dfy-relay" in listing
+        assert "/usr/bin/dfy" in listing and "/usr/bin/dfy-relay" in listing and "/usr/bin/dfy-manager" in listing
         print("PASS real RPM metadata and payload")
     else:
         result = run(*args, "--format", "rpm", ok=False)
