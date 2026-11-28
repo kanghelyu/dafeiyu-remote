@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_WORKSPACE_LICENSE = "LicenseRef-PolyForm-Noncommercial-1.0.0"
@@ -131,6 +132,7 @@ def main() -> None:
             comp["licenses"] = [{"expression": lic}]
         components.append(comp)
 
+    app_version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
     sbom = {
         "bomFormat": "CycloneDX",
         "specVersion": "1.5",
@@ -140,7 +142,7 @@ def main() -> None:
             "component": {
                 "type": "application",
                 "name": "dafeiyu-remote",
-                "version": "0.1.0",
+                "version": app_version,
                 "licenses": [{"expression": EXPECTED_WORKSPACE_LICENSE}],
             },
         },

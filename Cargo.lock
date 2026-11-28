@@ -654,7 +654,7 @@ checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 
 [[package]]
 name = "dfy-android"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dfy-proto",
@@ -670,7 +670,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "cpal",
@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-capture"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "cc",
@@ -691,7 +691,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -727,7 +727,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-clipboard"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -743,7 +743,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-codec"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -754,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-files"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "dfy-proto",
@@ -766,7 +766,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-input"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "thiserror 2.0.21",
@@ -777,7 +777,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-manager"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -799,7 +799,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-p2p"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "rand 0.8.8",
@@ -809,18 +809,18 @@ dependencies = [
 
 [[package]]
 name = "dfy-path"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "dfy-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "prost",
 ]
 
 [[package]]
 name = "dfy-relay"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-relay-profiles"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dfy-relay",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-session"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dfy-capture",
@@ -866,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-transport"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -888,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "png",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "dfy-vdisplay"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "windows",
